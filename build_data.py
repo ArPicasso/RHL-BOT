@@ -503,6 +503,15 @@ def head_to_head(games: list[dict], history: list[dict], with_protocol: set[str]
                     "last": meetings[::-1][:H2H_LAST]}
     return out
 
+
+def mark_stories(h2h: dict[str, dict], details: dict[str, dict]) -> None:
+    """Флаг story у встреч, в разборе которых есть сюжет: тур выбирает встречу для разбора,
+    не скачивая пять файлов (ADR-013)."""
+    for pair in h2h.values():
+        for m in pair["last"]:
+            if m.get("id") and (details.get(m["id"]) or {}).get("story"):
+                m["story"] = True
+
 # ---------- лидеры лиги (ADR-009) ----------
 
 LEADERS_TOP = 10
@@ -633,10 +642,11 @@ def main() -> None:
     args.out.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     history, past_protocols = load_history(), load_history_protocols()
     h2h = head_to_head(data["games"], history, set(past_protocols))
-    (args.out.parent / "h2h.json").write_text(json.dumps(h2h, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     wanted = {m["id"] for pair in h2h.values() for m in pair["last"] if m.get("id", "").startswith("h")}
     names = {t["id"]: t["name"] for t in teams.all}
     details.update(past_recaps(history, past_protocols, wanted, names, load_hidden()))
+    mark_stories(h2h, details)
+    (args.out.parent / "h2h.json").write_text(json.dumps(h2h, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     matches = args.out.parent / "matches"
     matches.mkdir(exist_ok=True)
     for old in matches.glob("*.json"):   # матч мог пропасть из календаря — не оставляем чужой файл

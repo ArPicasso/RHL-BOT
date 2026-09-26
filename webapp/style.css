@@ -601,7 +601,7 @@ h1, .display {
 /* Наклейка талисмана: белая вырубка и чёрный край уже на картинке, одинаковая в обеих темах */
 .guide { position: relative; flex: none; display: inline-block; cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .guide img { display: block; width: 88px; height: 88px; transform: rotate(-6deg); }
-/* Знакомство, тур, приветствие — карточка по центру экрана поверх притемнённого фона.
+/* Знакомство, вступление и финал тура — карточка по центру экрана поверх притемнённого фона.
    Крупный талисман стоит на верхнем крае карточки и выходит за него */
 .coach {
   position: fixed; inset: 0; z-index: 11;
@@ -609,8 +609,6 @@ h1, .display {
   padding: 16px 16px calc(96px + env(safe-area-inset-bottom));
 }
 .coach-back { position: absolute; inset: 0; background: rgba(9, 13, 20, .58); }
-/* Шаг тура: карточка у меню, чтобы экран, о котором она рассказывает, был виден сверху */
-.coach.low { align-items: end; }
 .coach-card {
   position: relative; width: 100%; max-width: 360px;
   margin-top: 118px; padding: 104px 18px 16px;
@@ -621,19 +619,31 @@ h1, .display {
 .coach-guide { position: absolute; left: 50%; top: -110px; transform: translateX(-50%); }
 .coach-guide .guide img { width: 196px; height: 196px; }
 .coach p { margin: 0 0 16px; font: 500 17px/1.4 var(--ui); text-wrap: pretty; }
-.coach-btns { display: grid; gap: 4px; }
+.coach-btns { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }   /* длинное название главы не раздвигает карточку */
 .coach-btns .btn { margin: 0; }
-.coach-row { display: flex; align-items: center; justify-content: center; gap: 8px; }
-.coach-skip { min-height: 44px; padding: 0 10px; border: 0; background: none; color: var(--muted); font: 700 13px/1 var(--ui); letter-spacing: .03em; cursor: pointer; }
-.coach-count { color: var(--muted); font-size: 12px; }
+/* Нижний ряд шага тура: «Пропустить» слева, прогресс справа */
+.coach-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.coach-skip { flex: none; min-height: 44px; padding: 0 10px; border: 0; background: none; color: var(--muted); font: 700 13px/1 var(--ui); letter-spacing: .03em; cursor: pointer; }
+.coach-row .coach-skip { margin-left: -10px; padding-right: 4px; }   /* текст — по краю реплики, место — названию главы */
+/* Прогресс тура (ADR-013): название главы и отрезки 16×4. Пройденные залиты, текущий — на долю шагов */
+.tp { display: flex; align-items: center; gap: 3px; min-width: 0; }
+.tp b { min-width: 0; margin-right: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 700 12px/1.2 var(--ui); color: var(--muted); }
+.tp i { position: relative; flex: none; width: 16px; height: 4px; border-radius: 9999px; background: var(--mist); overflow: hidden; }
+.tp i.done { background: var(--ink); }
+.tp i span { position: absolute; inset: 0; background: var(--ink); transform-origin: 0 50%; }
+.tp.intro { justify-content: center; margin: -4px 0 18px; }
 /* Шаг тура с целью: цель вырезана из затемнения окном, карточка компактная и встаёт рядом с целью.
-   Затемнение рисует окно (заливка вокруг него), .coach-back прозрачный и ловит нажатия */
+   Затемнение рисует окно (тень вокруг него), .coach-back прозрачный и ловит нажатия. Заливка окна
+   того же тона гасит его, пока карточка переезжает к новой цели */
 .coach.aim { display: block; padding: 0; }
 .coach.aim .coach-back { background: none; }
 .coach-hole { position: absolute; pointer-events: none; box-shadow: 0 0 0 200vmax rgba(9, 13, 20, .58); }
-.coach-hole::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: 0 0 0 3px var(--sun); animation: coach-pulse 1.2s ease-in-out infinite; }
+.coach-fill, .coach-ring { position: absolute; inset: 0; border-radius: inherit; }
+.coach-fill { background: rgba(9, 13, 20, .58); opacity: 0; }
+.coach-ring { box-shadow: 0 0 0 3px var(--sun); animation: coach-pulse 1.2s ease-in-out infinite; }
 .coach.aim .coach-card { position: absolute; left: 16px; right: 16px; width: auto; margin: 0 auto; padding: 14px 16px 6px; }
-.coach-say { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; text-align: left; }
+.coach-say { display: flex; align-items: center; gap: 12px; min-height: 72px; margin-bottom: 12px; text-align: left; }
+.coach-card.bare .coach-say { min-height: 0; }
 .coach-card.right .coach-say { flex-direction: row-reverse; }
 .coach-say .guide img { width: 72px; height: 72px; }
 .coach-card.right .coach-say .guide img { transform: scaleX(-1) rotate(-6deg); }
@@ -645,8 +655,9 @@ h1, .display {
   transform: rotate(45deg);
 }
 .coach-card.up .coach-tail { top: auto; bottom: -9px; border: 0; border-right: var(--line); border-bottom: var(--line); }
-/* Вкладка, о которой говорит тур, — над притемнением и с пульсирующей обводкой. Есть цель — пульсирует она */
-.tabs.coach-on { z-index: 12; }
+/* Вкладка, о которой говорит тур, — над притемнением и с пульсирующей обводкой. Есть цель — пульсирует она.
+   Меню в туре не нажимается: нажатие проходит на затемнение и считается промахом */
+.tabs.coach-on { z-index: 12; pointer-events: none; }
 .tabs .coach-hl { box-shadow: 0 0 0 3px var(--sun); animation: coach-pulse 1.2s ease-in-out infinite; }
 .tabs.coach-aim .coach-hl { animation: none; }
 @keyframes coach-pulse { 50% { box-shadow: 0 0 0 7px var(--sun); } }
@@ -979,6 +990,12 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 
 .sheet .picker { margin-bottom: 8px; }
 
+/* Лист «Подсказки» (ADR-013): всё сначала или одна глава, пройденные — с галочкой */
+.hints-all { margin: 4px 0 16px; }
+.hints { margin-bottom: 8px; }
+.hint-row { grid-template-columns: 20px 1fr 16px 16px; }
+.menu-row .ok { width: 16px; height: 16px; stroke: var(--muted); stroke-width: 2; }
+
 /* ---------- очные встречи (ADR-006) ---------- */
 
 .h2h { border: var(--line); border-radius: 20px; padding: 14px 16px; background: var(--paper); }
@@ -1043,5 +1060,5 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 
 @media (prefers-reduced-motion: reduce) {
   .tabs button, .pick, .pick .em, .cta-bar, .pills button, .seg button, .chips button { transition: none; }
-  .pick.pop, .sk, .row.busy, .flow.draw .fl-cover, .flow.draw .fl-dot .v, .tabs .coach-hl, .coach-hole::after { animation: none; }
+  .pick.pop, .sk, .row.busy, .flow.draw .fl-cover, .flow.draw .fl-dot .v, .tabs .coach-hl, .coach-ring { animation: none; }
 }

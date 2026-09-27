@@ -1,0 +1,12 @@
+# Ежедневный бэкап базы «Звена» — запускает zveno-backup.timer (deploy/README.md, шаг 12)
+[Unit]
+Description=Zveno database backup (sqlite3 .backup, 14 copies)
+
+[Service]
+Type=oneshot
+User=rhl
+Group=rhl
+Environment=ZVENO_DB=/var/lib/rhl/zveno.db
+Environment=BACKUP_DIR=/var/backups/rhl
+Environment=KEEP=14
+ExecStart=/opt/rhl/deploy/backup.sh

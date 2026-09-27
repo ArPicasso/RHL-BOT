@@ -1,0 +1,34 @@
+# Бот РХЛ U21 (bot.py) на том же VPS, что и API «Звена». Заменяет ryazan-bot.service и стенд
+# на раннере GitHub (.github/workflows/run-bot.yml). Установка — deploy/README.md, шаг 11.
+# Бот работает long polling: одновременно может жить только одна копия — старую остановить до запуска.
+# Файлы состояния бота (subscribers.json, announced.json, zveno_waitlist.json) лежат рядом с bot.py.
+[Unit]
+Description=RHL U21 Telegram bot (bot.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rhl
+Group=rhl
+WorkingDirectory=/opt/rhl
+EnvironmentFile=/etc/rhl/bot.env
+ExecStart=/opt/rhl/venv/bin/python bot.py
+Restart=always
+RestartSec=5
+UMask=0027
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/rhl
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

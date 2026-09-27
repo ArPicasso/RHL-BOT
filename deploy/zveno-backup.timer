@@ -1,0 +1,11 @@
+# Раз в сутки в 04:30 МСК; пропущенный запуск (сервер был выключен) — сразу после включения
+[Unit]
+Description=Daily Zveno database backup
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 Europe/Moscow
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

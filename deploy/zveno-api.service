@@ -1,0 +1,36 @@
+# API фэнтези «Звено» (ADR-014, раздел 13). Установка — deploy/README.md, шаг 7.
+# Код — /opt/rhl (клон репозитория), база — /var/lib/rhl/zveno.db, переменные — /etc/rhl/zveno.env.
+[Unit]
+Description=Zveno API (fantasy RHL U21, ADR-014)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rhl
+Group=rhl
+WorkingDirectory=/opt/rhl
+EnvironmentFile=/etc/rhl/zveno.env
+ExecStart=/opt/rhl/venv/bin/python -m zveno_api
+Restart=always
+RestartSec=5
+# /var/lib/rhl создаёт systemd, владелец — rhl
+StateDirectory=rhl
+StateDirectoryMode=0750
+UMask=0027
+
+# Защита: сервис видит только своё
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/rhl
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

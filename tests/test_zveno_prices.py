@@ -58,6 +58,13 @@ class Path(unittest.TestCase):
         p = prices.price_path("F", None, [(0, 30)], 1)
         self.assertEqual((p.mondays[0], p.mondays[1], p.price), (5400, 6200, 6200))
 
+    def test_price_prev_is_deadline_before_last(self):
+        # «Итог недели»: рост за прошлый тур виден и после дедлайна, когда price_monday = price
+        p = prices.price_path("F", None, [(1, 30)], 2)
+        self.assertEqual((p.price_prev, p.price_monday, p.price), (5400, 6200, 6200))
+        p = prices.price_path("F", None, [], 0)
+        self.assertEqual(p.price_prev, p.price_monday)
+
     def test_cap_500_from_tour_5(self):
         p = prices.price_path("D", None, [(5, 30), (5, 25)], 5)
         self.assertEqual(p.price, 4800 + 500)

@@ -19,7 +19,7 @@ def player(sid, slot, club, price, tour3=None, status="ok", name=None):
         tours["3"] = {"m": pts, "best2": sum(sorted(pts, reverse=True)[:2]), "ids": ids}
     return {"id": sid, "pid": None if slot == "G" else int(sid[2:]), "slot": slot, "name": name or sid,
             "club": club, "number": 1, "price": price, "promise": 3.0, "form": False, "status": status,
-            "new": False, "price_monday": price, "tours": tours}
+            "new": False, "price_monday": price, "price_prev": price, "tours": tours}
 
 
 CLUBS = ["ryazan-vdv", "ermak", "polet", "samara", "sokol", "tambov", "proton", "rostov"]

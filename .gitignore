@@ -1,5 +1,6 @@
 .env
 venv/
+zveno.db*
 __pycache__/
 subscribers.json
 announced.json

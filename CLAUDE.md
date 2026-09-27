@@ -12,8 +12,8 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 ## Стек
 
 - Python 3.11, aiogram 3 (long polling)
-- Состояние в JSON-файлах, базы пока нет
-- Деплой: systemd на VPS (`ryazan-bot.service`)
+- Состояние бота в JSON-файлах. У «Звена» своя база: SQLite на сервере `zveno_api` (ADR-014)
+- Деплой: systemd на VPS (`ryazan-bot.service`). Сервер «Звена» и перенос бота — `deploy/` (ADR-014)
 - `.github/workflows/run-bot.yml` — временный стенд на раннере GitHub, не хостинг
 
 ## Структура
@@ -35,6 +35,9 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `zveno/` | Движок фэнтези «Звено» (ADR-014), только stdlib: константы `rules.py`, туры и дедлайны `tours.py`, очки за матч `points.py`, стоимость `prices.py`, приоры 25/26 `prior.py` → `zveno/data/prior_2526.json`, конструктор названий `names.py`, правила менеджера для сервера `manager.py` |
 | `build_zveno.py` | Собирает `webapp/data/zveno/`: `tours.json`, `pool.json`, `matches.json`, `names.json`. В Pages-задании сразу после `build_data.py` |
 | `docs/zveno/contract.md` | Контракт частей «Звена»: опубликованные данные, функции движка, API сервера, бот |
+| `zveno_api/` | Сервер «Звена» (ADR-014): API для мини-аппа по `Authorization: tma <initData>`, SQLite в режиме WAL, дедлайны и закрытие туров, лиги и ступени, сообщения сезона через Bot API. Запуск — `python -m zveno_api` |
+| `zveno.db` | База «Звена»: менеджеры, составы, обмены, лиги, журнал. Не в git, на сервере — `/var/lib`, бэкап раз в сутки (`deploy/backup.sh`) |
+| `deploy/` | VPS в России: юниты systemd сервера «Звена» и бота, nginx с HTTPS, бэкап, шаблоны переменных. По шагам — `deploy/README.md` |
 | `rhockey.py` | Календарь всей лиги с r-hockey.ru — временно, до открытия rhl.fhr.ru |
 | `build_data.py` | Собирает `webapp/data/league.json` (команды, матчи, результаты, таблица), `h2h.json`, разборы матчей `matches/<id>.json` (ADR-008) и `leaders.json` (ADR-009) |
 | `history.py` | Матчи пяти прошлых сезонов НМХЛ с сайта лиги → `history.json` для очных встреч (ADR-006) |

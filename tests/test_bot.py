@@ -3,6 +3,7 @@ import asyncio
 import json
 import re
 import sys
+import tempfile
 import unittest
 from datetime import date, datetime, time
 from pathlib import Path
@@ -246,6 +247,227 @@ class Leaders(unittest.TestCase):
         data = build_data.leaders(build_data.load_teams(), build_data.load_leaders())
         text = bot.leaders_text(data)
         self.assertIn("Султанов Реваль (Полёт) — 78 очков", text)
+
+
+class Zveno(unittest.TestCase):
+    """ADR-014, Пролог: лист ожидания «Звена» в боте и один зов, когда рынок откроется."""
+
+    OPEN = {"season": "2026/27", "status": "open", "market_opened_at": "2026-10-11T10:17:00+03:00",
+            "first_tour": 1, "tour_now": None, "tour_next": 1,
+            "tours": [{"t": 1, "from": "2026-10-12", "to": "2026-10-18",
+                       "deadline": "2026-10-12T09:00:00+03:00", "close": "2026-10-22T12:00:00+03:00"}]}
+    PROLOG = {**OPEN, "status": "prolog", "market_opened_at": None, "first_tour": None}
+    DAY = datetime(2026, 10, 11, 12, 0, tzinfo=bot.TZ)
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.file = Path(tmp.name) / "zveno_waitlist.json"
+        self.stickers = mock.AsyncMock(return_value=True)
+        for p in (mock.patch.object(bot, "ZVENO_FILE", self.file),
+                  mock.patch.object(bot, "ZVENO", {"chats": set(), "opened": None}),
+                  mock.patch.object(bot, "_published", {}),
+                  mock.patch.object(bot, "SUBS", set()),
+                  mock.patch.object(bot, "save_subs"),
+                  mock.patch.object(bot, "send_sticker", self.stickers),
+                  mock.patch.object(bot, "WEBAPP_URL", "https://x.github.io/app/")):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def saved(self) -> dict:
+        return json.loads(self.file.read_text())
+
+    def message(self):
+        m = mock.Mock()
+        m.chat.id = 42
+        m.answer = mock.AsyncMock()
+        return m
+
+    def run_handler(self, handler, *args):
+        """Хендлер сообщения → (текст, клавиатура) последнего ответа."""
+        say = mock.AsyncMock()
+        with mock.patch.object(bot, "say", say):
+            asyncio.run(handler(self.message(), *args))
+        return say.call_args.args[2]()
+
+    def start(self, args):
+        return self.run_handler(bot.start, bot.CommandObject(prefix="/", command="start", args=args))
+
+    def command(self):
+        return self.run_handler(bot.h_zveno)
+
+    def press(self, data):
+        c = mock.Mock()
+        c.message.chat.id = 42
+        c.data = data
+        c.answer = mock.AsyncMock()
+        edit = mock.AsyncMock()
+        with mock.patch.object(bot, "safe_edit", edit):
+            asyncio.run(bot.cb_zveno(c))
+        return edit.call_args.args[1]()
+
+    def published(self, tours):
+        bot._published[bot.TOURS] = (datetime.now(bot.TZ), tours)
+
+    # ---------- лист ожидания ----------
+
+    def test_link_joins_without_greeting(self):
+        text, kb = self.start("zveno")
+        self.assertEqual(bot.ZVENO["chats"], {42})
+        self.assertEqual(self.saved()["chats"], [42])
+        self.assertEqual([c.args[2] for c in self.stickers.call_args_list], ["bell"])   # «Напомню!», не «Здарова!»
+        self.assertIn("«Звено» — фэнтези РХЛ", text)
+        self.assertIn("Ты в списке: позову", text)
+        self.assertEqual(kb.inline_keyboard[0][0].web_app.url, "https://x.github.io/app/?startapp=zveno")
+        self.assertEqual((kb.inline_keyboard[1][0].text, kb.inline_keyboard[1][0].callback_data),
+                         ("🔕 Больше не звать", "z:off"))
+
+    def test_link_then_button_leaves(self):
+        _, kb = self.start("zveno")
+        text, kb = self.press(kb.inline_keyboard[1][0].callback_data)
+        self.assertEqual(bot.ZVENO["chats"], set())
+        self.assertEqual(self.saved()["chats"], [])
+        self.assertIn("Не позову", text)
+        self.assertEqual((kb.inline_keyboard[1][0].text, kb.inline_keyboard[1][0].callback_data),
+                         ("🔔 Позвать, когда откроется", "z:on"))
+
+    def test_command_joins_and_leaves(self):
+        text, kb = self.command()
+        self.assertEqual(bot.ZVENO["chats"], {42})
+        self.assertIn("Ты в списке", text)
+        self.command()   # второй /zveno не выключает: человек просто проверяет
+        self.assertEqual(bot.ZVENO["chats"], {42})
+        _, kb = self.command()
+        self.assertIn("Больше не звать", kb.inline_keyboard[1][0].text)
+        self.press("z:off")
+        self.assertEqual(bot.ZVENO["chats"], set())
+        text, _ = self.press("z:on")
+        self.assertEqual(bot.ZVENO["chats"], {42})
+        self.assertIn("Ты в списке", text)
+
+    def test_stale_button_does_not_rejoin(self):
+        self.command()
+        self.press("z:off")
+        self.press("z:off")   # та же кнопка в старом сообщении
+        self.assertEqual(bot.ZVENO["chats"], set())
+
+    def test_already_open_goes_straight_to_app(self):
+        self.published(self.OPEN)
+        bot.ZVENO["chats"].add(42)
+        text, kb = self.command()
+        self.assertEqual(bot.ZVENO["chats"], set())   # зовать больше некого: уже знает
+        self.assertIn("«Звено» уже открыто!", text)
+        self.assertEqual(len(kb.inline_keyboard), 1)
+        self.assertEqual(kb.inline_keyboard[0][0].web_app.url, "https://x.github.io/app/?startapp=zveno")
+        text, _ = self.press("z:on")   # кнопка из Пролога после открытия
+        self.assertEqual(bot.ZVENO["chats"], set())
+        self.assertIn("уже открыто", text)
+
+    def test_prolog_published_still_joins(self):
+        self.published(self.PROLOG)
+        self.start("zveno")
+        self.assertEqual(bot.ZVENO["chats"], {42})
+
+    # ---------- «Звено» открылось ----------
+
+    def announce(self, tours, now=None, blocked=()):
+        sent = []
+
+        async def fake_say(b, cid, make):
+            if cid in blocked:
+                raise bot.TelegramForbiddenError(method=mock.Mock(), message="Forbidden: bot was blocked by the user")
+            sent.append((cid, *make()))
+
+        with mock.patch.object(bot, "say", fake_say):
+            n = asyncio.run(bot.announce_zveno(mock.Mock(), tours, now or self.DAY))
+        self.assertEqual(n, len(sent))
+        return sent
+
+    def test_opening_calls_once_and_clears_list(self):
+        bot.ZVENO["chats"].update({1, 2, 3})
+        bot.SUBS.update({2, 5})
+        sent = self.announce(self.OPEN, blocked={2})
+        self.assertEqual([cid for cid, _, _ in sent], [1, 3])
+        _, text, kb = sent[0]
+        self.assertIn("«Звено» открылось!", text)
+        self.assertIn("Как обещал — зову.", text)
+        self.assertIn("Состав на тур 1 — до Пн 12.10, 09:00 (МСК).", text)
+        self.assertEqual(len(kb.inline_keyboard), 1)
+        self.assertEqual(kb.inline_keyboard[0][0].web_app.url, "https://x.github.io/app/?startapp=zveno")
+        self.assertEqual(bot.ZVENO, {"chats": set(), "opened": "2026/27"})
+        self.assertEqual(self.saved(), {"chats": [], "opened": "2026/27"})
+        self.assertEqual(bot.SUBS, {5})   # заблокировал бота — и из напоминаний
+        self.assertEqual(self.announce(self.OPEN), [])   # следующий опрос через 10 минут
+
+    def test_restart_does_not_call_again(self):
+        bot.ZVENO["chats"].add(1)
+        self.announce(self.OPEN)
+        self.file.write_text(json.dumps({"chats": [7], "opened": "2026/27"}))
+        with mock.patch.object(bot, "ZVENO", bot.load_zveno()):   # рестарт: состояние из файла
+            self.assertEqual(bot.ZVENO, {"chats": {7}, "opened": "2026/27"})
+            self.assertEqual(self.announce(self.OPEN), [])
+            self.assertTrue(bot.zveno_open(None))   # tours.json ещё не скачан — верим флагу
+
+    def test_prolog_calls_nobody(self):
+        bot.ZVENO["chats"].add(1)
+        self.assertEqual(self.announce(self.PROLOG), [])
+        self.assertEqual(self.announce(None), [])   # файл не скачался
+        self.assertEqual(bot.ZVENO, {"chats": {1}, "opened": None})
+
+    def test_night_waits_for_morning(self):
+        bot.ZVENO["chats"].add(1)
+        self.assertEqual(self.announce(self.OPEN, datetime(2026, 10, 11, 23, 30, tzinfo=bot.TZ)), [])
+        self.assertEqual(bot.ZVENO["chats"], {1})
+        sent = self.announce(self.OPEN, datetime(2026, 10, 12, 9, 0, tzinfo=bot.TZ))
+        self.assertEqual([cid for cid, _, _ in sent], [1])
+        self.assertNotIn("Состав на тур", sent[0][1])   # дедлайн 09:00 уже прошёл
+
+    def test_loop_reads_published_tours_with_cache(self):
+        fetch = mock.AsyncMock(return_value=self.OPEN)
+        with mock.patch.object(bot, "fetch_json", fetch):
+            self.assertEqual(asyncio.run(bot.published(bot.TOURS, bot.ZVENO_TTL)), self.OPEN)
+            self.assertEqual(asyncio.run(bot.published(bot.TOURS, bot.ZVENO_TTL)), self.OPEN)
+        fetch.assert_called_once()   # второй раз — из кэша на 10 минут
+        self.assertEqual(fetch.call_args.args[1], "zveno/tours.json")
+        self.assertEqual(bot.data_url(bot.TOURS), "https://x.github.io/app/data/zveno/tours.json")
+        self.assertEqual(bot.last_published(bot.TOURS), self.OPEN)
+
+    # ---------- тексты и файл ----------
+
+    def test_texts_valid_html_and_words(self):
+        """Словарь ADR-014, раздел 11: никаких «купить», «продать», «цена»."""
+        bot.ZVENO["chats"].add(42)
+        texts = [bot.zveno_wait_text(42), bot.zveno_wait_text(1),
+                 bot.zveno_open_text(self.OPEN, self.DAY, called=True), bot.zveno_open_text(None, self.DAY)]
+        for t in texts:
+            self.assertEqual(len(re.findall(r"<b>", t)), len(re.findall(r"</b>", t)), t)
+            for word in ("купи", "прода", "цен", "подешев"):
+                self.assertNotIn(word, t.lower(), t)
+
+    def test_deadline_only_if_ahead(self):
+        self.assertIsNone(bot.tour_deadline(self.OPEN, datetime(2026, 10, 12, 9, 0, tzinfo=bot.TZ)))
+        self.assertIsNone(bot.tour_deadline({"tour_next": 2, "tours": self.OPEN["tours"]}, self.DAY))
+        self.assertIsNone(bot.tour_deadline({"tour_next": 1, "tours": [{"t": 1, "deadline": "потом"}]}, self.DAY))
+        t, d = bot.tour_deadline(self.OPEN, self.DAY)
+        self.assertEqual((t, d), (1, datetime(2026, 10, 12, 9, 0, tzinfo=bot.TZ)))
+
+    def test_broken_file_is_empty_list(self):
+        for raw in ("", "[1, 2]", "{\"chats\": 5}", "не json"):
+            self.file.write_text(raw)
+            self.assertEqual(bot.load_zveno(), {"chats": set(), "opened": None}, raw)
+
+    def test_atomic_write(self):
+        bot.write_json(self.file, {"chats": [1], "opened": None})
+        self.assertEqual(self.saved(), {"chats": [1], "opened": None})
+        self.assertEqual([p.name for p in self.file.parent.iterdir()], ["zveno_waitlist.json"])
+
+    def test_waitlist_not_in_git(self):
+        ignored = (ROOT / ".gitignore").read_text(encoding="utf-8").split()
+        self.assertIn("zveno_waitlist.json", ignored)
+
+    def test_greeting_mentions_zveno(self):
+        self.assertIn("«Звено»", bot.welcome_text())
+        self.assertIn("«Звено»", bot.DESCRIPTION)
 
 
 if __name__ == "__main__":

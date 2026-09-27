@@ -178,7 +178,7 @@ function zvUse(tours, pool, names) {
   ZV.pool.players.forEach((p) => { ZV.byId[p.id] = p; });
   ZV.status = ZV.tours ? "ok" : "none";
   if (!ZV.draft || !zvIds(ZV.draft).length) ZV.draft = zvDraftLoad();
-  if (zvOpen() && !ZV.namesAsked) {
+  if (zvOpen() && zvServer() && !ZV.namesAsked) {
     ZV.namesAsked = true;
     zvJson("names.json").then((n) => { ZV.names = zvNamesOf(n) || ZV.names; }).catch(() => {});
   }

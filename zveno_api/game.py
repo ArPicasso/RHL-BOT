@@ -389,10 +389,9 @@ class Game:
                                 (uid, x, slot, p["price"], p["price"], iso(now)))
                 self._maybe_find(uid, p, now)
             self._join_box(uid)
-            late = budget != rules.BUDGET or tn != (s.first_tour or 1)
             self.journal_add(uid, "deal", f"Команда «{names.title(name)}» собрана к туру {tn}: "
                              f"15 наклеек за {num(cost)} ❄, в кассе {num(budget - cost)} ❄."
-                             + (f" Бюджет опоздавшего — {num(budget)} ❄." if late and budget != rules.BUDGET else ""), now)
+                             + (f" Бюджет опоздавшего — {num(budget)} ❄." if budget != rules.BUDGET else ""), now)
         self.touch(uid, display)
         return self.team(uid)
 

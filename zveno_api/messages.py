@@ -215,7 +215,10 @@ class Messenger:
             session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), trust_env=True)
         sent = 0
         try:
-            for m in self.g.db.execute("SELECT * FROM managers WHERE messages = 1 AND can_write = 1").fetchall():
+            for uid in [r["id"] for r in self.g.db.execute("SELECT id FROM managers WHERE messages = 1 AND can_write = 1")]:
+                m = self.g.manager(uid)   # свежая строка: пока шли отправки, человек мог выключить сообщения или удалиться
+                if m is None or not m["messages"] or not m["can_write"]:
+                    continue
                 local = now.astimezone(self.tz(m["fav_club"]))
                 if not (SEND_AT <= local.time() < SEND_UNTIL) or local.weekday() not in (SUNDAY, TUESDAY):
                     continue

@@ -2812,7 +2812,7 @@ function render(dir = 0) {
   }
   const cur = $("#tabs button.active");
   if (!cur || cur.dataset.tab !== state.tab || !$("#tabs").classList.contains("ready")) setTab(state.tab, false);
-  const views = { home: renderHome, calendar: renderCalendar, table: renderTable, me: renderMe };
+  const views = { home: renderHome, calendar: renderCalendar, table: renderTable, zveno: renderZveno, me: renderMe };
   screen.innerHTML = views[state.tab]();
   addThemeToggle();
   placeRunners(screen);
@@ -2824,6 +2824,7 @@ function render(dir = 0) {
     window.scrollTo(0, 0);
   }
   if (state.tab === "home") countUp(screen);
+  if (state.tab === "zveno") zvMounted();
   if (dir && !calm()) {
     // двигаем детей, а не сам экран: его край обрезает сдвиг (#screen в style.css)
     for (const el of screen.children) {
@@ -2832,7 +2833,8 @@ function render(dir = 0) {
   }
 }
 
-const TAB_ORDER = ["home", "calendar", "table", "me"];
+// «Звено» (ADR-014) — между «Таблицей» и «Я»: первые три вкладки про настоящий хоккей, «Я» всегда последняя
+const TAB_ORDER = ["home", "calendar", "table", "zveno", "me"];
 const tabDir = (from, to) => Math.sign(TAB_ORDER.indexOf(to) - TAB_ORDER.indexOf(from)) || 1;
 
 function haptic() {
@@ -2864,8 +2866,8 @@ function confirmTeam(id = state.draft || state.fav) {
   state.conf = team(id).conf;
   saveFav(id);
   closeMatch();
-  // пришёл по ссылке на лидеров и только что выбрал команду — ведём туда, куда звали
-  state.tab = !wasFav && state.tableView === "players" ? "table" : "home";
+  // пришёл по ссылке на лидеров или в «Звено» и только что выбрал команду — ведём туда, куда звали
+  state.tab = !wasFav && state.tableView === "players" ? "table" : !wasFav && state.zvLink ? "zveno" : "home";
   if (inTelegram && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
   render(dir);
   // новичок, пришедший не по ссылке, — проводник показывает приложение (ADR-011);
@@ -3201,6 +3203,15 @@ function boot(d, cached = false) {
   useData(d);
   const fromLink = startParam();
   const saved = lsGet(FAV_KEY);
+  // «Звено» из бота или от друга: startapp=zveno, startapp=lg-<код> — раньше id команды (ADR-014)
+  const zvLink = zvLinkParam(fromLink);
+  if (zvLink && !state.openedFromLink) {
+    state.openedFromLink = true;
+    state.zvLink = true;
+    state.tab = "zveno";
+    zvFromLink(zvLink);
+  }
+  zvRestoreJoin();
   // Ссылка с командой (приглашение от друга, бот) новичку открывает знакомство с этим клубом:
   // выбирает он сам. Свой клуб ссылка не перезаписывает
   if (saved && state.teams[saved]) {

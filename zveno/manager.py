@@ -201,6 +201,11 @@ def _matches_list(matches) -> list[dict]:
     return list(matches or [])
 
 
+def played_in(sid: str | None, tour: int, idx: dict[str, dict]) -> bool:
+    """Есть ли у наклейки сыгранные матчи в туре. Скрытого в пуле нет — матчей нет."""
+    return bool(sid) and bool((idx.get(sid, {}).get("tours", {}).get(str(tour)) or {}).get("m"))
+
+
 def tour_matches(sid: str, tour: int, idx: dict[str, dict], matches: list[dict] | None = None) -> list[tuple[str, int]]:
     """(id матча, очки) наклейки в туре по порядку дат. Без поля ids в пуле — по matches.json."""
     p = idx.get(sid)
@@ -222,7 +227,7 @@ def apply_autosubs(lineup: dict, bench: list[str], tour: int, pool) -> tuple[dic
     used, subs = set(), []
 
     def played(x):
-        return bool(x) and bool((idx.get(x, {}).get("tours", {}).get(str(tour)) or {}).get("m"))
+        return played_in(x, tour, idx)
 
     def sub_for(slot):
         return next((b for s, b in zip(rules.BENCH, bench) if s == slot and b not in used and played(b)), None)
@@ -251,8 +256,9 @@ def tour_score(lineup: dict, captain: str | None, assistant: str | None, tour: i
     if bench is not None:
         lineup, subs = apply_autosubs(lineup, bench, tour, idx)
     line_of = {x: line for _, line, x in positions(lineup) if x and line}
+    ml = _matches_list(matches)
     goals: dict[str, list[dict]] = {}
-    for m in _matches_list(matches):
+    for m in ml:
         if m.get("tour") == tour:
             goals[m["id"]] = m.get("goals", [])
     bonus: dict[tuple[str, str], int] = {}
@@ -267,12 +273,11 @@ def tour_score(lineup: dict, captain: str | None, assistant: str | None, tour: i
                     bonus[(x, mid)] = bonus.get((x, mid), 0) + rules.PTS_SYNERGY
     per = {}
     for x in lineup_ids(lineup):
-        ms = tour_matches(x, tour, idx, _matches_list(matches))
+        ms = tour_matches(x, tour, idx, ml)
         base = best_sum([p for _, p in ms])
         best = best_sum([p + bonus.get((x, mid), 0) for mid, p in ms])
         per[x] = {"matches": [p for _, p in ms], "best2": base, "synergy": best - base, "mult": 1}
-    cap_played = bool(captain and tour_matches(captain, tour, idx, _matches_list(matches)))
-    double = captain if cap_played else assistant
+    double = captain if played_in(captain, tour, idx) else assistant
     if double in per and per[double]["matches"]:
         per[double]["mult"] = rules.CAPTAIN_MULT
     total = 0

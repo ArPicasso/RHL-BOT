@@ -72,6 +72,10 @@ def build(protos: list[tuple[dict, str, str]], calendar: list[dict], teams: list
     today = now.date()
     settled_before = today - timedelta(days=rules.SETTLE_DAYS)
 
+    def shown(pid: int | None) -> str | None:
+        """Id наклейки для matches.json; скрытого игрока и игрока без id там нет."""
+        return points.pid_key(pid) if pid is not None and pid not in hidden else None
+
     ents: dict[str, Entity] = {}
     club_games: dict[str, list[str]] = defaultdict(list)
     first_protocol: dict[str, str] = {}
@@ -104,9 +108,6 @@ def build(protos: list[tuple[dict, str, str]], calendar: list[dict], teams: list
             e.matches.append((d, gid, info["pts"], w, t))
         no_id += sum(1 for r in p.get("lineups", []) if r["role"] != "G" and r.get("played", True)
                      and r["player"].get("id") is None)
-
-        def shown(pid):
-            return points.pid_key(pid) if pid is not None and pid not in hidden else None
         matches.append({
             "id": gid, "date": d, "tour": t, "home": home, "away": away,
             "settled": date.fromisoformat(d) < settled_before,

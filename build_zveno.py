@@ -40,7 +40,11 @@ def main(argv: list[str] | None = None) -> int:
     except (FileNotFoundError, ValueError, KeyError) as e:
         print(f"Нет календаря {args.league}: {e}. Сначала build_data.py", file=sys.stderr)
         return 1
-    now = datetime.fromisoformat(args.now).astimezone(TZ) if args.now else datetime.now(TZ)
+    now = datetime.fromisoformat(args.now) if args.now else datetime.now(TZ)
+    if now.tzinfo is None:
+        print("--now нужен с поясом, например 2026-10-12T10:00:00+03:00", file=sys.stderr)
+        return 1
+    now = now.astimezone(TZ)
     teams = build_data.load_teams()
     protos, unmatched = build.regular_protocols(league.load_results(args.results), teams.find_past)
     season = build.build(protos, calendar, teams.all, now, prior.load_prior(), prior.load_links(),

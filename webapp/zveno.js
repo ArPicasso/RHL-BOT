@@ -1347,12 +1347,17 @@ async function zvDoBoost() {
   }
 }
 
-// «Итог недели»: только рост своих наклеек
+// «Итог недели» (ADR-014, раздел 5): рост своих наклеек за закрытую неделю — между двумя последними
+// дедлайнами, только рост. Нет price_prev (старый pool.json) — рост с понедельника
+function zvWeekGain(p) {
+  if (p.price_monday == null) return 0;
+  return p.price_prev != null ? p.price_monday - p.price_prev : p.price - p.price_monday;
+}
 function zvWeekUp(team0, sq) {
-  const up = zvIds(sq).map((id) => zvP(id)).filter((p) => p && p.price_monday != null && p.price > p.price_monday && !zvIsMy(p.id));
+  const up = zvIds(sq).map((id) => zvP(id)).filter((p) => p && zvWeekGain(p) > 0 && !zvIsMy(p.id));
   if (!up.length) return "";
-  up.sort((a, b) => (b.price - b.price_monday) - (a.price - a.price_monday));
-  return `<div class="label">Итог недели<span class="aside">подорожали с понедельника</span></div><div class="list zv-up">${up.slice(0, 3).map((p) => `<div class="row"><span class="ps">${figure({ kit: p.club, role: p.slot === "G" ? "G" : "F", number: p.slot === "G" ? null : p.number })}</span><span class="who" style="min-width:0"><b style="font-weight:700">${esc(p.name)}</b></span><span class="up">+${zvFmt(p.price - p.price_monday)}${Z_ICE}</span></div>`).join("")}</div>`;
+  up.sort((a, b) => zvWeekGain(b) - zvWeekGain(a));
+  return `<div class="label">Итог недели<span class="aside">подорожали за неделю</span></div><div class="list zv-up">${up.slice(0, 3).map((p) => `<div class="row"><span class="ps">${figure({ kit: p.club, role: p.slot === "G" ? "G" : "F", number: p.slot === "G" ? null : p.number })}</span><span class="who" style="min-width:0"><b style="font-weight:700">${esc(p.name)}</b></span><span class="up">+${zvFmt(zvWeekGain(p))}${Z_ICE}</span></div>`).join("")}</div>`;
 }
 // Кого отдаёшь? — свои наклейки того же слота с «Отдашь за»
 function zvGiveSheet(inId) {

@@ -946,15 +946,17 @@ function greetGuide() {
 
 // ---------- Тур по главам (ADR-013) ----------
 
-// Четыре главы на живых экранах. Глава — «вход», который готовит экран, и шаги. Шаг — цель (aim),
-// поза, реплика и вид: look — смотри, окно не нажимается; pass — пройди, нажатие по окну работает
-// по-настоящему, кнопка названа действием и делает то же; peek — загляни, нажатие открывает лист,
-// тур гаснет и ждёт, пока его закроют. Список шагов считается заново по данным на каждом шаге:
-// шагов без данных нет. Реплики — только через esc(): названия и даты пришли из данных
+// Четыре главы на живых экранах, до старта сезона — 12 шагов. После главы «Разбор матча» —
+// контрольная точка: досмотрел главное — можно закончить через финал. Глава — «вход», который готовит
+// экран, и шаги. Шаг — цель (aim), поза, реплика и вид: look — смотри, окно не нажимается; pass —
+// пройди, нажатие по окну работает по-настоящему, кнопка названа действием и делает то же; peek —
+// загляни, нажатие открывает лист, тур гаснет и ждёт, пока его закроют. Список шагов считается заново
+// по данным на каждом шаге: шагов без данных нет. Реплики — только через esc(): названия и даты из данных
 const AIM_WAIT_MS = 2000;     // цель на экране ждём не дольше
 const SHEET_WAIT_MS = 4000;   // в листе дольше: разбор и очные встречи идут по сети
 const AIM_PAD = 8;            // окно шире цели с каждой стороны
 const AIM_GAP = 14;           // от окна до карточки — там хвостик
+const EXIT_HINT_MS = 2500;    // подсказка при выходе у вкладки «Я»
 const wait = (ms) => new Promise((done) => setTimeout(done, ms));
 const val = (v, ...args) => (typeof v === "function" ? v(...args) : v);
 const dayMonth = (iso) => { const d = parseISO(iso); return `${d.getUTCDate()} ${MONTHS_GEN[d.getUTCMonth()]}`; };
@@ -976,21 +978,22 @@ const onScreen = (...sels) => () => firstShown($("#screen"), sels);
 const inRecap = (ctx, ...sels) => (ctx.route && recapView.id === ctx.route.id && recaps[ctx.route.id] ? inSheet(...sels) : null);
 const inSeason = () => { const st = standingOf(state.fav); return !!(st && st.row.gp); };
 const pastLeaders = () => !!state.leaders && state.leaders.season !== state.data.season;
+const wonBy = (m, me) => (m.home === me ? m.score[0] > m.score[1] : m.away === me && m.score[1] > m.score[0]);
 
-// Какую прошлую встречу открыть (строки уже от свежей к старой — при равенстве остаётся свежая).
-// Своя команда выигрывала — победа с сюжетом, иначе любая победа; не выигрывала — самая упорная:
-// первым разбором новичка не должен стать разгром его команды. Чужой матч — с сюжетом
+// Какую встречу открыть (строки уже от свежей к старой — при равенстве остаётся свежая).
+// Своя победа — с сюжетом, иначе любая; побед нет — самая упорная. Чужой матч — с сюжетом
 function pickMeeting(rows, me) {
   if (!me) return rows.find((m) => m.story) || rows[0];
-  const won = (m) => (m.home === me ? m.score[0] > m.score[1] : m.score[1] > m.score[0]);
-  const wins = rows.filter(won);
+  const wins = rows.filter((m) => wonBy(m, me));
   if (wins.length) return wins.find((m) => m.story) || wins[0];
   const margin = (m) => Math.abs(m.score[0] - m.score[1]);
   return [...rows].sort((a, b) => margin(a) - margin(b) || !!b.story - !!a.story)[0];
 }
 
-// Маршрут к разбору: в сезоне — свой последний матч; до старта — встреча из карточки ближайшего
-// матча, иначе более позднего матча своей команды (ветка А), иначе ближайшего матча лиги (ветка Б)
+// Маршрут к разбору. В сезоне — свой последний матч. До старта — встреча из карточки ближайшего
+// матча; если там своих побед нет — из более позднего матча своей команды, где победа есть (ветка А);
+// поражение — только если побед нет нигде: первым разбором не должен стать разгром своей команды.
+// Своих прошлых матчей нет вовсе — ближайший матч лиги (ветка Б)
 function tourRoute() {
   const me = state.fav;
   const next = nextGame(me) || null;
@@ -999,19 +1002,28 @@ function tourRoute() {
   const route = { kind: state.h2h ? "none" : "nodata", next, card: next, via: null, meet: null, id: null };
   if (!state.h2h || !next) return route;
   const rows = (g) => ((state.h2h[pairKey(g.home, g.away)] || {}).last || []).filter((m) => m.id);
-  const own = gamesOf(me).filter(isUpcoming).find((g) => rows(g).length);
+  const mine = gamesOf(me).filter((g) => isUpcoming(g) && rows(g).length);
+  const own = mine.find((g) => rows(g).some((m) => wonBy(m, me))) || mine[0];
   const via = own || games().find((g) => isUpcoming(g) && rows(g).length);
   if (!via) return route;
   const meet = pickMeeting(rows(via), own ? me : null);
   return { ...route, kind: !own ? "league" : own === next ? "own" : "later", via, meet, id: meet.id };
 }
 
-async function ensureRoute(ctx) {
-  if (ctx.route && ctx.route.kind !== "nodata") return ctx.route;
-  if (!lastPlayed(state.fav)) await Promise.race([loadH2H(), wait(SHEET_WAIT_MS)]);
-  ctx.route = tourRoute();
-  if (ctx.route.id) loadRecap(ctx.route.id);   // разбор качаем заранее: откроется сразу
+// Маршрут без ожидания: глава I начинается сразу, очные встречи догружаются сами
+function syncRoute(ctx) {
+  if (!ctx.route || ctx.route.kind === "nodata") ctx.route = tourRoute();
+  const prefetch = () => { if (ctx.route.id) loadRecap(ctx.route.id); };   // разбор качаем заранее: откроется сразу
+  if (ctx.route.kind !== "nodata") prefetch();
+  else loadH2H().then(() => { if (ctx.route.kind === "nodata" && state.h2h) { ctx.route = tourRoute(); prefetch(); } });
   return ctx.route;
+}
+// Для главы «Разбор матча» маршрут нужен: ждём очные встречи не дольше, чем цель в листе
+async function ensureRoute(ctx) {
+  syncRoute(ctx);
+  if (ctx.route.kind !== "nodata") return ctx.route;
+  await Promise.race([loadH2H(), wait(SHEET_WAIT_MS)]);
+  return syncRoute(ctx);
 }
 
 // Победная шайба глазами своей команды: a — своя, не последняя; b — своя, последняя (и овертайм);
@@ -1035,28 +1047,36 @@ const WIN_SAY = {
   e: ["point", "Это победная шайба: после неё соперник уже не сравнял счёт. Так её считает лига."],
 };
 
-// Прилипшие сегменты разбора — туда, где они стоят без прилипания, у верха листа
-function segToTop() {
-  const seg = $("#recap .recap-seg");
-  const prev = seg && seg.previousElementSibling;
-  if (!prev) return;
-  const sheet = $("#sheet");
-  sheet.scrollTop += prev.getBoundingClientRect().bottom + 24 - sheet.getBoundingClientRect().top - 24;
+// Очные встречи ближайшего матча. В ветках А и Б — одна карточка: что здесь и куда пойдём за разбором
+function h2hSay(ctx, el) {
+  const r = ctx.route;
+  const g = findGame(recapView.id);
+  const empty = !!el && el.matches(".empty");
+  const never = g ? `${quoted(g.home)} и ${quoted(g.away)} ещё не встречались` : "Раньше не встречались";
+  const history = "Очные встречи прошлых сезонов: кто сколько выиграл и забил.";
+  if (r.kind === "later") {
+    const other = `на другом твоём матче — ${dayMonth(r.via.date)}.`;
+    return empty ? ["shrug", `${never}. Разбор покажу ${other}`] : ["point", `${history} А разбор покажу ${other}`];
+  }
+  if (r.kind === "league") {
+    const opener = r.via.date === games()[0].date;
+    if (empty) return ["shrug", `${never}, а прошлых матчей твоей команды у нас нет. Покажу разбор ${opener ? "матча открытия" : `матча лиги — ${dayMonth(r.via.date)}`}.`];
+    return ["point", `${history} Разбор покажу на ${opener ? "матче открытия" : `матче лиги — ${dayMonth(r.via.date)}`}.`];
+  }
+  return empty ? ["shrug", `${never} — истории пока нет.`] : ["point", `${history} Это история, а не прогноз.`];
 }
+
+// Прилипшие сегменты разбора — туда, где они стоят без прилипания, у верха листа
 function recapTab(tab) {
   if (recapView.tab === tab) return;
   recapView.tab = tab;
   rerenderRecap();
   keepTabTop();
 }
+const otherMatch = (ctx) => ctx.route.kind === "later" || ctx.route.kind === "league";
 
 const STEP = {
   // I. Ближайший матч
-  stats: {
-    key: "stats", screen: "home", kind: "look", pose: "point", aim: onScreen(".stats"),
-    text: () => (inSeason() ? "Место в конференции, очки и форма за пять игр. Обновляются после каждого матча."
-      : "Это цифры сезона: матчи, дома и в гостях, дни до старта. С первой игры тут будут место, очки и форма."),
-  },
   card: {
     key: "card", screen: "home", kind: "pass", pose: "point", act: "Открыть матч",
     aim: (ctx) => firstShown($("#screen"), [`.board-card[data-game="${esc(ctx.route.card.id)}"]`]),
@@ -1073,47 +1093,37 @@ const STEP = {
     failAim: () => inSheet("#h2h .guide-empty", "#h2h .empty"),
     failText: "Историю встреч не загрузить — нет сети. Идём дальше.",
     // h2h.json не пришёл к началу тура, а карточка матча догрузила его сама — маршрут считаем заново
-    seen: (ctx) => { if (ctx.route.kind === "nodata" && state.h2h) ctx.route = tourRoute(); },
-    pose: (ctx, el) => (el && el.matches(".empty") ? "shrug" : "point"),
-    text: (ctx, el) => {
-      if (!el || !el.matches(".empty")) return "Очные встречи за пять прошлых сезонов: победы и шайбы. Это история, а не прогноз.";
-      const g = findGame(recapView.id);
-      return `${quoted(g.home)} и ${quoted(g.away)} раньше не встречались — истории пока нет.`;
-    },
-  },
-  other: {
-    key: "other", screen: "match", kind: "look", sheet: true, pose: "shrug", act: "Показать",
-    aim: () => inSheet("#h2h .h2h", "#h2h .empty"),
-    text: (ctx) => {
-      const g = ctx.route.via;
-      if (ctx.route.kind === "later") return `Разборов этих встреч нет. Покажу на другом матче твоей команды — ${dayMonth(g.date)}.`;
-      const where = g.date === games()[0].date ? "на матче открытия сезона" : `на матче лиги ${dayMonth(g.date)}`;
-      return `Прошлых матчей твоей команды в НМХЛ у нас нет. Разбор покажу ${where}.`;
-    },
-    // тот матч открывается в том же листе: содержимое въезжает справа, как прошлая встреча
-    after: (ctx) => openMatch(ctx.route.via.id, null, 1),
+    seen: (ctx) => { if (ctx.route.kind === "nodata" && state.h2h) syncRoute(ctx); },
+    pose: (ctx, el) => h2hSay(ctx, el)[0],
+    text: (ctx, el) => h2hSay(ctx, el)[1],
+    act: (ctx) => (otherMatch(ctx) ? "Показать" : "Дальше"),
+    // ветки А и Б: тот матч открывается в том же листе, содержимое въезжает справа
+    after: (ctx) => { if (otherMatch(ctx)) openMatch(ctx.route.via.id, null, 1); },
   },
   meet: {
-    key: "meet", screen: (ctx) => (ctx.route.kind === "own" ? "match" : "via"), kind: "pass", sheet: true, pose: "point",
-    act: "Открыть разбор",
+    key: "meet", screen: (ctx) => (otherMatch(ctx) ? "via" : "match"), kind: "pass", sheet: true, pose: "point",
+    act: "Открыть разбор",   // кнопка одиночной главы: разбор откроется, тур закончится
     aim: (ctx) => (recapView.id === ctx.route.via.id ? inSheet(`#h2h .row[data-game="${esc(ctx.route.meet.id)}"]`) : null),
-    text: (ctx) => `Прошлые встречи открываются. Нажми на матч ${dayMonthYear(ctx.route.meet.date)} — покажу, как он прошёл.`,
+    text: (ctx) => (ctx.single ? "Прошлые встречи открываются: нажми — будет разбор матча."
+      : `Прошлые встречи открываются. Нажми на матч ${dayMonthYear(ctx.route.meet.date)} — покажу разбор.`),
   },
 
-  // II. Разбор матча
+  // II. Разбор матча. Сюжет — вместе с табло: главное одной фразой рядом со счётом
   story: {
     key: "story", screen: "recap", kind: "look", sheet: true, pose: "point",
-    aim: (ctx) => inRecap(ctx, recaps[ctx.route.id].story ? "#recap .story" : ".sheet-page > .board-card"),
+    aim: (ctx) => inRecap(ctx, "#recap .story", ".sheet-page > .board-card"),
+    extend: (el) => [$("#sheet .sheet-page > .board-card"), el], only: true, radius: 28,
     text: (ctx) => {
       const g = findGame(ctx.route.id);
-      const when = g.season ? `Матч ${dayMonthYear(g.date)}, НМХЛ ${esc(g.season)}` : `Матч ${dayMonth(g.date)}`;
+      const when = g.season ? `НМХЛ ${esc(g.season)}: с` : "С";
       return recaps[ctx.route.id].story
-        ? `${when}. Главное — одной фразой. Разбор будет у каждого матча, когда лига выложит протокол.`
-        : `${when}: счёт и шайбы по периодам. Разбор будет у каждого матча сезона.`;
+        ? `${when}чёт и главное — одной фразой. Так будет у каждого матча сезона.`
+        : `${when}чёт и шайбы по периодам. Разбор будет у каждого матча сезона.`;
     },
   },
   flow: {
-    key: "flow", screen: "recap", kind: "pass", sheet: true, pose: "point", act: "Дальше", hit: "[data-recap-goal]", hold: 650,
+    key: "flow", screen: "recap", kind: "pass", sheet: true, pose: "point", act: "Дальше", hit: "[data-recap-goal]",
+    hold: 650, holdOnPress: true,   // выбранный гол виден на месте и после кнопки
     aim: (ctx) => inRecap(ctx, "#recap .fl-plot"),
     text: () => "Ход матча: выше линии ведут хозяева, ниже — гости. Точки — голы. Нажми на любую.",
     // линия рисуется слева направо, когда окно уже встало на график (DESIGN.md → «Движение»)
@@ -1141,7 +1151,7 @@ const STEP = {
     // окно — на графике и выбранном голе под ним: видно и точку победной, и сам гол. Легенда — за окном
     aim: (ctx) => (winVariant(ctx) === "none" ? inRecap(ctx, "#recap .recap-body .goal")
       : inRecap(ctx, "#recap .flow", "#recap .recap-body .goal.hl")),
-    extend: ".fl-plot, .flow-cap", only: true,
+    extend: ".fl-plot, .flow-cap", only: true, radius: 20,
     pose: (ctx) => (WIN_SAY[winVariant(ctx)] || ["point"])[0],
     text: (ctx) => {
       const v = winVariant(ctx);
@@ -1152,17 +1162,12 @@ const STEP = {
     // своя победная — отклик Telegram «успех»
     shown: (ctx) => { if ("abc".includes(winVariant(ctx)) && inTelegram && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success"); },
   },
-  statsTab: {
-    key: "statsTab", screen: "recap", kind: "pass", sheet: true, pose: "point", act: "Статистика",
-    prep: () => segToTop(),
-    aim: (ctx) => inRecap(ctx, '#recap [data-recap-tab="stats"]'),
-    text: () => "Ниже — все голы по периодам. А в «Статистике» — броски, вбрасывания и вратари. Нажми.",
-  },
-  compare: {
-    key: "compare", screen: "recap", kind: "look", sheet: true, pose: "point",
+  // «Статистика» одной карточкой: вкладку открывает сам тур, окно — на сравнении
+  stats: {
+    key: "stats", screen: "recap", kind: "look", sheet: true, pose: "point",
     prep: () => recapTab("stats"),
     aim: (ctx) => (recapView.tab === "stats" ? inRecap(ctx, "#recap .cmp") : null),
-    text: () => "Полоса залита у того, у кого больше. У штрафа — наоборот. Ниже — как сыграли вратари.",
+    text: () => "Это «Статистика»: броски, вбрасывания, штраф. Полоса залита у того, кто лучше. Ниже — вратари.",
     act: (ctx) => (recaps[ctx.route.id].lineups ? "Составы" : "Дальше"),
     after: (ctx) => { if (recaps[ctx.route.id].lineups) recapTab("roster"); },
   },
@@ -1170,7 +1175,7 @@ const STEP = {
     key: "roster", screen: "recap", kind: "look", sheet: true, pose: "point",
     prep: () => recapTab("roster"),
     aim: (ctx) => (recapView.tab === "roster" ? inRecap(ctx, "#recap .roster .pl.scored", "#recap .roster .pl") : null),
-    text: () => "Составы на тот матч: номер, «К» и «А», очки. Вместо фото — стикер в форме клуба.",
+    text: () => "Составы на тот матч: номер и очки, «К» — капитан, «А» — ассистент. Вместо фото — стикер в форме.",
   },
   // в сезоне очные встречи — после разбора, в той же карточке ниже
   seasonH2H: {
@@ -1178,9 +1183,9 @@ const STEP = {
     aim: () => inSheet("#h2h .h2h", "#h2h .empty:not(.guide-empty)"),
     pose: (ctx, el) => (el && el.matches(".empty") ? "shrug" : "point"),
     text: (ctx, el) => {
-      if (!el || !el.matches(".empty")) return "Ниже в той же карточке — очные встречи за пять прошлых сезонов. Это история, а не прогноз.";
+      if (!el || !el.matches(".empty")) return "В той же карточке — очные встречи прошлых сезонов: кто сколько выиграл и забил.";
       const g = findGame(ctx.route.id);
-      return `${quoted(g.home)} и ${quoted(g.away)} раньше не встречались — истории пока нет.`;
+      return `${quoted(g.home)} и ${quoted(g.away)} ещё не встречались — истории пока нет.`;
     },
   },
   recapFail: {
@@ -1199,55 +1204,59 @@ const STEP = {
     key: "filters", screen: "calendar", kind: "look", pose: "point", aim: onScreen(".filterbar"),
     text: () => "Календарь: твоя команда, вся лига или любой клуб — «Другая». Ниже — дома или в гостях.",
   },
+  // строка своей команды — только в сезоне: до старта у всех нули
   standing: {
-    key: "standing", screen: "table", kind: "look",
+    key: "standing", screen: "table", kind: "look", pose: "point",
     prep: () => {
       state.conf = team(state.fav).conf;
-      if (state.tab === "table") {
-        if (state.tableView !== "teams") { state.tableView = "teams"; refreshTable(); } else render();
-      } else {
+      if (state.tab !== "table") {
         state.tableView = "teams";
         go("table");
+      } else if (state.tableView !== "teams") {
+        state.tableView = "teams";
+        refreshTable();
+      } else {
+        render();
       }
     },
     aim: onScreen(".st-row.me"),
-    pose: () => (inSeason() ? "point" : "shrug"),
-    text: () => (inSeason() ? "Твоё место в конференции. Нажми на любой клуб — откроется его календарь."
-      : "Твоя строка в таблице конференции. Сезон не начался — у всех нули. В плей-офф выходят восемь."),
+    text: () => "Твоё место в конференции. Нажми на любой клуб — откроется его календарь.",
   },
+  // своя карточка лидера — кроме «Штрафа»: «лучший по штрафу» не хвалят
   leaders: {
-    key: "leaders", screen: "table", kind: "peek", pose: "point", hit: "[data-lead-open]", extend: ".lc-em",
+    key: "leaders", screen: "table", kind: "peek", pose: "point", hit: "[data-lead-open]", extend: ".lc-em", wait: SHEET_WAIT_MS,
+    fail: () => !state.leaders && leadersFailed, failSkip: true,
     prep: () => {
-      if (state.tableView === "players") return;
-      state.tableView = "players";
-      if (state.tab === "table") refreshTable();
+      if (state.tab !== "table") {
+        state.tableView = "players";
+        go("table");
+      } else if (state.tableView !== "players") {
+        state.tableView = "players";
+        refreshTable();
+      }
     },
-    aim: onScreen(".lead-card.me", ".lead-card[data-lead-open]"),
-    text: () => (pastLeaders()
-      ? `Лучшие игроки прошлого сезона ${esc(state.leaders.league)}. Нажми на карточку — будет топ-10.`
-      : "Лучшие игроки сезона. Нажми на карточку — будет топ-10."),
-  },
-  mine: {
-    key: "mine", screen: "table", kind: "look", pose: "point", aim: onScreen(".mine-leads"),
-    text: () => (pastLeaders() ? "Твои в лидерах прошлого сезона: у каждого — все его места." : "Твои в лидерах сезона: у каждого — все его места."),
+    aim: onScreen('.lead-card.me:not([data-lead-open="pim"])', ".lead-card[data-lead-open]"),
+    text: () => {
+      const mine = mineBlock(state.leaders) ? " Ниже — твои среди них." : "";
+      return pastLeaders()
+        ? `Лидеры прошлого сезона ${esc(state.leaders.league)} по шести показателям. Нажми — будет топ-10.${mine}`
+        : `Лидеры сезона по шести показателям. Нажми — будет топ-10.${mine}`;
+    },
   },
 
   // IV. Паспорт болельщика. В карточке картинки нет: талисман — тот, что наклеен на паспорт, в окне
   passport: {
     key: "passport", screen: "me", kind: () => (guideOf(state.fav) ? "pass" : "look"), pose: "", act: "Дальше",
     aim: onScreen(".passport"), extend: ".pp-guide img", hit: ".pp-guide [data-guide]", hold: 700, noCheer: true,
-    press: () => {},   // «Дальше» — без прыжка
+    press: () => {},   // «Дальше» — без прыжка и без паузы
     text: () => (guideOf(state.fav) ? "Твой паспорт болельщика. А это я на нём — нажми на меня!" : "Твой паспорт болельщика: клуб и цифры сезона."),
   },
+  // «Поделиться» и настройки — одним шагом: окно на кнопках, настройки — словами
   share: {
     key: "share", screen: "me", kind: "look", pose: "point", aim: onScreen(".me-actions"),
-    text: () => "Выложи паспорт в историю или позови друга: ссылка сразу откроет твой клуб.",
-  },
-  settings: {
-    key: "settings", screen: "me", kind: "look", pose: "point", aim: onScreen(".menu"),
     text: () => (state.fav === REMIND_TEAM && state.data.links && state.data.links.bot
-      ? "Тут напоминания о матчах, смена команды и подсказки — хоть все главы, хоть одну."
-      : "Тут сменить команду и вернуть подсказки — хоть все главы, хоть одну."),
+      ? "Выложи паспорт в историю или позови друга. Ниже — напоминания, смена команды и эти подсказки."
+      : "Выложи паспорт в историю или позови друга. Ниже — смена команды и эти подсказки."),
   },
 };
 
@@ -1265,29 +1274,25 @@ function leaveSheet() {
   return wait(calm() ? 0 : 240);
 }
 
+// title — в листе «Подсказки» и «Продолжении», short — в ряду прогресса и на кнопке «Дальше: …»
 const TOUR = [
   {
-    id: 1, title: "Ближайший матч", hint: "Цифры сезона, карточка матча, очные встречи",
+    id: 1, title: "Ближайший матч", short: "Матч", hint: "Карточка матча, очные встречи, прошлая встреча",
     enter: async (ctx) => {
-      await ensureRoute(ctx);
+      syncRoute(ctx);   // очные встречи не ждём: первому шагу они не нужны
       await leaveSheet();
       if (state.tab !== "home") go("home");
       else window.scrollTo(0, 0);
     },
     steps: (ctx) => {
-      const r = ctx.route;
-      const list = [STEP.stats];
-      if (!r.card) return list;
-      list.push(STEP.card);
-      if (r.kind === "season") return list;
-      list.push(STEP.h2h);
-      if (r.kind === "later" || r.kind === "league") list.push(STEP.other);
-      if (r.meet) list.push(STEP.meet);
-      return list;
+      const r = ctx.route || tourRoute();
+      if (!r.card) return [];
+      if (r.kind === "season") return [STEP.card];
+      return r.meet ? [STEP.card, STEP.h2h, STEP.meet] : [STEP.card, STEP.h2h];
     },
   },
   {
-    id: 2, title: "Разбор матча", hint: "Сюжет, ход матча, победная шайба, статистика, составы",
+    id: 2, title: "Разбор матча", short: "Разбор", hint: "Сюжет, ход матча, победная шайба, статистика, составы",
     enter: async (ctx, t) => {
       const { id } = await ensureRoute(ctx);
       if (!id) return;
@@ -1308,83 +1313,96 @@ const TOUR = [
       const goals = g.goals || [];
       if (goals.some((x) => x.period !== "РБ")) list.push(STEP.flow);
       if (goals.length) list.push(STEP.winner);
-      if (hasStats(d)) list.push(STEP.statsTab, STEP.compare);
+      if (hasStats(d)) list.push(STEP.stats);
       if (d.lineups) list.push(STEP.roster);
       if (ctx.route.kind === "season") list.push(STEP.seasonH2H);
       return list;
     },
   },
   {
-    id: 3, title: "Календарь и таблица", hint: "Фильтры, таблица конференции, лидеры лиги",
+    id: 3, title: "Календарь и таблица", short: "Календарь", hint: "Фильтры календаря, лидеры лиги",
     enter: async () => {
       await leaveSheet();
       state.cal = calFor(state.fav);
       if (state.tab !== "calendar") go("calendar");
       else refreshCalendar(false);
-      await Promise.race([loadLeaders(), wait(SHEET_WAIT_MS)]);   // от лидеров зависят два шага
+      loadLeaders();   // не ждём: шаг лидеров сам дождётся их
     },
     steps: () => {
-      const list = [STEP.filters, STEP.standing];
-      if (!state.leaders) return list;
-      list.push(STEP.leaders);
-      if (mineBlock(state.leaders)) list.push(STEP.mine);
+      const list = [STEP.filters];
+      if (inSeason()) list.push(STEP.standing);
+      if (state.leaders || !leadersFailed) list.push(STEP.leaders);
       return list;
     },
   },
   {
-    id: 4, title: "Паспорт болельщика", hint: "Истории, приглашение друга, настройки",
+    id: 4, title: "Паспорт болельщика", short: "Паспорт", hint: "Паспорт, истории, приглашение друга, настройки",
     enter: async () => {
       await leaveSheet();
       if (state.tab !== "me") go("me");
       else window.scrollTo(0, 0);
     },
-    steps: () => [STEP.passport, STEP.share, STEP.settings],
+    steps: () => [STEP.passport, STEP.share],
   },
 ];
 const CHAPTER = Object.fromEntries(TOUR.map((ch) => [ch.id, ch]));
+const FULL = TOUR.map((ch) => ch.id);
 
 // Тур: chapters — очередь глав, seg — отрезки прогресса (продолжение показывает и пройденные),
-// final — финальная карточка, save — помнить главу на случай, если Telegram закроют посреди тура
-function newTour({ chapters = [1, 2, 3, 4], seg = chapters, final = false, save = false } = {}) {
-  const t = { chapters, seg, final, save, ci: -1, key: null, ctx: { route: null, single: chapters.length === 1 }, token: 0, screen: null,
-    poses: {}, lastPose: "", misses: 0, cheer: false, away: false, sheet: false, busy: false, primary: null, prog: null };
-  // позы качаем заранее: shrug теперь нужен и в ветках без данных
+// final — финальная карточка (полная очередь), save — помнить главу и очередь на случай, если Telegram
+// закроют посреди тура
+function newTour({ chapters = FULL, seg = chapters, save = false } = {}) {
+  const t = { chapters, seg, final: seg.length === FULL.length, save, ci: -1, key: null, ctx: { route: null, single: chapters.length === 1 },
+    token: 0, screen: null, poses: {}, lastPose: "", misses: 0, cheer: false, away: false, sheet: false, busy: false,
+    primary: null, prog: null, saw2: false, checked: false };
+  // позы качаем заранее: shrug нужен и в ветках без данных
   for (const p of ["point", "cheer", "shrug"]) guideReady(state.fav, p).then((ok) => { t.poses[p] = ok; });
-  ensureRoute(t.ctx);
+  syncRoute(t.ctx);
   return t;
 }
 
 // Вступление: fresh — сразу после «Болеть за…», иначе тур начался позже и проводник здоровается
 function startTour(fresh) {
-  const t = state.tour = newTour({ final: true, save: true });
+  const t = state.tour = newTour({ save: true });
   const g = guideOf(state.fav);
-  const pose = fresh ? "cheer" : "hello";
-  const text = fresh ? "Теперь покажу, что тут есть: четыре главы, пара минут. Выйти можно в любой момент."
-    : `${g ? `Привет! Я ${esc(g.name)}. ` : ""}Покажу, что тут есть: четыре главы, пара минут. Выйти можно в любой момент.`;
+  const say = "Покажу главное: разбор матча, таблицу и твой паспорт. Минута-полторы, выйти можно в любой момент.";
   t.primary = () => tourChapter(0);
-  tourCard(t, pose, text, "Поехали", "Сам разберусь", `<span class="tp intro" role="img" aria-label="Четыре главы"><i></i><i></i><i></i><i></i></span>`);
+  tourCard(t, fresh ? "cheer" : "hello", fresh || !g ? say : `Привет! Я ${esc(g.name)}. ${say}`, "Поехали", "Сам разберусь", segsHTML(t, 0));
 }
 
 // Прошли старый тур из трёх подсказок — один раз рассказываем о разборе матча
 function tourNews() {
   const t = state.tour = newTour({ chapters: [1, 2], save: true });
   t.primary = () => tourChapter(0);
-  tourCard(t, "hello", "Я научился показывать разбор матча: голы, победную шайбу, статистику и составы. Показать?", "Покажи", "Потом");
+  tourCard(t, "hello", "Я научился показывать разбор матча: голы, победную шайбу, статистику и составы. Показать?", "Покажи", "Не надо");
 }
 
-// Тур прервали, закрыв Telegram, — один раз предлагаем продолжить с начала той главы
-function tourResume(at) {
-  const t = state.tour = newTour({ chapters: TOUR.map((ch) => ch.id).filter((id) => id >= at), seg: [1, 2, 3, 4], final: true, save: true });
+// Прерванный тур в tour_at: «глава:очередь» — «2:1234» или «1:12» («Новое»); старый формат — только глава
+function savedAt() {
+  const m = /^(\d)(?::(\d+))?$/.exec(lsGet(TOUR_AT_KEY) || "");
+  if (!m) return null;
+  const at = +m[1];
+  const queue = (m[2] || FULL.join("")).split("").map(Number).filter((c) => CHAPTER[c]);
+  return CHAPTER[at] && queue.includes(at) ? { at, queue } : null;
+}
+function saveAt(t, id) {
+  if (t.save) lsSet(TOUR_AT_KEY, `${id}:${t.seg.join("")}`);
+}
+
+// Тур прервали, закрыв Telegram, — один раз предлагаем продолжить с начала той главы, той же очередью
+function tourResume({ at, queue }) {
+  const t = state.tour = newTour({ chapters: queue.slice(queue.indexOf(at)), seg: queue, save: true });
   t.primary = () => tourChapter(0);
   tourCard(t, "hello", `Мы остановились на главе «${CHAPTER[at].title}». Продолжим с её начала?`, "Продолжить", "Не надо");
 }
 
-// Карточка тура по центру: картинку ждём не дольше 2 секунд, как при знакомстве
-function tourCard(t, pose, text, yes, no, extra = "") {
+// Карточка тура по центру: картинку ждём не дольше 2 секунд, как при знакомстве.
+// no — серая кнопка: по умолчанию выход из тура, у контрольной точки — к финалу
+function tourCard(t, pose, text, yes, no, extra = "", noAct = "skip") {
   guideReady(state.fav, pose).then((ok) => {
     if (state.tour !== t) return;
     coach(state.fav, ok ? pose : "", text, `<button type="button" class="btn" data-tour="next">${yes}</button>
-      ${no ? `<button type="button" class="coach-skip" data-tour="skip">${no}</button>` : ""}`, "Подсказки", extra);
+      ${no ? `<button type="button" class="coach-skip" data-tour="${noAct}">${no}</button>` : ""}`, "Подсказки", extra);
   });
 }
 
@@ -1397,7 +1415,7 @@ async function tourChapter(ci) {
   t.key = null;
   t.screen = null;
   t.busy = true;
-  if (t.save) lsSet(TOUR_AT_KEY, String(ch.id));
+  saveAt(t, ch.id);
   const token = ++t.token;
   coachDim("");   // пока экран собирается и данные идут — только затемнение
   await ch.enter(t.ctx, t);
@@ -1407,18 +1425,45 @@ async function tourChapter(ci) {
   tourShow(list[0]);
 }
 
+// Контрольная точка после «Разбора матча»: главное показано — можно закончить через финал
+const checkpointDue = (t) => t.final && !t.checked && t.chapters[t.ci] === 2 && t.ci + 1 < t.chapters.length;
+async function tourCheckpoint() {
+  const t = state.tour;
+  if (!t) return;
+  const rest = t.chapters.slice(t.ci + 1);
+  t.checked = true;
+  t.key = "checkpoint";
+  t.screen = null;
+  t.busy = true;
+  saveAt(t, rest[0]);
+  const token = ++t.token;
+  coachDim("");
+  await leaveSheet();
+  if (state.tour !== t || t.token !== token) return;
+  const names = { 3: "таблица", 4: "твой паспорт" };
+  const more = rest.length > 1 ? `Ещё две короткие главы — ${rest.map((c) => names[c]).join(" и ")}.` : `Ещё одна короткая глава — ${names[rest[0]]}.`;
+  t.primary = () => tourChapter(t.ci + 1);
+  t.busy = false;
+  tourCard(t, "point", `Это было главное. ${more} Показать?`, "Покажи", "Хватит", segsHTML(t, t.seg.indexOf(2) + 1), "final");
+}
+
 const tabOf = (screen) => (TAB_ORDER.includes(screen) ? screen : "");
 const stepOf = (t) => {
   const ch = t && t.ci >= 0 && CHAPTER[t.chapters[t.ci]];
   return ch ? ch.steps(t.ctx).find((s) => s.key === t.key) || null : null;
 };
 
-// Следующая глава в очереди после этой — её называет кнопка на последнем шаге
-function nextTitle(t, after) {
+// Следующая глава в очереди — её короткое имя на кнопке последнего шага. Дальше контрольная точка
+// или финал — просто «Дальше»; «Готово» — только в конце одиночной главы
+function nextChapter(t, after) {
   const r = t.ctx.route;
   const empty = (c) => c === 2 && !t.ctx.single && r && r.kind !== "nodata" && !r.id;   // разбора нет — глава пропустится
-  const id = t.chapters.find((c, i) => (after == null ? i > t.ci : c > after) && !empty(c));
-  return id ? `Дальше: ${CHAPTER[id].title}` : "Готово";
+  return t.chapters.find((c, i) => (after == null ? i > t.ci : c > after) && !empty(c)) || null;
+}
+function nextTitle(t, after) {
+  if (after == null && checkpointDue(t) && t.saw2) return "Дальше";
+  const id = nextChapter(t, after);
+  return id ? `Дальше: ${CHAPTER[id].short}` : t.final ? "Дальше" : "Готово";
 }
 
 async function tourShow(s) {
@@ -1441,23 +1486,29 @@ async function tourShow(s) {
   if (s.sheet && sheetOpen()) t.sheet = true;
   const found = await findAim(() => s.aim(ctx), s.fail ? () => s.fail(ctx) : null, s.wait != null ? s.wait : s.sheet ? SHEET_WAIT_MS : AIM_WAIT_MS);
   if (state.tour !== t || t.token !== token) return;
+  if (found.failed && s.failSkip) return tourNext(t);   // не загрузилось то, без чего шаг не нужен
   if (found.failed) return tourFail(t, s);
   const el = found.el;
   if (el && s.seen) s.seen(ctx, el);
   const list = ch.steps(ctx);
   const i = Math.max(0, list.findIndex((x) => x.key === s.key));
   const last = i === list.length - 1;
-  if (last && !s.noMark) markChapter(ch.id);
+  if (last && !s.noMark) {
+    markChapter(ch.id);
+    if (ch.id === 2) t.saw2 = true;
+  }
   const kind = val(s.kind, ctx);
-  const label = last ? nextTitle(t) : val(s.act, ctx) || "Дальше";
+  // одиночная глава кончается шагом «пройди» — кнопка называет действие: после него тур закончится
+  const label = !last ? val(s.act, ctx) || "Дальше"
+    : kind === "pass" && s.act && !t.final && !nextChapter(t) ? val(s.act, ctx) : nextTitle(t);
   const pose = tourPose(t, val(s.pose, ctx, el));
   const text = val(s.text, ctx, el);
   t.primary = () => tourPrimary(t, s, kind, last);
   const buttons = `<button type="button" class="btn" data-tour="next">${label}</button>
-    <div class="coach-row"><button type="button" class="coach-skip" data-tour="skip">Пропустить</button>${progressHTML(t, ch, i, list.length)}</div>`;
+    <div class="coach-row"><button type="button" class="coach-skip" data-tour="skip">Выйти</button>${progressHTML(t, ch, i, list.length)}</div>`;
   const cheer = t.cheer && !s.noCheer && pose && t.poses.cheer !== false;
   t.cheer = false;
-  if (el) coachAt(el, { pose, text, buttons, tab: tabOf(screen), same, cheer, find: () => s.aim(ctx), extend: s.extend, only: s.only });
+  if (el) coachAt(el, { pose, text, buttons, tab: tabOf(screen), same, cheer, find: () => s.aim(ctx), extend: s.extend, only: s.only, radius: s.radius });
   else coach(state.fav, pose, text, buttons, "Подсказки");   // цель не появилась — карточка по центру
   animateProgress(t, ch, i, list.length);
   t.busy = false;
@@ -1473,13 +1524,13 @@ function tourPose(t, pose) {
 }
 
 // Не загрузилось (очные встречи, разбор) — честно, с shrug, и дальше к главе после разбора.
-// Главы I и II не отмечаются
+// Главы I и II не отмечаются, контрольной точки нет: главное не показано
 async function tourFail(t, s) {
   const el = s.failAim ? s.failAim(t.ctx) : null;
   const label = nextTitle(t, 2);
   t.primary = () => { leaveSheet(); tourAfter(2); };
   const buttons = `<button type="button" class="btn" data-tour="next">${label}</button>
-    <div class="coach-row"><button type="button" class="coach-skip" data-tour="skip">Пропустить</button></div>`;
+    <div class="coach-row"><button type="button" class="coach-skip" data-tour="skip">Выйти</button></div>`;
   // в блоке «Не удалось загрузить» талисман уже разводит руками — в карточке картинки нет
   if (el) coachAt(el, { pose: el.querySelector(".guide") ? "" : tourPose(t, "shrug"), text: s.failText, buttons, tab: "", same: false, find: () => s.failAim(t.ctx) });
   else coach(state.fav, tourPose(t, "shrug"), s.failText, buttons, "Подсказки");
@@ -1506,7 +1557,8 @@ function tourPass(t, s, hit, x = 0, y = 0) {
     aimEl().dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   }
   const advance = () => { if (state.tour === t) { t.busy = false; tourNext(t); } };
-  if (s.hold) setTimeout(advance, s.hold);   // результат нажатия виден на месте: выбранный гол, прыжок талисмана
+  // результат нажатия виден на месте: прыжок талисмана, выбранный гол (у графика — и после кнопки)
+  if (s.hold && (hit || s.holdOnPress)) setTimeout(advance, s.hold);
   else advance();
 }
 
@@ -1517,6 +1569,7 @@ function tourNext(t = state.tour) {
   const list = ch.steps(t.ctx);
   const i = list.findIndex((x) => x.key === t.key);
   if (i >= 0 && i + 1 < list.length) return tourShow(list[i + 1]);
+  if (checkpointDue(t) && t.saw2) return tourCheckpoint();
   if (t.ci + 1 < t.chapters.length) return tourChapter(t.ci + 1);
   tourFinish();
 }
@@ -1530,15 +1583,23 @@ function tourAfter(id) {
   tourFinish();
 }
 
-// Конец очереди: полный тур — финал по центру, одиночная глава — «Готово», человек остаётся на экране
-function tourFinish() {
+// Конец очереди или «Хватит»: полный тур — финал по центру, одиночная глава — «Готово», человек
+// остаётся на экране
+async function tourFinish() {
   const t = state.tour;
   if (!t) return;
   if (!t.final) return tourEnd();
-  t.busy = false;
-  saveTourDone();   // все главы показаны: закрыли Telegram на финале — тур всё равно пройден
+  saveTourDone();   // главное показано: закрыли Telegram на финале — тур всё равно пройден
   t.ci = -1;
   t.key = "final";
+  t.busy = true;
+  const token = ++t.token;
+  if (t.sheet && !$("#sheet").hidden) {
+    coachDim("");
+    await leaveSheet();
+    if (state.tour !== t || t.token !== token) return;
+  }
+  t.busy = false;
   t.primary = () => tourEnd();
   const bot = state.data.links && state.data.links.bot;
   const g = guideOf(state.fav);
@@ -1559,23 +1620,36 @@ function saveTourDone() {
   if (cloud()) cloud().setItem(TOUR_KEY, "2", () => {});
 }
 
+// Тур закончен. После финала — «Главная», наверху: оттуда приложение и начинается
 function tourEnd() {
-  if (state.tour && !state.tour.greet) saveTourDone();
-  if (state.tour && state.tour.greet && state.fav) lsSet(GUIDE_KEY, state.fav);
+  const t = state.tour;
+  if (t && !t.greet) saveTourDone();
+  if (t && t.greet && state.fav) lsSet(GUIDE_KEY, state.fav);
   state.tour = null;
   closeCoach();
+  if (t && t.key === "final") {
+    if (state.tab !== "home") go("home");
+    else window.scrollTo(0, 0);
+  }
 }
 
-// «Пропустить», Esc, «Сам разберусь»: тур закрыт сразу и считается пройденным; лист тура закрывается
+// «Выйти», Esc, «Сам разберусь», «Не надо»: тур закрыт сразу и считается пройденным; лист тура
+// закрывается, у вкладки «Я» — где подсказки потом
 function tourSkip() {
   const t = state.tour;
   tourEnd();
   if (t && t.sheet && !$("#sheet").hidden) closeMatch();
+  if (t && !t.greet) exitHint();
 }
 
-// Кнопка «Назад» Telegram в листе посреди глав I–II — к главе после разбора, эти главы не отмечаются
+// Кнопка «Назад» Telegram в листе тура: в главе I — к предыдущему шагу, карточке матча на «Главной»;
+// в главе II — к контрольной точке (или к следующей главе). Главы не отмечаются
 function tourSheetBack() {
+  const t = state.tour;
+  const id = t.chapters[t.ci];
   closeMatch();
+  if (id === 1 && t.ctx.route && t.ctx.route.card) return tourShow(STEP.card);
+  if (checkpointDue(t)) return tourCheckpoint();
   tourAfter(2);
 }
 
@@ -1588,12 +1662,18 @@ function markChapter(id) {
   if (cloud()) cloud().setItem(TOUR_CH_KEY, v, () => {});
 }
 
-// Прогресс — четыре отрезка, как в Stories: пройденные залиты, текущий — на долю шагов
+// Прогресс — четыре отрезка, как в Stories: пройденные залиты, текущий — на долю шагов, будущие — контур
 function progressHTML(t, ch, i, n) {
   const at = t.seg.indexOf(ch.id);
   const p = (i + 1) / n;
   const segs = t.seg.map((id, k) => (k < at ? '<i class="done"></i>' : k === at ? `<i><span style="transform:scaleX(${p.toFixed(3)})"></span></i>` : "<i></i>")).join("");
-  return `<span class="tp" role="img" aria-label="Глава ${at + 1} из ${t.seg.length}, шаг ${i + 1} из ${n}"><b>${ch.title}</b>${segs}</span>`;
+  return `<span class="tp" role="img" aria-label="Глава ${at + 1} из ${t.seg.length}, шаг ${i + 1} из ${n}"><b>${ch.short}</b>${segs}</span>`;
+}
+// Отрезки без ряда: вступление — все пустые, контрольная точка — пройденные залиты
+function segsHTML(t, done) {
+  const segs = t.seg.map((id, k) => (k < done ? '<i class="done"></i>' : "<i></i>")).join("");
+  const label = done ? `Пройдено глав: ${done} из ${t.seg.length}` : `Глав: ${t.seg.length}`;
+  return `<span class="tp intro" role="img" aria-label="${label}">${segs}</span>`;
 }
 function animateProgress(t, ch, i, n) {
   const p = (i + 1) / n;
@@ -1604,7 +1684,8 @@ function animateProgress(t, ch, i, n) {
   t.prog = { ch: ch.id, p };
 }
 
-// Нажали по затемнению: в окне на шаге «пройди» и «загляни» срабатывает сама цель, мимо окна — промах
+// Нажали по затемнению: в окне на шаге «пройди» и «загляни» срабатывает сама цель, мимо окна — промах.
+// По окну шага «смотри» — мягкий промах: вздрагивает главная кнопка
 function tourTap(e) {
   const t = state.tour;
   const s = stepOf(t);
@@ -1614,7 +1695,7 @@ function tourTap(e) {
   const inside = e.clientX >= r.left - AIM_PAD && e.clientX <= r.right + AIM_PAD && e.clientY >= r.top - AIM_PAD && e.clientY <= r.bottom + AIM_PAD;
   if (!inside) return tourMiss(t, s);
   const kind = val(s.kind, t.ctx);
-  if (kind === "look") return;
+  if (kind === "look") return tourMiss(t, s, true);
   const box = $("#tour");
   const under = document.elementsFromPoint(e.clientX, e.clientY).find((n) => !box.contains(n));
   const hit = under && (s.hit ? under.closest(s.hit) : el.contains(under) ? under : null);
@@ -1630,16 +1711,17 @@ function tourTap(e) {
   tourPass(t, s, under, e.clientX, e.clientY);
 }
 
-// Промах — кольцо вздрагивает, со второго раза на шаге «пройди» — и главная кнопка. Упрёков нет
-function tourMiss(t, s) {
+// Промах — кольцо вздрагивает, со второго раза на шаге «пройди» — и главная кнопка. soft — нажали по
+// окну «смотри»: вздрагивает только кнопка, она и ведёт дальше. Упрёков нет
+function tourMiss(t, s, soft = false) {
   t.misses += 1;
   if (inTelegram && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
   if (calm()) return;
   const jolt = [{ transform: "none" }, { transform: "scale(1.04)" }, { transform: "none" }];
   const ring = $("#tour .coach-ring");
-  if (ring) ring.animate(jolt, { duration: 200, easing: EASE_OUT });
+  if (ring && !soft) ring.animate(jolt, { duration: 200, easing: EASE_OUT });
   const btn = $('#tour [data-tour="next"]');
-  if (btn && t.misses > 1 && val(s.kind, t.ctx) === "pass") btn.animate(jolt, { duration: 200, easing: EASE_OUT });
+  if (btn && (soft || (t.misses > 1 && val(s.kind, t.ctx) === "pass"))) btn.animate(jolt, { duration: 200, easing: EASE_OUT });
 }
 
 // Загляни: лист, открытый нажатием по цели, закрыли — тур идёт к следующему шагу
@@ -1648,6 +1730,34 @@ function tourBack() {
   if (!t || !t.away) return;
   t.away = false;
   setTimeout(() => tourNext(t), 240);   // лист успевает уехать
+}
+
+// Подсказка при выходе: над меню у вкладки «Я», без кнопок, нажатия проходят насквозь
+let hintTimer = 0;
+function exitHint() {
+  const tabs = $("#tabs");
+  const me = tabs && !tabs.hidden && tabs.querySelector('[data-tab="me"]');
+  if (!me) return;
+  clearTimeout(hintTimer);
+  document.querySelectorAll(".tour-hint").forEach((n) => n.remove());
+  const hint = document.createElement("div");
+  hint.className = "tour-hint";
+  hint.setAttribute("role", "status");
+  hint.innerHTML = `<span class="coach-tail"></span>Подсказки всегда тут: «Я» → «Показать подсказки»`;
+  document.body.appendChild(hint);
+  const tr = tabs.getBoundingClientRect();
+  const mr = me.getBoundingClientRect();
+  hint.style.bottom = `${innerHeight - tr.top + 14}px`;
+  const hr = hint.getBoundingClientRect();
+  hint.querySelector(".coach-tail").style.left = `${Math.max(20, Math.min(mr.left + mr.width / 2 - hr.left, hr.width - 20)) - 8}px`;
+  me.classList.add("hint-hl");
+  if (!calm()) hint.animate([{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }], { duration: 180, easing: EASE_OUT });
+  hintTimer = setTimeout(() => {
+    me.classList.remove("hint-hl");
+    const done = () => hint.remove();
+    if (calm()) return done();
+    hint.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 160, easing: EASE_IN, fill: "forwards" }).finished.then(done, done);
+  }, EXIT_HINT_MS);
 }
 
 // Цель шага: ждём, пока экран соберётся и догрузятся данные. Экран въезжает, лист поднимается —
@@ -1673,27 +1783,43 @@ function findAim(find, fail, timeout) {
   });
 }
 
+// Слой тура: сцена (карточка, окно) меняется от шага к шагу, область для экранных дикторов — одна
+// на весь тур, в неё пишется реплика. Свайп и колесо по затемнению страницу не листают: прокручивает
+// только сам тур (style.css → .coach)
 function coachBox() {
   let box = $("#tour");
   if (box) return [box, false];
   box = document.createElement("div");
   box.id = "tour";
   box.className = "coach";
+  box.tabIndex = -1;
   box.setAttribute("role", "dialog");
   box.setAttribute("aria-modal", "true");
+  box.innerHTML = `<div class="coach-stage"></div><div class="sr-only" aria-live="polite"></div>`;
+  const hold = (e) => e.preventDefault();
+  box.addEventListener("wheel", hold, { passive: false });
+  box.addEventListener("touchmove", hold, { passive: false });
   document.body.appendChild(box);
   if (!calm()) box.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 180, easing: EASE_OUT });
   return [box, true];
 }
+const stageOf = (box) => box.querySelector(".coach-stage");
+function say(box) {
+  const p = box.querySelector(".coach-card p");
+  box.querySelector("[aria-live]").textContent = p ? p.textContent : "";
+}
 
-// Между экранами тура: только затемнение, карточки нет — экран под ним меняется
+// Между экранами тура: только затемнение, карточки нет — экран под ним меняется. Фокус — на самом
+// слое: Enter не нажмёт ничего под ним
 function coachDim(tab) {
   dropAim();
+  clearRoom();
   const [box] = coachBox();
   box.setAttribute("aria-label", "Подсказки");
   box.classList.remove("aim");
-  box.innerHTML = `<div class="coach-back" data-coach-back></div>`;
+  stageOf(box).innerHTML = `<div class="coach-back" data-coach-back></div>`;
   lightTab(tab);
+  box.focus({ preventScroll: true });
 }
 
 // Окно гаснет перед переездом к новой цели: заливка того же тона, что затемнение
@@ -1718,9 +1844,10 @@ function coach(club, pose, text, buttons, label, extra = "") {
   box.setAttribute("aria-label", label);
   box.classList.remove("aim");
   const fig = pose ? guideFig(club, pose) : "";
-  box.innerHTML = `<div class="coach-back" data-coach-back></div>
+  stageOf(box).innerHTML = `<div class="coach-back" data-coach-back></div>
     <div class="coach-card${fig ? "" : " bare"}">${fig ? `<div class="coach-guide">${fig}</div>` : ""}
-      <p aria-live="polite">${text}</p>${extra}<div class="coach-btns">${buttons}</div></div>`;
+      <p>${text}</p>${extra}<div class="coach-btns">${buttons}</div></div>`;
+  say(box);
   lightTab("");
   if (!calm()) {
     const card = box.querySelector(".coach-card");
@@ -1730,7 +1857,7 @@ function coach(club, pose, text, buttons, label, extra = "") {
     if (g) g.animate([{ opacity: 0, transform: "translateY(28px) scale(.6) rotate(-16deg)" }, { opacity: 1, transform: "none" }],
       { duration: 380, delay: fresh ? 90 : 0, easing: "cubic-bezier(.2, 1.6, .4, 1)", fill: "backwards" });
   }
-  const first = box.querySelector("button");
+  const first = box.querySelector(".coach-card button");
   if (first) first.focus({ preventScroll: true });
 }
 
@@ -1746,15 +1873,15 @@ function coachAt(el, o) {
   box.setAttribute("aria-label", "Подсказки");
   box.classList.add("aim");
   const fig = o.pose ? guideFig(state.fav, o.cheer ? "cheer" : o.pose) : "";
-  aim.extend = o.extend || null;
-  aim.only = !!o.only;
+  Object.assign(aim, { extend: o.extend || null, only: !!o.only });
   const r = aimRect(el);
   const right = r.left + r.width / 2 >= innerWidth / 2 - 1;
-  box.innerHTML = `<div class="coach-back" data-coach-back></div>
+  stageOf(box).innerHTML = `<div class="coach-back" data-coach-back></div>
     <div class="coach-hole"><i class="coach-fill"></i><i class="coach-ring"></i></div>
     <div class="coach-card${right ? " right" : ""}${fig ? "" : " bare"}"><span class="coach-tail"></span>
-      <div class="coach-say">${fig}<p aria-live="polite">${o.text}</p></div><div class="coach-btns">${o.buttons}</div></div>`;
-  aimAt(box, el, o.find, o.extend, o.only);
+      <div class="coach-say">${fig}<p>${o.text}</p></div><div class="coach-btns">${o.buttons}</div></div>`;
+  say(box);
+  aimAt(box, el, o);
   lightTab(o.tab, true);
   const card = box.querySelector(".coach-card");
   const fill = box.querySelector(".coach-fill");
@@ -1791,12 +1918,13 @@ function coachAt(el, o) {
 }
 
 // Окно в затемнении над целью и карточка рядом. Сторону выбираем один раз; при прокрутке, смене
-// размера окна Telegram и перерисовке цели (свежие данные, выбранный гол) только догоняем её
-const aim = { el: null, find: null, extend: null, only: false, side: "", off: null, last: "" };
+// размера окна Telegram и перерисовке цели (свежие данные, выбранный гол) только догоняем её.
+// extend — наклейки у края цели; only — окно только по этим частям цели; radius — скругление окна
+const aim = { el: null, find: null, extend: null, only: false, radius: null, side: "", off: null, last: "" };
 
-function aimAt(box, el, find, extend, only) {
+function aimAt(box, el, o) {
   dropAim();
-  Object.assign(aim, { el, find: find || null, extend: extend || null, only: !!only, side: "", last: "" });
+  Object.assign(aim, { el, find: o.find || null, extend: o.extend || null, only: !!o.only, radius: o.radius == null ? null : o.radius, side: "", last: "" });
   placeAim(box);
   let queued = false;
   const follow = () => {
@@ -1833,15 +1961,17 @@ function aimEl() {
 }
 
 // Прямоугольник цели вместе с наклейками, которые выходят за её край (талисман на паспорте).
-// only — окно только по этим частям цели (график и выбранный гол без легенды)
+// extend — селектор частей внутри цели или функция, которая их отдаёт (табло рядом с сюжетом);
+// only — окно только по этим частям (табло и сюжет, график и выбранный гол без легенды)
 function aimRect(el) {
   const r = el.getBoundingClientRect();
   let { left, top, right, bottom } = r;
   if (aim.extend && aim.only) [left, top, right, bottom] = [Infinity, Infinity, -Infinity, -Infinity];
   if (aim.extend) {
-    el.querySelectorAll(aim.extend).forEach((x) => {
-      const q = x.getBoundingClientRect();
-      if (!q.height) return;
+    const parts = typeof aim.extend === "function" ? aim.extend(el) : el.querySelectorAll(aim.extend);
+    parts.forEach((x) => {
+      const q = x && x.getBoundingClientRect();
+      if (!q || !q.height) return;
       left = Math.min(left, q.left);
       top = Math.min(top, q.top);
       right = Math.max(right, q.right);
@@ -1850,6 +1980,20 @@ function aimRect(el) {
   }
   if (left === Infinity) ({ left, top, right, bottom } = r);
   return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+// Запас снизу: цель у самого низа страницы или листа не прокрутить наверх — на время шага экран
+// становится длиннее. Снимается при смене экрана и при выходе из тура
+const room = { el: null };
+function growRoom(el, px) {
+  if (!el) return;
+  if (room.el && room.el !== el) clearRoom();
+  room.el = el;
+  el.style.paddingBottom = `${(parseFloat(getComputedStyle(el).paddingBottom) || 0) + Math.ceil(px) + 1}px`;
+}
+function clearRoom() {
+  if (room.el) room.el.style.paddingBottom = "";
+  room.el = null;
 }
 
 // Где цель видно. Страница — между бегущей строкой (и прилипшими фильтрами) и меню. Лист — от его
@@ -1861,12 +2005,22 @@ function aimBounds(el) {
   let b;
   if (sheet) {
     const sr = sheet.getBoundingClientRect();
-    b = { top: Math.max(top0, sr.top + 12), bottom: innerHeight - 12, by: (dy) => { sheet.scrollTop += dy; } };
+    b = { top: Math.max(top0, sr.top + 12), bottom: innerHeight - 12,
+      by: (dy) => {
+        const max = sheet.scrollHeight - sheet.clientHeight - sheet.scrollTop;
+        if (dy > max) growRoom(sheet.querySelector(".sheet-page"), dy - max);
+        sheet.scrollTop += dy;
+      } };
     const seg = sheet.querySelector(".recap-seg");
     if (seg && !seg.contains(el) && seg.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) b.top = Math.max(b.top, sr.top + seg.offsetHeight + 12);
   } else {
     const tabs = $("#tabs");
-    b = { top: top0, bottom: (tabs && !tabs.hidden ? tabs.getBoundingClientRect().top : innerHeight) - 12, by: (dy) => window.scrollBy(0, dy) };
+    b = { top: top0, bottom: (tabs && !tabs.hidden ? tabs.getBoundingClientRect().top : innerHeight) - 12,
+      by: (dy) => {
+        const max = document.documentElement.scrollHeight - innerHeight - window.scrollY;
+        if (dy > max) growRoom($("#screen"), dy - max);
+        window.scrollBy(0, dy);
+      } };
     const bar = $("#screen .filterbar");
     if (bar && !bar.contains(el)) b.top = Math.max(b.top, bar.getBoundingClientRect().bottom + 12);
   }
@@ -1892,24 +2046,22 @@ function placeAim(box) {
     if (!aim.side) {
       // не влезает ни под целью, ни над ней: цель — наверх видимой области, карточка — под ней.
       // Запас сверху — под наклейки у края цели, если есть место
-      const room = b.bottom - b.top - (r.height + 2 * AIM_PAD + AIM_GAP + h);
-      b.by(r.top - AIM_PAD - b.top - Math.max(0, Math.min(20, room)));
+      const spare = b.bottom - b.top - (r.height + 2 * AIM_PAD + AIM_GAP + h);
+      b.by(r.top - AIM_PAD - b.top - Math.max(0, Math.min(20, spare)));
       r = aimRect(el);
       aim.side = fits(r, "above") && !fits(r, "below") ? "above" : "below";
     }
   }
   aim.last = `${r.left}|${r.top}|${r.width}|${r.height}`;
-  const radius = (parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0) + AIM_PAD;
+  const radius = (aim.radius != null ? aim.radius : parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0) + AIM_PAD;
   // окно не выходит за края экрана: кольцо видно целиком и у целей во всю ширину
   const left = Math.max(4, r.left - AIM_PAD);
   const right = Math.min(innerWidth - 4, r.right + AIM_PAD);
   Object.assign(hole.style, { left: `${left}px`, top: `${r.top - AIM_PAD}px`,
     width: `${right - left}px`, height: `${r.height + 2 * AIM_PAD}px`, borderRadius: `${radius}px` });
-  let y = aim.side === "below" ? r.bottom + AIM_PAD + AIM_GAP : r.top - AIM_PAD - AIM_GAP - h;
-  // высокая цель на коротком экране: карточка закрывает её низ, но не верхние 60px окна
-  if (aim.side === "below") y = Math.min(y, Math.max(b.bottom - h, r.top - AIM_PAD + 60));
-  y = Math.max(b.top, Math.min(y, innerHeight - 12 - h));
-  card.style.top = `${y}px`;
+  // высокая цель на коротком экране: карточка закрывает её низ, но не заходит под меню
+  const y = aim.side === "below" ? r.bottom + AIM_PAD + AIM_GAP : r.top - AIM_PAD - AIM_GAP - h;
+  card.style.top = `${Math.max(b.top, Math.min(y, b.bottom - h))}px`;
   card.classList.toggle("up", aim.side === "above");   // карточка над целью — хвостик снизу
   const c = card.getBoundingClientRect();
   tail.style.left = `${Math.max(28, Math.min(r.left + r.width / 2 - c.left, c.width - 28)) - 8}px`;
@@ -1931,6 +2083,7 @@ function lightTab(tab, aimed = false) {
 function closeCoach() {
   state.meet = null;
   dropAim();
+  clearRoom();
   lightTab("");
   const box = $("#tour");
   if (!box) return;
@@ -1940,7 +2093,7 @@ function closeCoach() {
     .then(() => box.remove()).catch(() => box.remove());
 }
 
-// Лист «Подсказки»: всё сначала или одна глава; пройденные — с галочкой
+// Лист «Подсказки»: всё сначала или одна глава; пройденные — с галочкой. Названия глав — полные
 const CHECK = '<svg class="ok" viewBox="0 0 24 24" role="img" aria-label="Пройдена"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>';
 function openHints() {
   const done = lsGet(TOUR_CH_KEY) || "";
@@ -1952,12 +2105,13 @@ function openHints() {
     <div class="menu hints">${rows}</div>`);
 }
 
-// Из листа «Подсказки»: лист уезжает, потом тур — все главы без вступления или одна, без финала
+// Из листа «Подсказки»: лист уезжает, потом тур — все главы без вступления (с контрольной точкой и
+// финалом) или одна глава
 function replayTour(chapters) {
   closeMatch();
   setTimeout(() => {
     if (state.tour || !$("#sheet").hidden) return;
-    state.tour = newTour(chapters ? { chapters } : { final: true, save: true });
+    state.tour = newTour(chapters ? { chapters } : { save: true });
     tourChapter(0);
   }, calm() ? 0 : 260);
 }
@@ -2530,7 +2684,8 @@ function showSheet(html, dir = 0) {
   document.body.classList.add("sheet-open");
   placeRunners(sheet);
   if (!sheetOpener) sheetOpener = document.activeElement;   // при переходе внутри листа — прежний
-  sheet.querySelector("[data-close]").focus({ preventScroll: true });
+  // во время тура фокус остаётся в карточке тура: второй Enter не закроет лист под ним
+  if (!state.tour || state.tour.away) sheet.querySelector("[data-close]").focus({ preventScroll: true });
   if (wasOpen && dir && !calm()) {
     sheet.firstElementChild.animate([{ opacity: 0, transform: `translateX(${dir * 24}px)` }, { opacity: 1, transform: "none" }],
       { duration: 200, easing: EASE_OUT });
@@ -2737,6 +2892,7 @@ document.addEventListener("click", (e) => {
       return;
     }
     if (act === "skip") return tourSkip();
+    if (act === "final" && t && !t.greet) return tourFinish();
     if (act === "remind") {
       const url = `${state.data.links.bot}?start=remind`;
       if (inTelegram) tg.openTelegramLink(url);
@@ -2890,6 +3046,19 @@ if (document.fonts && document.fonts.ready) document.fonts.ready.then(resyncRunn
 
 // Строки и карточки с role="button" нажимаются с клавиатуры, Esc закрывает карточку матча
 document.addEventListener("keydown", (e) => {
+  const box = $("#tour");
+  if (box && !(state.tour && state.tour.away)) {
+    if (e.key === "Tab") {
+      // фокус заперт в карточке: Tab ходит по её кнопкам по кругу
+      e.preventDefault();
+      const list = [...box.querySelectorAll(".coach-card button")];
+      if (!list.length) return box.focus();
+      const i = list.indexOf(document.activeElement);
+      const n = i < 0 ? (e.shiftKey ? list.length - 1 : 0) : (i + (e.shiftKey ? list.length - 1 : 1)) % list.length;
+      return list[n].focus();
+    }
+    if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(e.key)) return e.preventDefault();
+  }
   if (e.key === "Escape") {
     const t = state.tour;
     if ($("#tour") && state.meet) return closeCoach();
@@ -3061,9 +3230,9 @@ function boot(d, cached = false) {
   if (state.fav && !state.openedFromLink && !state.tour) {
     setTimeout(() => {
       if (state.tour || !$("#sheet").hidden) return;
-      const at = Number(lsGet(TOUR_AT_KEY));
+      const at = savedAt();
       if (tourDone()) greetGuide();
-      else if (CHAPTER[at]) tourResume(at);
+      else if (at) tourResume(at);
       else if (lsGet(TOUR_KEY) === "1") tourNews();
       else startTour(false);
     }, (cached ? SPLASH_REPEAT_MS : SPLASH_MIN_MS) + 500);

@@ -66,6 +66,17 @@ class TourPath(unittest.TestCase):
                 newcomers.add(t["id"])
         self.assertLessEqual(len(newcomers), 4, newcomers)
 
+    def test_every_club_from_nmhl_sees_own_win(self):
+        """Тур ищет победу своей команды во всех её матчах сезона, поражение — только если побед нет
+        нигде (ADR-013, дополнение 27.09). Сейчас победа с разбором есть у каждого, кто играл в НМХЛ."""
+        played = {x for h in self.history for x in (h["home"], h["away"])}
+        for t in self.teams.all:
+            if t["id"] not in played:
+                continue
+            wins = [m for k, pair in self.h2h.items() if t["id"] in k.split("|") for m in pair["last"]
+                    if m.get("id") and (m["score"][0] > m["score"][1]) == (m["home"] == t["id"])]
+            self.assertTrue(wins, f"{t['id']}: ни одной своей победы с разбором")
+
     def test_every_recap_in_tour_has_winning_goal(self):
         # реплика про победную шайбу — главный «вау» главы «Разбор матча» (ADR-013)
         missing = [i for i, d in self.recaps.items() if d["gw"] is None]

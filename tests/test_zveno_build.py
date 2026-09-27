@@ -100,7 +100,7 @@ class Pool(unittest.TestCase):
     def test_contract_fields(self):
         p = self.by_id[f"p:{KOLYKHALOV}"]
         self.assertEqual(set(p), {"id", "pid", "slot", "name", "club", "number", "price", "promise", "form",
-                                  "status", "new", "price_monday", "tours"})
+                                  "status", "new", "price_monday", "price_prev", "tours"})
         self.assertEqual((p["pid"], p["slot"], p["club"], p["number"]), (KOLYKHALOV, "F", "ryazan-vdv", 91))
         self.assertEqual(p["price"] % 100, 0)
 

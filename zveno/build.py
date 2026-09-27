@@ -144,6 +144,7 @@ def build(protos: list[tuple[dict, str, str]], calendar: list[dict], teams: list
             "price": path.price, "promise": round(prices.promise(e.slot, path.price), 1),
             "form": status == "ok" and prices.in_form(e.slot, path.price, [m[2] for m in e.matches]),
             "status": status, "new": pr is None, "price_monday": path.price_monday,
+            "price_prev": path.price_prev,
             "tours": {str(t): {"m": [x for _, x in ms], "best2": points.best_sum([x for _, x in ms]),
                                "ids": [gid for gid, _ in ms]} for t, ms in sorted(by_tour.items())},
         })

@@ -47,6 +47,7 @@ def cap_for(window: int) -> int:
 class PricePath:
     price: int                  # стоимость сейчас
     price_monday: int           # на последний дедлайн: от неё предел за тур
+    price_prev: int             # на предыдущий дедлайн: «Итог недели» — price_monday − price_prev
     q: float                    # ОзМ* сейчас
     target: int                 # стоимость по формуле без предела
     games: int                  # сыграно в этом сезоне
@@ -88,7 +89,7 @@ def price_path(slot: str, prior: tuple[float, float] | None, played: list[tuple[
         q = (wpr * qpr + sp + wb * c["base"]) / (wpr + n + wb)
         cap = cap_for(w)
         p = min(max(fprice(slot, q), mondays[w] - cap), mondays[w] + cap)
-    return PricePath(price=p, price_monday=mondays[last], q=q, target=fprice(slot, q), games=len(played),
+    return PricePath(price=p, price_monday=mondays[last], price_prev=mondays[max(last - 1, 0)], q=q, target=fprice(slot, q), games=len(played),
                      mondays=mondays)
 
 

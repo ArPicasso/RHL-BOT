@@ -368,6 +368,17 @@ class Zveno(unittest.TestCase):
         self.start("zveno")
         self.assertEqual(bot.ZVENO["chats"], {42})
 
+    def test_called_season_stays_open(self):
+        """Позвали, а движок вернул prolog — в лист не пишем: второй раз звать не будем."""
+        bot.ZVENO["opened"] = "2026/27"
+        self.published(self.PROLOG)
+        text, _ = self.command()
+        self.assertEqual(bot.ZVENO["chats"], set())
+        self.assertIn("уже открыто", text)
+        self.published({**self.PROLOG, "season": "2027/28"})   # новый сезон — снова Пролог
+        self.command()
+        self.assertEqual(bot.ZVENO["chats"], {42})
+
     # ---------- «Звено» открылось ----------
 
     def announce(self, tours, now=None, blocked=()):

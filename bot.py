@@ -322,9 +322,10 @@ def zveno_set(chat_id: int, on: bool) -> None:
 
 
 def zveno_open(tours: dict | None) -> bool:
-    """«Звено» открыто: так говорит опубликованный tours.json, а без него — что мы уже звали."""
+    """«Звено» открыто: так говорит опубликованный tours.json или мы в этом сезоне уже звали —
+    иначе в лист можно записаться, а позвать будет некому. Без tours.json верим флагу."""
     if tours:
-        return tours.get("status") == "open"
+        return tours.get("status") == "open" or ZVENO["opened"] == zveno_season(tours)
     return ZVENO["opened"] is not None
 
 

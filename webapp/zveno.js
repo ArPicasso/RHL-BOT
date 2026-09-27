@@ -808,8 +808,10 @@ function zcAt(el, pose, text, i, next = "Дальше") {
 }
 function zcIntro() {
   ZC.step = "intro";
-  const join = state.zvJoin ? "Тебя позвали в лигу — соберём звено, и ты в таблице. " : "";
-  zcCard("hello", `${join}Привет! Это «Звено» — игра на наклейках игроков РХЛ. Собираешь ворота и два звена, они приносят очки за настоящие матчи.`,
+  const text = state.zvJoin
+    ? "Привет! Тебя позвали в лигу. «Звено» — игра на наклейках игроков РХЛ: ворота и два звена приносят очки за настоящие матчи. Соберём звено — и ты в таблице."
+    : "Привет! Это «Звено» — игра на наклейках игроков РХЛ. Собираешь ворота и два звена, они приносят очки за настоящие матчи.";
+  zcCard("hello", text,
     `<button type="button" class="btn" data-zc="auto">Собери мне звено</button><button type="button" class="coach-skip" data-zc="self">Соберу сам</button>`);
 }
 function zcEnd() {
@@ -1029,9 +1031,9 @@ function zvTourLine() {
   const team0 = ZV.team[t];
   const pts = team0 && team0.points ? team0.points.total || 0 : 0;
   const warm = (ZV.leagues || []).slice().sort((a, b) => Z_KIND_ORDER.indexOf(a.kind) - Z_KIND_ORDER.indexOf(b.kind))[0];
-  const place = warm && warm.place ? `<span><b>${warm.place}-е</b> <small>из ${warm.of} · ${esc(warm.title)}</small></span>` : "";
-  const head = now ? `<span>Тур ${now} · <b>${pts}</b> ${plural(pts, "очко", "очка", "очков")}</span>` : `<span>Тур ${t} · состав</span>`;
-  return `<button type="button" class="zv-tourline" id="zv-tourline" data-zv="to-leagues">${head}${place ? `<span aria-hidden="true">·</span>${place}` : ""}${Z_I.chev}</button>`;
+  const place = warm && warm.place ? `<span><b>${warm.place}-е</b> <small>из ${warm.of} · ${esc(warm.title)}</small>${Z_I.chev}</span>` : "";
+  const head = now && ZV.team[now] ? `<span>Тур ${now} · <b>${pts}</b> ${plural(pts, "очко", "очка", "очков")}${place ? " ·" : Z_I.chev}</span>` : `<span>Тур ${zvTourNext()} · состав${place ? " ·" : Z_I.chev}</span>`;
+  return `<button type="button" class="zv-tourline" id="zv-tourline" data-zv="to-leagues">${head}${place}</button>`;
 }
 function zvSegBody() {
   if (ZV.seg === "market") return zvMarket();
@@ -1180,7 +1182,7 @@ function zvCardButtons(p, ctx, sq, inKey) {
     const out = ZV.market.out && zvP(ZV.market.out);
     const mine = zvSqOf(ZV.team[zvTourNext()]);
     if (zvClubCount(mine, p.club, out ? out.id : null) >= Z_CLUB_MAX) return `<p class="note">Из клуба «${esc(team(p.club).name)}» у тебя уже 3 наклейки. Отдай одну из них — и эту можно будет взять.</p>`;
-    return `<button type="button" class="btn" data-zv="take" data-zv-arg="${id}">${out ? `Взять вместо ${esc(zvSurname(out))}` : "Взять"}</button>`;
+    return `<button type="button" class="btn" data-zv="take" data-zv-arg="${id}">${out ? "Взять на его место" : "Взять"}</button>`;
   }
   return "";
 }
@@ -1246,7 +1248,7 @@ function zvMarket() {
   if (!out) html += zvMission(team0);
   const slotChips = [["all", "Все"], ["F", "Нап"], ["D", "Защ"], ["G", "Ворота"]];
   if (out) M.slot = out.slot;
-  html += out ? `<div class="zv-note"><span class="ps" style="width:40px;height:40px">${figure({ kit: out.club, role: out.slot === "G" ? "G" : "F", number: out.slot === "G" ? null : out.number })}</span><p>Меняем <b>${esc(out.name)}</b>. Отдашь за <b>${zvIceN(zvSale(team0, out.id))}</b>, можно потратить <b>${zvIceN((team0.bank || 0) + zvSale(team0, out.id))}</b>.</p><button type="button" class="zv-pill btn-mini" data-zv="out-cancel">Отмена</button></div>`
+  html += out ? `<div class="zv-note"><span class="ps" style="width:40px;height:40px">${figure({ kit: out.club, role: out.slot === "G" ? "G" : "F", number: out.slot === "G" ? null : out.number })}</span><p>Замена: <b>${esc(out.name)}</b>. Отдашь за <b>${zvIceN(zvSale(team0, out.id))}</b>, можно потратить <b>${zvIceN((team0.bank || 0) + zvSale(team0, out.id))}</b>.</p><button type="button" class="zv-pill btn-mini" data-zv="out-cancel">Отмена</button></div>`
     : `<div class="zv-filters"><div class="chips fill" role="group" aria-label="Слот" data-run="zv-mslot">${RUN}${slotChips.map(([k, v]) => segBtn(M.slot === k, `data-zv="mslot" data-zv-arg="${k}"`, v)).join("")}</div></div>`;
   const clubName = M.club ? team(M.club).name : "Клуб";
   html += `<div class="zv-opts">
@@ -1301,7 +1303,7 @@ function zvMission(team0) {
   if (!m) return "";
   if (m.done) return `<div class="zv-note">${guideFig(state.fav, "cheer")}<p><b>Задание недели выполнено</b> — у тебя +1 обмен.</p></div>`;
   const left = (m.clubs_left || []).filter((c) => state.teams[c]);
-  return `<div class="zv-note">${guideFig(state.fav, "point")}<div><p><b>Задание недели:</b> поставь в основу клуб, которого не было в твоём альбоме, — +1 обмен. Засчитаю в дедлайн.</p>${left.length ? `<div class="ems">${left.slice(0, 12).map((c) => `<span title="${esc(team(c).name)}">${emblem(c)}</span>`).join("")}${left.length > 12 ? `<small class="aside">ещё ${left.length - 12}</small>` : ""}</div>` : ""}</div></div>`;
+  return `<div class="zv-note">${guideFig(state.fav, "point")}<div><p><b>Задание недели:</b> поставь в основу клуб, которого не было в твоём альбоме, — +1 обмен. Засчитаю в дедлайн.</p>${left.length ? `<div class="ems">${left.slice(0, 8).map((c) => `<span title="${esc(team(c).name)}">${emblem(c)}</span>`).join("")}${left.length > 8 ? `<small>и ещё ${left.length - 8}</small>` : ""}</div>` : ""}</div></div>`;
 }
 // «Итог недели»: только рост своих наклеек
 function zvWeekUp(team0, sq) {

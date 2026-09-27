@@ -17,7 +17,7 @@
   font: 700 13px/1.3 var(--ui); color: var(--ink);
 }
 .zv-tourline b { font: 800 18px/1 var(--display); }
-.zv-tourline .chev { width: 14px; height: 14px; align-self: center; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.zv-tourline .chev { width: 14px; height: 14px; margin-left: 4px; vertical-align: -2px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .zv-tourline small { font: 500 12px/1.3 var(--ui); color: var(--muted); }
 
 /* Полоса тура: дедлайн → воскресенье сплошной, дальше пунктир до итога в четверг. Точка — «сейчас» */
@@ -80,7 +80,7 @@
 }
 .zs-pts i { font: 800 10px/1 var(--ui); font-style: normal; margin-left: 3px; }
 .zs-pts.none { max-width: 100%; overflow: hidden; border-style: dashed; border-color: var(--edge-strong); color: var(--muted); font: 700 10px/18px var(--ui); padding: 0 6px; }
-.zs-tag { height: 18px; padding: 0 6px; border-radius: 9999px; background: var(--mist); color: var(--muted); font: 700 10px/18px var(--ui); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.zs-tag { height: 18px; padding: 0 5px; margin: 0 -4px; border-radius: 9999px; background: var(--mist); color: var(--muted); font: 700 10px/18px var(--ui); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .zs.off .zs-fig .fig, .zs.off .zs-fig > .em { opacity: .5; }
 .zs.lit { background: var(--sel); }
 /* Пустое место: пунктирный круг с плюсом */
@@ -186,7 +186,8 @@
 .zv-note { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: center; margin-bottom: 12px; padding: 12px 14px; border: var(--line); border-radius: 20px; background: var(--paper); }
 .zv-note p { margin: 0; font: 500 14px/1.4 var(--ui); }
 .zv-note p b { font-weight: 700; }
-.zv-note .ems { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.zv-note .ems { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 8px; }
+.zv-note .ems small { margin-left: 4px; font: 500 12px/1 var(--ui); color: var(--muted); }
 .zv-note .guide img { width: 44px; height: 44px; }
 .zv-up { margin-top: 0; }
 .zv-note .btn-mini { grid-column: 1 / -1; justify-self: start; }
@@ -278,6 +279,12 @@
 .zv-del { margin-top: 16px; }
 .zv-confirm { margin-top: 8px; padding: 16px; border: var(--line); border-radius: 20px; }
 .zv-confirm p { margin: 0 0 12px; font: 500 15px/1.4 var(--ui); }
+
+/* Тёмная тема: выбранный фильтр — синий полупрозрачный, сплошной только у вкладки и главной кнопки */
+:root[data-theme="dark"] .zv-pill.on { background: rgba(77, 162, 255, .16); color: #9ccbff; border-color: rgba(77, 162, 255, .45); }
+:root[data-theme="dark"] .zv-sw { background: var(--mist); }
+:root[data-theme="dark"] [aria-pressed="true"] > .zv-sw { background: rgba(77, 162, 255, .16); border-color: rgba(77, 162, 255, .45); }
+:root[data-theme="dark"] [aria-pressed="true"] > .zv-sw::after { background: #9ccbff; border-color: #9ccbff; }
 
 @media (hover: hover) and (pointer: fine) {
   .zs:hover, .zv-lg:hover, .zv-pill:not(.on):hover { background: var(--sel); }

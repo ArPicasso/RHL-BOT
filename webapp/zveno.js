@@ -1080,7 +1080,11 @@ function zvIceSeg() {
     const was = seen[0] === String(t) ? +seen[1] || 0 : null;
     if (was != null && total > was) html += `<div class="zv-since">С прошлого захода <b class="num">+${total - was}</b></div>`;
     setTimeout(() => lsSet(Z_SEEN_KEY, `${t}:${total}`), 1500);
-    if (team0.points && team0.points.provisional) html += `<p class="note">Итог тура — ${esc(zvWhen(zvTour(t).close))}: лига ещё может поправить протоколы. Очки только прибавляются.</p>`;
+    // closed и postponed — из tours.json движка (контракт, раздел 7)
+    const trc = zvTour(t);
+    if (trc && trc.postponed) html += '<p class="note">Лига ещё выкладывает протоколы тура — итог чуть позже. Очки только прибавляются.</p>';
+    else if (trc && trc.closed) html += '<p class="note">Тур закрыт: очки окончательные.</p>';
+    else if (team0.points && team0.points.provisional) html += `<p class="note">Итог тура — ${esc(zvWhen(trc.close))}: лига ещё может поправить протоколы. Очки только прибавляются.</p>`;
   } else {
     const free = team0.free != null ? team0.free : 0;
     const freeText = zvFirstWindow() ? "До первого дедлайна обмены без ограничений" : zvBoostOn(team0) ? "Тур залит: обмены бесплатны" : `Бесплатных обменов: <b>${free}</b>`;

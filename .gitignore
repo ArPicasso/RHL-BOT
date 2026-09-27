@@ -6,3 +6,5 @@ announced.json
 results.json
 results.tmp
 webapp/data/
+zveno_waitlist.json
+*.tmp

@@ -1,4 +1,5 @@
-"""Бот РХЛ U21 2026/27 (@rhl_u21_bot, aiogram 3): встречает и ведёт в мини-апп, напоминает о матчах.
+"""Бот РХЛ U21 2026/27 (@rhl_u21_bot, aiogram 3): встречает и ведёт в мини-апп, напоминает о матчах,
+зовёт лист ожидания, когда откроется фэнтези «Звено» (ADR-014).
 
 Весь интерфейс — в мини-аппе (ADR-003). У бота нет своей клавиатуры и меню команд: на всё он
 отвечает стикером и одной кнопкой «Открыть РХЛ» (ADR-005).
@@ -27,6 +28,7 @@ BASE = Path(__file__).parent
 TZ = ZoneInfo("Europe/Moscow")
 SUBS_FILE = BASE / "subscribers.json"
 ANNOUNCED_FILE = BASE / "announced.json"   # матчи, о которых уже написали после игры (ADR-008)
+ZVENO_FILE = BASE / "zveno_waitlist.json"  # кого позвать, когда «Звено» откроется (ADR-014)
 STICKERS = BASE / "stickers"          # стикеры бота (ADR-005), 512×512 WEBP
 # мини-апп (ADR-003); переменная окружения — только чтобы подставить тестовый адрес
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://arpicasso.github.io/bogdanov/"
@@ -35,6 +37,8 @@ REMIND_TOMORROW_AT = time(19, 0)   # вечером накануне
 REMIND_TEAM = "Рязань-ВДВ"         # напоминания пока только о её матчах: games.json
 RESULTS_POLL = 600                 # раз в 10 минут смотрим опубликованные результаты мини-аппа
 LEADERS_TTL = 600                  # лидеров лиги перечитываем не чаще раза в 10 минут (ADR-009)
+ZVENO_POLL = ZVENO_TTL = 600       # туры «Звена» — так же: раз в 10 минут (ADR-014)
+TOURS = "zveno/tours.json"         # туры и статус «Звена», публикует движок вместе с мини-аппом
 RESULTS_FRESH_DAYS = 2             # матчи старше не присылаем
 QUIET_FROM, QUIET_TO = time(23, 0), time(9, 0)   # ночью молчим, результат уйдёт утром
 
@@ -93,21 +97,27 @@ def emoji_off(err: Exception) -> bool:
 B_APP = "Открыть РХЛ"
 B_RECAP = "Как это было"
 B_LEADERS = "Все лидеры"
+B_ZVENO = "Открыть «Звено»"
+B_ZVENO_OFF = "🔕 Больше не звать"
+B_ZVENO_ON = "🔔 Позвать, когда откроется"
 
 # видно в пустом чате до «Старт» и в профиле бота (до 512 и 120 символов)
 DESCRIPTION = ("Бот Первенства России U21 — РХЛ 2026/27.\n\n"
                "🏒 Календарь всех 26 команд, таблица и счёт матчей — в приложении\n"
                "🏆 Лучшие игроки лиги: бомбардиры, снайперы, вратари\n"
+               "⭐ Фэнтези «Звено»: ворота и два звена из игроков лиги\n"
                "🔔 Напоминания перед играми\n\n"
                "Жми «Старт» 👇")
 SHORT_DESCRIPTION = "РХЛ U21: календарь, таблица и счёт матчей. Напомню перед игрой 🏒"
 
 
-def app_url(team: str | None = None, match: str | None = None, view: str | None = None) -> str:
+def app_url(team: str | None = None, match: str | None = None, view: str | None = None,
+            startapp: str | None = None) -> str:
     """Адрес мини-аппа; с командой — ?team=<id>, мини-апп выберет её, если своей ещё нет.
     С матчем — ?match=<id>, мини-апп сразу откроет его карточку (ADR-008).
-    С view=leaders — сразу «Таблица → Игроки» (ADR-009)."""
-    extra = [(k, v) for k, v in (("team", team), ("match", match), ("view", view)) if v]
+    С view=leaders — сразу «Таблица → Игроки» (ADR-009).
+    Со startapp=zveno — сразу вкладка «Звено» (ADR-014)."""
+    extra = [(k, v) for k, v in (("team", team), ("match", match), ("view", view), ("startapp", startapp)) if v]
     if not extra:
         return WEBAPP_URL
     u = urlsplit(WEBAPP_URL)
@@ -141,6 +151,16 @@ def leaders_kb() -> InlineKeyboardMarkup:
         btn = InlineKeyboardButton(text=B_LEADERS, icon_custom_emoji_id=CUSTOM["cup"], web_app=web_app)
     else:
         btn = InlineKeyboardButton(text=f"{EMOJI['cup']} {B_LEADERS}", web_app=web_app)
+    return InlineKeyboardMarkup(inline_keyboard=[[btn]])
+
+
+def zveno_kb() -> InlineKeyboardMarkup:
+    """Одна кнопка — вкладка «Звено» в мини-аппе."""
+    web_app = WebAppInfo(url=app_url(startapp="zveno"))
+    if "star" in CUSTOM:
+        btn = InlineKeyboardButton(text=B_ZVENO, icon_custom_emoji_id=CUSTOM["star"], web_app=web_app)
+    else:
+        btn = InlineKeyboardButton(text=f"{EMOJI['star']} {B_ZVENO}", web_app=web_app)
     return InlineKeyboardMarkup(inline_keyboard=[[btn]])
 
 
@@ -190,12 +210,22 @@ def welcome_text(team: str | None = None) -> str:
             f"{e('star')} Календарь 26 команд\n"
             f"{e('cup')} Таблица конференций\n"
             f"{e('goal')} Счёт и голы матчей\n"
-            f"{e('fire')} Лучшие игроки лиги\n\n"
+            f"{e('fire')} Лучшие игроки лиги\n"
+            f"{e('stick')} Фэнтези «Звено» из игроков лиги\n\n"
             "<b>Жми «Открыть РХЛ»</b> 👇 и выбери, за кого болеешь.")
 
 
 def lost_text() -> str:
     return f"Всё самое интересное — в приложении {e('fire')}\nЖми кнопку 👇"
+
+# ---------- состояние в файлах ----------
+
+def write_json(path: Path, data) -> None:
+    """Атомарно: пишем рядом во временный файл и подменяем им старый. Оборванная запись
+    (рестарт, кончилось место) не оставит полфайла, и подписчики не потеряются."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False))
+    os.replace(tmp, path)
 
 # ---------- напоминания: подписчики ----------
 
@@ -207,7 +237,7 @@ def load_subs() -> set[int]:
 
 
 def save_subs(subs: set[int]) -> None:
-    SUBS_FILE.write_text(json.dumps(sorted(subs)))
+    write_json(SUBS_FILE, sorted(subs))
 
 
 SUBS = load_subs()
@@ -261,6 +291,96 @@ def result_text(g: dict, names: dict[str, str], story: str = "") -> str:
         text += f"\n\n{html.escape(story)}"
     return text + "\n\nГолы, ход матча и составы — по кнопке 👇"
 
+# ---------- «Звено»: лист ожидания Пролога (ADR-014) ----------
+# До открытия рынка сервера у «Звена» нет: кого позвать, помнит бот. В файле — только chat_id и
+# сезон, о котором уже позвали. Удалиться — кнопкой «Больше не звать»; после открытия лист пустеет.
+
+def load_zveno() -> dict:
+    try:
+        d = json.loads(ZVENO_FILE.read_text())
+        return {"chats": set(d.get("chats", [])), "opened": d.get("opened")}
+    except (FileNotFoundError, ValueError, AttributeError, TypeError):
+        return {"chats": set(), "opened": None}
+
+
+def save_zveno() -> None:
+    write_json(ZVENO_FILE, {"chats": sorted(ZVENO["chats"]), "opened": ZVENO["opened"]})
+
+
+ZVENO = load_zveno()
+
+
+def zveno_set(chat_id: int, on: bool) -> None:
+    chats = ZVENO["chats"]
+    if (chat_id in chats) == on:
+        return
+    if on:
+        chats.add(chat_id)
+    else:
+        chats.discard(chat_id)
+    save_zveno()
+
+
+def zveno_open(tours: dict | None) -> bool:
+    """«Звено» открыто: так говорит опубликованный tours.json, а без него — что мы уже звали."""
+    if tours:
+        return tours.get("status") == "open"
+    return ZVENO["opened"] is not None
+
+
+def zveno_opening(tours: dict | None) -> bool:
+    """Рынок открыт, а лист ещё не звали — зовём один раз за сезон."""
+    return bool(tours) and tours.get("status") == "open" and ZVENO["opened"] != zveno_season(tours)
+
+
+def zveno_season(tours: dict) -> str:
+    return tours.get("season") or "?"
+
+
+def tour_deadline(tours: dict | None, now: datetime) -> tuple[int, datetime] | None:
+    """Тур, на который сейчас собирают состав, и его дедлайн, если он ещё впереди."""
+    t = (tours or {}).get("tour_next")
+    x = next((x for x in (tours or {}).get("tours") or [] if x.get("t") == t), None)
+    if not x or not x.get("deadline"):
+        return None
+    try:
+        d = datetime.fromisoformat(x["deadline"])
+    except (TypeError, ValueError):
+        return None
+    d = (d if d.tzinfo else d.replace(tzinfo=TZ)).astimezone(TZ)
+    return (t, d) if d > now else None
+
+
+ZVENO_HEAD = "<b>«Звено» — фэнтези РХЛ</b>"
+ZVENO_ABOUT = "Собираешь ворота и два звена из наклеек игроков лиги. Очки — только по протоколам матчей."
+
+
+def zveno_wait_text(chat_id: int) -> str:
+    """Пролог: что такое «Звено» и позовём ли, когда откроется."""
+    if chat_id in ZVENO["chats"]:
+        tail = f"{e('bell')} Ты в списке: позову, когда «Звено» откроется — после первых матчей всех 26 команд."
+    else:
+        tail = "🔕 Не позову. Передумаешь — жми «Позвать, когда откроется»."
+    return f"{e('star')} {ZVENO_HEAD}\n{ZVENO_ABOUT}\n\n{tail}"
+
+
+def zveno_wait_kb(chat_id: int) -> InlineKeyboardMarkup:
+    """Вкладка «Звено» (в Прологе там правила и черновик звена) и выход из листа — или вход обратно."""
+    on = chat_id in ZVENO["chats"]
+    toggle = InlineKeyboardButton(text=B_ZVENO_OFF if on else B_ZVENO_ON, callback_data="z:off" if on else "z:on")
+    return InlineKeyboardMarkup(inline_keyboard=zveno_kb().inline_keyboard + [[toggle]])
+
+
+def zveno_open_text(tours: dict | None, now: datetime, called: bool = False) -> str:
+    """«Звено» открылось. called — зовём лист ожидания, иначе отвечаем тому, кто пришёл сам."""
+    head = f"{e('fire')} <b>«Звено» открылось!</b>" if called else f"{e('fire')} <b>«Звено» уже открыто!</b>"
+    text = head + ("\nКак обещал — зову. " if called else "\n") + "Собирай ворота и два звена из наклеек игроков РХЛ."
+    dl = tour_deadline(tours, now)
+    if dl:
+        t, d = dl
+        text += f"\n\nСостав на тур {t} — до {DOW[d.weekday()]} {d:%d.%m}, {d:%H:%M} (МСК)."
+    return text + "\n\nЖми кнопку 👇"
+
 # ---------- стикеры ----------
 
 _sticker_ids: dict[str, str] = {}   # имя → file_id: файл загружаем один раз
@@ -313,6 +433,9 @@ async def start(m: Message, command: CommandObject):
         await send_sticker(m.bot, cid, "bell", reply_markup=ReplyKeyboardRemove())
         await say(m.bot, cid, lambda: (remind_text(cid), remind_kb(cid)))
         return
+    if command.args == "zveno":   # «Позвать, когда откроется» — тоже решение, без приветствия (ADR-014)
+        await zveno_join(m.bot, cid)
+        return
     # стикер заодно убирает клавиатуру, если она осталась от прошлой версии бота
     if not await send_sticker(m.bot, cid, "hello", reply_markup=ReplyKeyboardRemove()):
         await m.answer("🏒", reply_markup=ReplyKeyboardRemove())
@@ -323,19 +446,30 @@ async def start(m: Message, command: CommandObject):
     await say(m.bot, cid, lambda: (welcome_text(team), app_kb(team)))
 
 
-# Лидеры меняются раз в час, вместе с мини-аппом: держим последний файл 10 минут
-_leaders: dict = {"at": None, "data": None}
+# Опубликованные файлы мини-аппа меняются раз в час: держим последний 10 минут.
+# Не скачался — отдаём прошлый. Имя файла → (когда скачали, данные)
+_published: dict[str, tuple[datetime, dict]] = {}
+
+
+async def published(name: str, ttl: int) -> dict | None:
+    now = datetime.now(TZ)
+    at, data = _published.get(name, (None, None))
+    if at and now - at < timedelta(seconds=ttl):
+        return data
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10), trust_env=True) as session:
+        fresh = await fetch_json(session, name)
+    if fresh:
+        _published[name] = (now, fresh)
+    return fresh or data
+
+
+def last_published(name: str) -> dict | None:
+    """Последний скачанный файл, без похода в сеть."""
+    return _published.get(name, (None, None))[1]
 
 
 async def published_leaders() -> dict | None:
-    now = datetime.now(TZ)
-    if _leaders["at"] and now - _leaders["at"] < timedelta(seconds=LEADERS_TTL):
-        return _leaders["data"]
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10), trust_env=True) as session:
-        data = await fetch_json(session, "leaders.json")
-    if data:
-        _leaders.update(at=now, data=data)
-    return data or _leaders["data"]
+    return await published("leaders.json", LEADERS_TTL)
 
 
 async def send_leaders(m: Message) -> None:
@@ -362,6 +496,43 @@ async def cb_remind(c: CallbackQuery):
     await safe_edit(c, lambda: (remind_text(cid), remind_kb(cid)))
     await c.answer("Готово")
     if cid in SUBS:
+        await send_sticker(c.bot, cid, "bell")
+
+
+async def zveno_join(bot: Bot, cid: int) -> None:
+    """?start=zveno и /zveno: в лист ожидания, а если «Звено» уже открыто — сразу туда.
+    Турами бот не ходит в сеть: их держит свежими zveno_loop."""
+    tours = last_published(TOURS)
+    if zveno_open(tours):
+        zveno_set(cid, False)
+        await say(bot, cid, lambda: (zveno_open_text(tours, datetime.now(TZ)), zveno_kb()))
+        return
+    zveno_set(cid, True)
+    await send_sticker(bot, cid, "bell", reply_markup=ReplyKeyboardRemove())
+    await say(bot, cid, lambda: (zveno_wait_text(cid), zveno_wait_kb(cid)))
+
+
+@dp.message(Command("zveno"))   # в меню команд её нет (ADR-005), только ссылкой или руками
+async def h_zveno(m: Message):
+    await zveno_join(m.bot, m.chat.id)
+
+
+@dp.callback_query(F.data.in_({"z:on", "z:off"}))
+async def cb_zveno(c: CallbackQuery):
+    """«Больше не звать» и «Позвать, когда откроется». Не переключатель: старое сообщение
+    с той же кнопкой не вернёт в лист того, кто уже вышел."""
+    cid = c.message.chat.id
+    tours = last_published(TOURS)
+    if zveno_open(tours):
+        zveno_set(cid, False)
+        await safe_edit(c, lambda: (zveno_open_text(tours, datetime.now(TZ)), zveno_kb()))
+        await c.answer()
+        return
+    on = c.data == "z:on"
+    zveno_set(cid, on)
+    await safe_edit(c, lambda: (zveno_wait_text(cid), zveno_wait_kb(cid)))
+    await c.answer("Готово")
+    if on:
         await send_sticker(c.bot, cid, "bell")
 
 
@@ -414,7 +585,7 @@ def load_announced() -> set[str] | None:
 
 
 def save_announced(ids: set[str]) -> None:
-    ANNOUNCED_FILE.write_text(json.dumps(sorted(ids)))
+    write_json(ANNOUNCED_FILE, sorted(ids))
 
 
 def played_games(data: dict, team: str = REMIND_TEAM_ID) -> list[dict]:
@@ -478,6 +649,44 @@ async def results_loop(bot: Bot):
             await asyncio.sleep(RESULTS_POLL)
 
 
+# ---------- «Звено» открылось (ADR-014) ----------
+# Бот зовёт только лист ожидания Пролога, один раз. Сообщения по ходу сезона шлёт сервер «Звена».
+
+async def announce_zveno(bot: Bot, tours: dict | None, now: datetime) -> int:
+    """Рынок открылся: одно сообщение каждому из листа, лист пустеет, сезон помечен «позвали».
+    Ночью молчим, позовём утром. Возвращает, скольким ушло."""
+    if not zveno_opening(tours) or quiet(now):
+        return 0
+    sent = 0
+    for cid in sorted(ZVENO["chats"]):
+        try:
+            await say(bot, cid, lambda: (zveno_open_text(tours, now, called=True), zveno_kb()))
+            sent += 1
+        except TelegramForbiddenError:   # бота заблокировали — напоминания ему тоже не дойдут
+            if cid in SUBS:
+                SUBS.discard(cid)
+                save_subs(SUBS)
+        except Exception:
+            logging.exception("zveno to %s failed", cid)
+        # вычёркиваем по одному: упадём посреди рассылки — после рестарта не позовём дважды
+        zveno_set(cid, False)
+        await asyncio.sleep(0.05)
+    ZVENO["opened"] = zveno_season(tours)
+    save_zveno()
+    logging.info("zveno opened, called %d", sent)
+    return sent
+
+
+async def zveno_loop(bot: Bot):
+    """Раз в 10 минут — опубликованный tours.json: не стал ли status «open»."""
+    while True:
+        try:
+            await announce_zveno(bot, await published(TOURS, ZVENO_TTL), datetime.now(TZ))
+        except Exception:
+            logging.exception("zveno loop failed")
+        await asyncio.sleep(ZVENO_POLL)
+
+
 async def load_custom_emoji(bot: Bot) -> None:
     try:
         me = await bot.get_me()
@@ -502,6 +711,7 @@ async def main():
     await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="РХЛ", web_app=WebAppInfo(url=WEBAPP_URL)))
     asyncio.create_task(reminder_loop(bot))
     asyncio.create_task(results_loop(bot))
+    asyncio.create_task(zveno_loop(bot))
     await dp.start_polling(bot)
 
 

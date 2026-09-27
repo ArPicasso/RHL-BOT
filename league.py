@@ -141,6 +141,17 @@ class Skater:
     shots_against: int = 0   # у вратарей
     saves: int = 0
     toi: str = ""            # время на льду, у вратарей
+    # Поля для «Звена» (ADR-014, раздел 13). В старом results.json их нет — там они нули.
+    plus_minus: int = 0      # «+/-»
+    shots: int = 0           # «БВ» полевого — броски в створ (у вратаря «БВ» — shots_against)
+    ppg: int = 0             # «ШБ» — шайбы в большинстве
+    shg: int = 0             # «ШМ» — в меньшинстве
+    otg: int = 0             # «ШО» — в овертайме
+    so_winner: int = 0       # «РБ» — решающий буллит. Это не гол: в «Ш» он не входит
+    wins: int = 0            # «В» у вратарей. В матче с буллитами у обоих 0, в ОТ победа бывает у сменщика
+    losses: int = 0          # «П»
+    so_games: int = 0        # «ИБ» — матч дошёл до буллитов
+    shutouts: int = 0        # «И"0"»
 
 
 @dataclass(frozen=True)
@@ -271,13 +282,18 @@ def _lineups(block: Node) -> tuple[Skater, ...]:
                     out.append(Skater(team, role, player, cap.group(1) if cap else "",
                                       played=_int(v.get("И", "")) > 0, assists=_int(v.get("А", "")),
                                       pim=_int(v.get("Штр", "")), shots_against=_int(v.get("БВ", "")),
-                                      saves=_int(v.get("ОБ", "")), toi=v.get("ВП", "").replace("-", "")))
+                                      saves=_int(v.get("ОБ", "")), toi=v.get("ВП", "").replace("-", ""),
+                                      wins=_int(v.get("В", "")), losses=_int(v.get("П", "")),
+                                      so_games=_int(v.get("ИБ", "")), shutouts=_int(v.get('И"0"', ""))))
                 else:
                     out.append(Skater(team, role, player, cap.group(1) if cap else "",
                                       played=_int(v.get("И", "")) > 0, goals=_int(v.get("Ш", "")),
                                       assists=_int(v.get("А", "")), pim=_int(v.get("Штр", "")),
                                       faceoffs=_int(v.get("Вбр", "")), faceoffs_won=_int(v.get("ВВбр", "")),
-                                      gwg=_int(v.get("ШП", ""))))
+                                      gwg=_int(v.get("ШП", "")), plus_minus=_int(v.get("+/-", "")),
+                                      shots=_int(v.get("БВ", "")), ppg=_int(v.get("ШБ", "")),
+                                      shg=_int(v.get("ШМ", "")), otg=_int(v.get("ШО", "")),
+                                      so_winner=_int(v.get("РБ", ""))))
     return tuple(out)
 
 

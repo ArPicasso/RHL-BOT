@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_zveno_api_fixtures import ApiCase, D, F, G, msk, squad_ids, team_body  # noqa: E402
+from test_zveno_api_fixtures import ApiCase, F, msk, squad_ids, team_body  # noqa: E402
 
 from zveno import rules  # noqa: E402
 from zveno_api import db  # noqa: E402

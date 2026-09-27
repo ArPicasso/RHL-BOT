@@ -414,7 +414,7 @@ class Game:
     def set_lineup(self, uid: int, body: dict) -> dict:
         self.catch_up()
         s, tn = self._need_next()
-        m = self._need_manager(uid)
+        self._need_manager(uid)
         hold = self.holdings(uid)
         sq = normalize(body.get("lineup"), body.get("bench"))
         ids = all_ids(sq)
@@ -583,7 +583,7 @@ class Game:
         return missed < rules.REST_MISSED
 
     def settings(self, uid: int, body: dict, display: str = "") -> dict:
-        m = self._need_manager(uid)
+        self._need_manager(uid)
         sets, args = [], []
         for k in ("autopilot", "messages", "show_tg_name"):
             if k in body:

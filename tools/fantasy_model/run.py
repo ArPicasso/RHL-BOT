@@ -3,7 +3,7 @@ import sys, pickle, time, os
 from multiprocessing import Pool
 from sim import Sim
 VARIANTS = {
-    'base':      {},                                        # ADR-013 как есть (MVP + бусты Ф2 со 2-го круга)
+    'base':      {},                                        # ADR-014 как есть (MVP + бусты Ф2 со 2-го круга)
     'mvp':       {'f2': False},                             # без бустов Ф2
     'decay12':   {'decay_half': 12},                        # цена с затуханием, полураспад 12 матчей
     'decay20':   {'decay_half': 20},
@@ -28,7 +28,7 @@ VARIANTS = {
     'choice_mis': {'fee_ice': 600, 'fee_choice': True, 'fee_decl': True, 'fee_last': 3, 'missions': ('ft', 1)},
     'core5':     {'decay_half': 20, 'fee_ice': 600, 'fee_choice': True, 'fee_decl': True, 'fee_last': 3, 'missions': ('ft', 1), 'jan_window': True},
     'core':      {'decay_half': 16, 'fee_ice': 600, 'missions': ('ft', 1)},
-    # Ядро, принятое в ADR-013: затухание 20, «8 очков или 600 ❄» с тура 1 (в турах 19–21 только очки),
+    # Ядро, принятое в ADR-014: затухание 20, «8 очков или 600 ❄» с тура 1 (в турах 19–21 только очки),
     # задание недели «Новый клуб в альбоме» → +1 обмен, «Пересобрать звено» 04.01. С него сравнивают плюшки
     'zveno':     {'decay_half': 20, 'fee_ice': 600, 'fee_choice': True, 'fee_decl': True, 'fee_last': 3, 'missions': ('ft', 1), 'jan_window': True},
     # То же без затухания цены — если владелец его не примет

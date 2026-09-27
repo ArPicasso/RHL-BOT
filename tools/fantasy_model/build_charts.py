@@ -4,7 +4,7 @@ import numpy as np
 from analyze import summarize
 V = [v for v in ['base', 'mvp', 'decay12', 'decay20', 'decay20dn', 'fee600', 'free2', 'mis_ice', 'mis_ft', 'loyal', 'janwin2', 'hint', 'core', 'core2', 'core3']
      if os.path.exists(f'results/{v}.pkl')]
-LABEL = {'base': 'ADR-013 как есть', 'mvp': 'ADR-013 без бустов Ф2', 'decay12': 'Цена с затуханием, 12 матчей',
+LABEL = {'base': 'ADR-014 как есть', 'mvp': 'ADR-014 без бустов Ф2', 'decay12': 'Цена с затуханием, 12 матчей',
          'decay16': 'Цена с затуханием, 16 матчей', 'decay20': 'Цена с затуханием, 20 матчей',
          'fee600': 'Лишний обмен за 600 ❄', 'free2': '2 бесплатных и −6 со 2-го круга', 'mis_ice': 'Задание недели: +200 ❄',
          'mis_ft': 'Задание недели: +1 обмен', 'loyal': 'Верность: +0,5 за матч после 6 туров',

@@ -111,10 +111,10 @@ function zvDaysTo(iso) {
   return Math.round((parseISO(d) - parseISO(zvToday())) / 864e5);
 }
 const zvFmt = (n) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0");   // «100 000» не рвётся
-const zvIceN = (n) => `${zvFmt(n)}${Z_ICE}`;
+const zvIceN = (n) => `<span class="ice-n">${zvFmt(n)}${Z_ICE}</span>`;
 const zvTour = (t) => (ZV.tours && ZV.tours.tours.find((x) => x.t === t)) || null;
 const zvTourNow = () => (ZV.tours && ZV.tours.tour_now) || null;
-const zvTourNext = () => (ZV.me && ZV.me.season && ZV.me.season.tour_next) || (ZV.tours && ZV.tours.tour_next) || 1;
+const zvTourNext = () => (ZV.me && ZV.me.season && ZV.me.season.tour_next) || (ZV.tours && (ZV.tours.tour_next || ZV.tours.tour_now)) || (ZV.tours && ZV.tours.tours.length) || 1;
 const zvGames = (t) => { const tr = zvTour(t); return tr ? tr.games || {} : {}; };
 
 function zvScript(src) {
@@ -132,27 +132,66 @@ async function zvJson(name) {
   if (!r.ok) throw new Error(String(r.status));
   return r.json();
 }
+// Конструктор названий: движок публикует {adjectives, nouns} (контракт, раздел 2)
+function zvNamesOf(d) {
+  if (!d) return null;
+  const adj = d.adjectives || d.adj;
+  const noun = d.nouns || d.noun;
+  const ok = (a) => Array.isArray(a) && a.length && a.every((x) => typeof x === "string" && x.length < 40);
+  return ok(adj) && ok(noun) ? { adj, noun } : null;
+}
 function zvLoad(force = false) {
   if (ZV.loading && !force) return ZV.loading;
   ZV.loading = (async () => {
     try {
       const m = zvMockMode();
       if ((m === "1" || m === "team") && !zvMocked()) await zvScript("data/zveno/mock/api.js");
-      const [tours, pool] = await Promise.all([zvJson("tours.json"), zvJson("pool.json")]);
-      const names = tours && tours.status === "open" ? await zvJson("names.json").catch(() => null) : null;
-      ZV.tours = tours && Array.isArray(tours.tours) ? tours : null;
-      ZV.pool = pool && Array.isArray(pool.players) ? pool : { players: [] };
-      ZV.names = names && Array.isArray(names.adj) && Array.isArray(names.noun) && names.adj.length && names.noun.length ? names : Z_NAMES;
-      ZV.byId = {};
-      ZV.pool.players.forEach((p) => { ZV.byId[p.id] = p; });
-      ZV.status = ZV.tours ? "ok" : "none";
-      if (!ZV.draft) ZV.draft = zvDraftLoad();
+      const cached = zvCacheRead();
+      const fresh = Promise.all([zvJson("tours.json"), zvJson("pool.json")]);
+      if (cached && !ZV.tours) {
+        zvUse(cached.tours, cached.pool, null);
+        fresh.then(([t, p]) => {
+          if (!t || (t.updated === cached.tours.updated && p && p.updated === cached.pool.updated)) return;
+          zvUse(t, p, ZV.names);
+          zvCacheWrite(t, p);
+          zvPaintUnder();
+        }).catch(() => {});
+        return;
+      }
+      const [tours, pool] = await fresh;
+      if (tours && pool) zvCacheWrite(tours, pool);
+      zvUse(tours, pool, null);
     } catch (e) {
       ZV.status = "fail";
       ZV.loading = null;
     }
   })();
   return ZV.loading;
+}
+
+function zvUse(tours, pool, names) {
+  ZV.tours = tours && Array.isArray(tours.tours) ? tours : null;
+  ZV.pool = pool && Array.isArray(pool.players) ? pool : { players: [] };
+  ZV.names = names || ZV.names || Z_NAMES;
+  ZV.byId = {};
+  ZV.pool.players.forEach((p) => { ZV.byId[p.id] = p; });
+  ZV.status = ZV.tours ? "ok" : "none";
+  if (!ZV.draft || !zvIds(ZV.draft).length) ZV.draft = zvDraftLoad();
+  if (zvOpen() && !ZV.namesAsked) {
+    ZV.namesAsked = true;
+    zvJson("names.json").then((n) => { ZV.names = zvNamesOf(n) || ZV.names; }).catch(() => {});
+  }
+}
+const Z_CACHE_KEY = "zv_cache";
+function zvCacheRead() {
+  if (zvMockMode()) return null;
+  try {
+    const d = JSON.parse(lsGet(Z_CACHE_KEY) || "null");
+    return d && d.tours && Array.isArray(d.tours.tours) && d.pool && Array.isArray(d.pool.players) ? d : null;
+  } catch (e) { return null; }
+}
+function zvCacheWrite(tours, pool) {
+  if (!zvMockMode()) lsSet(Z_CACHE_KEY, JSON.stringify({ tours, pool }));
 }
 
 // Запрос к серверу «Звена». Пользователь — только из подписанного initData (контракт, раздел 4)
@@ -312,6 +351,12 @@ function zvHasProtocol(g) {
   const cut = zvMockMode() && ZV.tours && ZV.tours._mock_proto_before;
   return !!cut && g.date < cut;
 }
+// Матч уже прошёл: вчера и раньше или сегодня, через 2,5 часа после начала (время — московское)
+function zvPlayed(g, today) {
+  if (g.date < today) return true;
+  if (g.date > today || !/^\d\d:\d\d$/.test(g.time || "")) return false;
+  return zvNow() > Date.parse(`${g.date}T${g.time}:00+03:00`) + 150 * 60000;
+}
 // Точки: f — сыгран и в зачёте, o — сыгран, не в двух лучших, x — клуб сыграл без него,
 // w — матч прошёл, ждём протокол, a — впереди
 function zvDots(p, t) {
@@ -324,7 +369,7 @@ function zvDots(p, t) {
   const best = zvBest2(m);
   const today = zvToday();
   const proto = gs.filter(zvHasProtocol).length;
-  const waiting = gs.filter((g) => !zvHasProtocol(g) && g.date < today).length;
+  const waiting = gs.filter((g) => !zvHasProtocol(g) && zvPlayed(g, today)).length;
   const d = m.map((v, i) => (best.has(i) ? "f" : "o"));
   for (let i = m.length; i < proto; i++) d.push("x");
   for (let i = 0; i < waiting; i++) d.push("w");
@@ -479,7 +524,7 @@ function zvStick(key, id, o) {
   let bottom = "";
   if (p.status === "rest") bottom = '<span class="zs-tag">отдыхает</span>';
   else if (o.marks && o.marks[id]) bottom = `<span class="zs-tag">${o.marks[id]}</span>`;
-  else if (off && zvIsMain(key)) bottom = '<span class="zs-pts none">нет матчей</span>';
+  else if (off && zvIsMain(key)) bottom = '<span class="zs-pts none" title="Нет матчей в туре">нет игр</span>';
   else if (o.view === "points" && zvIsMain(key)) bottom = `<span class="zs-pts num">${zvPts(id, o.t, o.team)}${cap === "К" ? "<i>К</i>" : ""}</span>`;
   const nm = zvSurname(p);
   const lab = `${p.name}${cap === "К" ? ", капитан" : cap === "А" ? ", ассистент" : ""}${zvIsMy(id) ? ", мой игрок" : ""}`;
@@ -628,7 +673,7 @@ function zvRulesBlock() {
       <div class="zv-rule"><span>Победа команды</span><b class="num">+1</b></div>
       <div class="zv-rule"><span>Гол<small>защитнику +6</small></span><b class="num">+5</b></div>
       <div class="zv-rule"><span>Передача</span><b class="num">+3</b></div>
-      <p class="zv-rules-note">Ворота и два звена — 15 наклеек на 100&nbsp;000${Z_ICE}. В туре считаются два лучших матча, капитан — вдвое. Минуса за матч не бывает.</p>
+      <p class="zv-rules-note">Ворота и два звена — 15 наклеек на <span class="ice-n">100&nbsp;000${Z_ICE}.</span> В туре считаются два лучших матча, капитан — вдвое. Минуса за матч не бывает.</p>
       <button type="button" class="zv-pill" data-zv="rules">Подробнее</button>
     </div>`;
 }
@@ -783,7 +828,7 @@ async function zcAct(act) {
     const cap = sq && sq.captain && zvP(sq.captain);
     const el = cap && document.querySelector(`#zv-ice [data-zv-key="${zvKeyOf(sq, cap.id)}"]`);
     const n = cap ? zvGames(next)[cap.club] || 0 : 0;
-    return zcAt(el, "point", `Это капитан — его очки идут вдвое. Я дал «К» ${cap ? esc(zvSurname(cap)) : ""}${n ? `: у него ${n} ${plural(n, "матч", "матча", "матчей")} на неделе` : ""}. Потом можно отдать «К» другому.`, 1);
+    return zcAt(el, "point", `Это капитан, его очки идут вдвое. «К» получил ${cap ? esc(zvSurname(cap)) : "лучший по игре"}${n ? ` — ${n} ${plural(n, "матч", "матча", "матчей")} на неделе` : ""}. Потом можно отдать «К» другому.`, 1);
   }
   if (act === "tip2") {
     ZC.step = "tip2";
@@ -996,18 +1041,20 @@ function zvSegBody() {
 // До дедлайна, если есть что решить, — «состав»; иначе идущий тур с очками
 function zvDefaultView() {
   const now = zvTourNow();
-  if (!now) return "squad";
+  if (!now || !ZV.team[now]) return "squad";
   const t = ZV.team[zvTourNext()];
   return t && t.warnings && t.warnings.length ? "squad" : "points";
 }
 function zvIceSeg() {
   const now = zvTourNow();
   const next = zvTourNext();
-  if (!ZV.view || (!now && ZV.view === "points")) ZV.view = zvDefaultView();
-  const pointsView = ZV.view === "points" && now;
+  // пришёл после дедлайна — в идущем туре его звена нет: только «состав»
+  const hasNow = !!now && now !== next && !!ZV.team[now];
+  if (!ZV.view || (!hasNow && ZV.view === "points")) ZV.view = zvDefaultView();
+  const pointsView = ZV.view === "points" && hasNow;
   const t = pointsView ? now : next;
   const team0 = ZV.team[t] || (pointsView ? null : ZV.team[next]);
-  let html = now && now !== next ? `<div class="chips fill" role="group" aria-label="Тур" data-run="zv-view">${RUN}${segBtn(pointsView, 'data-zv="view" data-zv-arg="points"', `Тур ${now} · очки`)}${segBtn(!pointsView, 'data-zv="view" data-zv-arg="squad"', `Тур ${next} · состав`)}</div>` : "";
+  let html = hasNow ? `<div class="chips fill" role="group" aria-label="Тур" data-run="zv-view">${RUN}${segBtn(pointsView, 'data-zv="view" data-zv-arg="points"', `Тур ${now} · очки`)}${segBtn(!pointsView, 'data-zv="view" data-zv-arg="squad"', `Тур ${next} · состав`)}</div>` : "";
   if (!team0) return html + zvFailBlock("Не удалось загрузить состав.", "me");
   const sq = !pointsView && ZV.local ? ZV.local : zvSqOf(team0);
   if (!pointsView) html += zvWarnings(team0);
@@ -1090,7 +1137,7 @@ function zvCard(id, ctx, key) {
   const n = zvGames(next)[p.club] || 0;
   const now = zvTourNow();
   let html = `<div class="grab"></div>
-    <div class="sheet-head"><span class="when">Наклейка${ZV.tours && zvOpen() ? ` · тур ${next}: ${zvGamesWord(n)}` : ""}</span><button class="btn-round" data-close aria-label="Закрыть">${ICON.close}</button></div>
+    <div class="sheet-head"><span class="when">Наклейка${ZV.tours && zvOpen() ? ` · тур ${next} — ${n ? `${n} ${plural(n, "матч", "матча", "матчей")}` : "нет матчей"}` : ""}</span><button class="btn-round" data-close aria-label="Закрыть">${ICON.close}</button></div>
     <div class="zv-cardhead"><span class="zs-fig">${zvFig(p)}</span><div>
       <h2>${esc(last)}${first ? `<small>${esc(first)}</small>` : ""}</h2>
       <div class="meta">${esc(club.name)} · ${Z_SLOT[p.slot]}${p.number != null ? ` · №${esc(p.number)}` : ""}${p.status === "rest" ? ' · <span class="tag soft">отдыхает</span>' : ""}${p.form ? " · <b>в форме</b>" : ""}</div>
@@ -1131,6 +1178,8 @@ function zvCardButtons(p, ctx, sq, inKey) {
   }
   if (ctx === "market") {
     const out = ZV.market.out && zvP(ZV.market.out);
+    const mine = zvSqOf(ZV.team[zvTourNext()]);
+    if (zvClubCount(mine, p.club, out ? out.id : null) >= Z_CLUB_MAX) return `<p class="note">Из клуба «${esc(team(p.club).name)}» у тебя уже 3 наклейки. Отдай одну из них — и эту можно будет взять.</p>`;
     return `<button type="button" class="btn" data-zv="take" data-zv-arg="${id}">${out ? `Взять вместо ${esc(zvSurname(out))}` : "Взять"}</button>`;
   }
   return "";
@@ -1141,7 +1190,7 @@ function zvPlace(sq, p, key = null) {
   if (zvIds(sq).includes(p.id)) return "Эта наклейка уже в составе.";
   const k = key || (Z_MAIN.find(([kk, s]) => s === p.slot && !zvGet(sq, kk)) || Z_BENCH.find(([kk, s]) => s === p.slot && !zvGet(sq, kk)) || [])[0];
   if (!k) return `Все места ${Z_SLOT_GEN[p.slot]} заняты. Убери кого-нибудь — и положу.`;
-  if (zvClubCount(sq, p.club) >= Z_CLUB_MAX) return `Уже 3 наклейки из «${team(p.club).name}» — больше из одного клуба нельзя.`;
+  if (zvClubCount(sq, p.club) >= Z_CLUB_MAX) return `Из клуба «${team(p.club).name}» уже 3 наклейки — больше из одного клуба нельзя.`;
   if (zvSpent(sq) + p.price > Z_BUDGET) return `Не хватает льдинок: осталось ${zvFmt(Z_BUDGET - zvSpent(sq))}.`;
   zvSet(sq, k, p.id);
   return "";
@@ -1194,7 +1243,7 @@ function zvMarket() {
   const now = zvTourNow();
   const out = zvP(M.out);
   let html = "";
-  if (!out) html += zvMission(team0) + zvWeekUp(team0, sq);
+  if (!out) html += zvMission(team0);
   const slotChips = [["all", "Все"], ["F", "Нап"], ["D", "Защ"], ["G", "Ворота"]];
   if (out) M.slot = out.slot;
   html += out ? `<div class="zv-note"><span class="ps" style="width:40px;height:40px">${figure({ kit: out.club, role: out.slot === "G" ? "G" : "F", number: out.slot === "G" ? null : out.number })}</span><p>Меняем <b>${esc(out.name)}</b>. Отдашь за <b>${zvIceN(zvSale(team0, out.id))}</b>, можно потратить <b>${zvIceN((team0.bank || 0) + zvSale(team0, out.id))}</b>.</p><button type="button" class="zv-pill btn-mini" data-zv="out-cancel">Отмена</button></div>`
@@ -1228,11 +1277,12 @@ function zvMarket() {
     cheap: (a, b) => a.price - b.price || zvSeasonPts(b) - zvSeasonPts(a),
   };
   list.sort(sorts[M.sort] || sorts.tour);
+  list.sort((a, b) => clubFull(a) - clubFull(b));   // из «полных» клубов — в конце, серыми
   const what = M.sort === "season" ? "очки за сезон" : `очки за тур ${now || ""}`.trim();
   html += `<div class="zv-afford">Касса <b>${zvIceN(bank)}</b>. Справа — ${what}, под ними стоимость.</div>`;
   if (!list.length) {
-    html += `<div class="empty">${M.all ? "Таких наклеек нет." : "По карману таких нет — попробуй «Все» или другой слот."}</div>`;
-    return html;
+    html += `<div class="empty">${M.all ? "Таких наклеек нет." : "По карману таких нет — нажми «По карману», чтобы увидеть все, или выбери другой слот."}</div>`;
+    return html + (out ? "" : zvWeekUp(team0, sq));
   }
   html += `<div class="list">${list.slice(0, M.limit).map((p) => {
     const full = clubFull(p);
@@ -1242,6 +1292,7 @@ function zvMarket() {
       <span class="who"><b>${esc(p.name)}${p.form ? '<span class="tag soft">в форме</span>' : ""}</b><small>${esc(team(p.club).name)} · ${full ? `уже 3 из «${esc(team(p.club).name)}»` : zvGamesWord(n)}</small></span>
       <span class="val"><b class="num">${metric(p)}</b><small>${zvIceN(p.price)}</small></span></div>`;
   }).join("")}${list.length > M.limit ? `<button type="button" class="zv-more-row" data-zv="mmore">Показать ещё ${Math.min(40, list.length - M.limit)}</button>` : ""}</div>`;
+  if (!out) html += zvWeekUp(team0, sq);
   return html;
 }
 // Задание недели: новый клуб в альбоме → +1 обмен. Видно только в «Обмене» (ADR-014, раздел 14)
@@ -1250,14 +1301,14 @@ function zvMission(team0) {
   if (!m) return "";
   if (m.done) return `<div class="zv-note">${guideFig(state.fav, "cheer")}<p><b>Задание недели выполнено</b> — у тебя +1 обмен.</p></div>`;
   const left = (m.clubs_left || []).filter((c) => state.teams[c]);
-  return `<div class="zv-note">${guideFig(state.fav, "point")}<div><p><b>Задание недели.</b> Поставь в основу клуб, которого ещё не было в твоём альбоме, — получишь +1 обмен. Засчитаю в дедлайн.</p>${left.length ? `<div class="ems">${left.slice(0, 12).map((c) => `<span title="${esc(team(c).name)}">${emblem(c)}</span>`).join("")}${left.length > 12 ? `<small class="aside">ещё ${left.length - 12}</small>` : ""}</div>` : ""}</div></div>`;
+  return `<div class="zv-note">${guideFig(state.fav, "point")}<div><p><b>Задание недели:</b> поставь в основу клуб, которого не было в твоём альбоме, — +1 обмен. Засчитаю в дедлайн.</p>${left.length ? `<div class="ems">${left.slice(0, 12).map((c) => `<span title="${esc(team(c).name)}">${emblem(c)}</span>`).join("")}${left.length > 12 ? `<small class="aside">ещё ${left.length - 12}</small>` : ""}</div>` : ""}</div></div>`;
 }
 // «Итог недели»: только рост своих наклеек
 function zvWeekUp(team0, sq) {
   const up = zvIds(sq).map((id) => zvP(id)).filter((p) => p && p.price_monday != null && p.price > p.price_monday && !zvIsMy(p.id));
   if (!up.length) return "";
   up.sort((a, b) => (b.price - b.price_monday) - (a.price - a.price_monday));
-  return `<div class="label">Итог недели<span class="aside">подорожали за неделю</span></div><div class="list zv-up">${up.slice(0, 5).map((p) => `<div class="row"><span class="ps">${figure({ kit: p.club, role: p.slot === "G" ? "G" : "F", number: p.slot === "G" ? null : p.number })}</span><span class="who" style="min-width:0"><b style="font-weight:700">${esc(p.name)}</b></span><span class="up">+${zvFmt(p.price - p.price_monday)}${Z_ICE}</span></div>`).join("")}</div>`;
+  return `<div class="label">Итог недели<span class="aside">подорожали с понедельника</span></div><div class="list zv-up">${up.slice(0, 3).map((p) => `<div class="row"><span class="ps">${figure({ kit: p.club, role: p.slot === "G" ? "G" : "F", number: p.slot === "G" ? null : p.number })}</span><span class="who" style="min-width:0"><b style="font-weight:700">${esc(p.name)}</b></span><span class="up">+${zvFmt(p.price - p.price_monday)}${Z_ICE}</span></div>`).join("")}</div>`;
 }
 // Кого отдаёшь? — свои наклейки того же слота с «Отдашь за»
 function zvGiveSheet(inId) {
@@ -1298,7 +1349,7 @@ function zvDealSheet(outId, inId) {
     fee = `Бесплатные обмены кончились. Этот обмен стоит ${D.pay === "ice" ? `${Z_FEE_ICE} льдинок` : `${Z_FEE_POINTS} очков в туре ${zvTourNext()}`}.${opts.length > 1 ? `<div class="seg" role="group" aria-label="Чем платим" data-run="zv-pay">${RUN}${opts.map((k) => segBtn(D.pay === k, `data-zv="pay" data-zv-arg="${k}"`, `<span>${names[k]}</span>`)).join("")}</div>` : ""}`;
   }
   const why = bought != null && sale !== out.price ? `<button type="button" class="zv-why" data-zv="why">Почему ${zvFmt(sale)}?</button>${D.why ? `<div class="zv-scale"><span>взял за<b>${zvFmt(bought)}</b></span>${Z_I.arrow}<span>сейчас<b>${zvFmt(out.price)}</b></span>${Z_I.arrow}<span>тебе<b>${zvFmt(sale)}</b></span></div><p class="note">${out.price > bought ? "Подорожала — отдаёшь за цену, по которой взял, и половину роста, но не больше +500." : out.status === "rest" ? "«Отдыхает» — отдаёшь по большей из двух цен." : "Отдаёшь по текущей стоимости."}</p>` : ""}` : "";
-  const bad = left < 0 ? `Не хватает ${zvFmt(-left)} льдинок.` : zvClubCount(zvSqOf(team0), inn.club, outId) >= Z_CLUB_MAX ? `Уже 3 наклейки из «${esc(team(inn.club).name)}».` : !free && !opts.length ? "Платных обменов в этом туре больше нет." : "";
+  const bad = left < 0 ? `Не хватает ${zvFmt(-left)} льдинок.` : zvClubCount(zvSqOf(team0), inn.club, outId) >= Z_CLUB_MAX ? `Из клуба «${esc(team(inn.club).name)}» у тебя уже 3 наклейки — больше нельзя.` : !free && !opts.length ? "Платных обменов в этом туре больше нет." : "";
   const when = team0.locked || (zvTourNow() && zvTourNow() !== zvTourNext()) ? `<p class="note">Обмен проходит сразу, на лёд новая наклейка встанет с тура ${zvTourNext()}.</p>` : "";
   showSheet(`<div class="grab"></div>
     <div class="sheet-head"><span class="when">Обмен</span><button class="btn-round" data-close aria-label="Закрыть">${ICON.close}</button></div>
@@ -1457,7 +1508,7 @@ function zvSettings() {
   const m = (ZV.me && ZV.me.manager) || {};
   const s = Object.assign({ autopilot: true, messages: true, show_tg_name: false }, m.settings || {});
   const g = guideOf(state.fav);
-  const row = (k, title, sub) => `<button type="button" class="menu-row" data-zv="set" data-zv-arg="${k}" aria-pressed="${!!s[k]}"><span></span><span><b>${title}</b><small>${sub}</small></span><span class="zv-sw" aria-hidden="true"></span></button>`;
+  const row = (k, title, sub) => `<button type="button" class="menu-row" data-zv="set" data-zv-arg="${k}" aria-pressed="${!!s[k]}"><span><b>${title}</b><small>${sub}</small></span><span class="zv-sw" aria-hidden="true"></span></button>`;
   const ask = ZV.delAsk ? `<div class="zv-confirm"><p>Удалить команду, все обмены, журнал и места в лигах? Сообщения «Звена» тоже прекратятся. Вернуть будет нельзя.</p>
     <div class="zv-sheet-btns"><button type="button" class="btn" data-zv="del-yes">Удалить</button><button type="button" class="btn ghost" data-zv="del-no">Не удалять</button></div><p class="zv-err" id="zv-err" hidden></p></div>`
     : `<button type="button" class="btn ghost zv-del" data-zv="del">Удалить моё «Звено»</button>`;

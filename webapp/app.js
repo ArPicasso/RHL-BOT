@@ -3236,6 +3236,8 @@ function boot(d, cached = false) {
   if (!state.fav && state.draft && !state.openedFromLink) {
     setTimeout(() => { if (!state.fav && state.draft && $("#sheet").hidden) openMeet(state.draft); }, (cached ? SPLASH_REPEAT_MS : SPLASH_MIN_MS) + 300);
   }
+  // «Звено»: точка «надо решить» на вкладке — в фоне, когда экран уже нарисован
+  if (state.fav && state.tab !== "zveno") setTimeout(zvPeek, (cached ? SPLASH_REPEAT_MS : SPLASH_MIN_MS) + 2500);
   // Тур и проводник — один раз и не поверх ссылки из бота: прерванный тур — «Продолжение»,
   // прошёл старый тур — «Новое», новый пройден — знакомство при смене команды, иначе вступление
   if (state.fav && !state.openedFromLink && !state.tour) {

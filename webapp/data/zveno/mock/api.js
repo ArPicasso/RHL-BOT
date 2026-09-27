@@ -1,10 +1,10 @@
 "use strict";
 // Мок-сервер «Звена» для разработки мини-аппа: ?zveno_mock=1 — менеджера нет (онбординг),
-// ?zveno_mock=team — сразу с собранным звеном. Отвечает по контракту «Звена» (раздел 4), живёт в
+// ?zveno_mock=team — сразу с собранным звеном, ?zveno_mock=open — рынок только открылся. Отвечает по контракту «Звена» (раздел 4), живёт в
 // localStorage этого устройства. Очки — сумма двух лучших из pool.json и капитан ×2, без сыгранности
 // и автозамен: это правила сервера, здесь только форма ответов. В продакшене не грузится.
 (function () {
-  const KEY = "zv_mock_state";
+  const KEY = `zv_mock_state_${new URLSearchParams(location.search).get("zveno_mock")}`;
   const mode = new URLSearchParams(location.search).get("zveno_mock");
   const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
   let db = null;
@@ -85,7 +85,7 @@
       points: scoreFor(sq, t),
       album: [...alb],
       mission: next >= 3 ? { done: mainClubs.some((c) => !alb.has(c)), clubs_left: state.data.teams.map((x) => x.id).filter((c) => !alb.has(c)) } : null,
-      boosts: { zalivka: 1 },
+      boost: db.boost || null, boosts: { zalivka: db.zalivka != null ? db.zalivka : 1 },
       warnings: t === next ? warnings(sq) : [],
     };
   }
@@ -193,7 +193,8 @@
       if (!P(inn) || zvIds(s).includes(inn)) fail("Эту наклейку взять нельзя.");
       if (P(inn).slot !== P(out).slot) fail("Меняться можно только на наклейку того же слота.");
       if (zvClubCount(s, P(inn).club, out) >= 3) fail("Не больше 3 наклеек из одного клуба.");
-      const freeRest = P(out).status === "rest";
+      const firstWindow = !tourNow() && tourNext() === T().first_tour;
+      const freeRest = P(out).status === "rest" || db.boost === "zalivka" || firstWindow;
       let fee = 0;
       if (!freeRest && db.free <= 0) {
         if (pay === "ice") fee = Z_FEE_ICE;
@@ -222,7 +223,16 @@
       save();
       return team(tourNext());
     }
-    if (method === "POST" && p === "/team/boost") return team(tourNext());
+    if (method === "POST" && p === "/team/boost") {
+      if (body.boost !== "zalivka") fail("Такого буста пока нет.");
+      if (db.boost) fail("В этом туре буст уже включён.");
+      if ((db.zalivka != null ? db.zalivka : 1) <= 0) fail("Заливок больше нет.");
+      db.boost = "zalivka";
+      db.zalivka = 0;
+      db.journal.unshift({ at: new Date(zvNow()).toISOString(), kind: "deal", text: `Тур ${tourNext()} залит: все обмены бесплатны` });
+      save();
+      return team(tourNext());
+    }
     if (method === "GET" && p === "/leagues") return leagues();
     if (method === "GET" && p.startsWith("/leagues/")) {
       const id = decodeURIComponent(p.slice(9));

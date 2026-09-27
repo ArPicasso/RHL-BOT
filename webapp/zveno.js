@@ -7,7 +7,7 @@
 // наклейки по протоколам первых матчей, черновик звена на устройстве, «Позвать, когда откроется».
 // **Рынок** — tours.json со статусом open и API из window.ZVENO_API (контракт «Звена», раздел 4).
 // Для разработки: ?zveno_mock=1 — мок-сервер на устройстве (data/zveno/mock/api.js), =team — сразу со
-// звеном, =prolog — Пролог с наклейками, =start — Пролог без протоколов, =none — файлов нет.
+// звеном, =prolog — Пролог с наклейками, =open — рынок только открылся, =start — первый день Пролога, =none — файлов нет.
 // Всё, что пришло из данных, — только через esc(). Стоимость никогда не главное число на экране.
 
 const Z_BUDGET = 100000;
@@ -76,6 +76,7 @@ function zvDir() {
   const m = zvMockMode();
   if (!m) return "data/zveno/";
   if (m === "1" || m === "team") return "data/zveno/mock/";
+  if (m === "open") return "data/zveno/mock/open/";
   return `data/zveno/mock/${m.replace(/[^a-z]/g, "")}/`;
 }
 function zvApiBase() {
@@ -145,7 +146,7 @@ function zvLoad(force = false) {
   ZV.loading = (async () => {
     try {
       const m = zvMockMode();
-      if ((m === "1" || m === "team") && !zvMocked()) await zvScript("data/zveno/mock/api.js");
+      if ((m === "1" || m === "team" || m === "open") && !zvMocked()) await zvScript("data/zveno/mock/api.js");
       const cached = zvCacheRead();
       const fresh = Promise.all([zvJson("tours.json"), zvJson("pool.json")]);
       if (cached && !ZV.tours) {
@@ -643,10 +644,10 @@ function zvMounted() {
 }
 
 // Точка «надо решить» на иконке вкладки: предупреждение автопилота или пустое место в основе
-function zvDue() {
+function zvDue(peeked = null) {
   const svg = document.querySelector('#tabs [data-tab="zveno"] svg');
   if (!svg) return;
-  const t = ZV.team[zvTourNext()];
+  const t = peeked || ZV.team[zvTourNext()];
   const sq = t && zvSqOf(t);
   const due = !!t && ((t.warnings && t.warnings.length > 0) || Z_MAIN.some(([k]) => !zvGet(sq, k)));
   const dot = svg.querySelector(".due");
@@ -685,7 +686,8 @@ function zvProlog() {
   const n = Math.min(26, T.clubs_with_protocol != null ? T.clubs_with_protocol : clubs.size);
   const first = zvTour(T.first_tour || T.tour_next || 1);
   let say;
-  if (zvOpen()) say = "«Звено» уже открылось! Твоя команда живёт в Telegram — открой приложение оттуда.";
+  if (zvOpen() && zvApiBase()) say = "«Звено» открылось! Команда живёт в Telegram — открой приложение оттуда, чтобы собрать звено.";
+  else if (zvOpen()) say = "Протоколы есть у всех 26 команд — «Звено» открывается. Совсем скоро здесь можно будет собрать звено.";
   else if (n >= 26) say = "Протоколы есть у всех 26 команд — «Звено» вот-вот откроется.";
   else say = `«Звено» откроется, когда у всех 26 команд будет протокол.${first ? ` Первый тур — с ${esc(dayMonth(first.from))}.` : ""}`;
   const bar = `<div class="zv-proto">Протоколы есть у ${n} ${plural(n, "команды", "команд", "команд")} из 26</div><div class="zv-proto-bar" aria-hidden="true">${Array.from({ length: 26 }, (x, i) => `<i${i < n ? ' class="on"' : ""}></i>`).join("")}</div>`;
@@ -747,16 +749,16 @@ function zvBookSticker(p) {
 
 // Правила целиком — листом
 function zvRulesSheet() {
-  const row = (a, f, d) => `<div class="cmp-row"><div class="cmp-top small"><span style="text-align:left;text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink);font-weight:500">${a}</span><b class="num">${f}</b>${d != null ? `<b class="num">${d}</b>` : ""}</div></div>`;
+  const row = (a, f, d) => `<div class="zv-rt-row${d == null ? " one" : ""}"><span>${a}</span><b class="num">${f}</b>${d != null ? `<b class="num">${d}</b>` : ""}</div>`;
   showSheet(`<div class="grab"></div>
     <div class="sheet-head"><span class="when">Правила «Звена»</span><button class="btn-round" data-close aria-label="Закрыть">${ICON.close}</button></div>
     <h2 class="lead-title">Как считаем<span>очки</span></h2>
     <p class="lead-about">Только по протоколам лиги. За матч — от нуля и выше: минуса у игрока не бывает. В туре считаются два лучших матча каждого — неудачный матч тур не испортит.</p>
-    <div class="label">Полевые<span class="aside">нап. · защ.</span></div>
-    <div class="cmp">${row("В заявке", "+1", "+1")}${row("Победа команды", "+1", "+1")}${row("Гол", "+5", "+6")}${row("Передача", "+3", "+3")}${row("Плюс-минус, за единицу", "±1", "±1")}${row("Каждые 2 броска в створ", "+1", "+1")}${row("Победный гол или решающий буллит", "+2", "+2")}${row("Автор и ассистент гола в одном твоём звене", "+1", "+1")}${row("Удаление до конца матча", "0", "0")}</div>
+    <div class="label">Полевые</div>
+    <div class="zv-rt"><div class="zv-rt-row head"><span></span><small>нап.</small><small>защ.</small></div>${row("В заявке", "+1", "+1")}${row("Победа команды", "+1", "+1")}${row("Гол", "+5", "+6")}${row("Передача", "+3", "+3")}${row("Плюс-минус, за единицу", "±1", "±1")}${row("Каждые 2 броска в створ", "+1", "+1")}${row("Победный гол или решающий буллит", "+2", "+2")}${row("Автор и ассистент гола в одном твоём звене", "+1", "+1")}${row("Удаление до конца матча", "0", "0")}</div>
     <p class="note">Штрафные минуты не считаются. Броски серии буллитов — не голы.</p>
     <div class="label">Ворота клуба</div>
-    <div class="cmp">${row("Клуб сыграл", "+2")}${row("Победа, с буллитами", "+3")}${row("Каждые 4 отражённых", "+1")}${row("Пропущенная шайба", "−2")}${row("«Сухарь»: ноль в игре и овертайме", "+5")}${row("Гол или передача вратаря", "+5 / +3")}</div>
+    <div class="zv-rt">${row("Клуб сыграл", "+2")}${row("Победа, с буллитами", "+3")}${row("Каждые 4 отражённых", "+1")}${row("Пропущенная шайба", "−2")}${row("«Сухарь»: ноль в игре и овертайме", "+5")}${row("Гол или передача вратаря", "+5 / +3")}</div>
     <p class="note">Очки приносит тот, кто стоит в воротах клуба в этот день. За матч ворота тоже не уходят в минус.</p>
     <div class="label">Состав и тур</div>
     <div class="facts-card"><dl class="facts">
@@ -1081,7 +1083,8 @@ function zvIceSeg() {
     if (team0.points && team0.points.provisional) html += `<p class="note">Итог тура — ${esc(zvWhen(zvTour(t).close))}: лига ещё может поправить протоколы. Очки только прибавляются.</p>`;
   } else {
     const free = team0.free != null ? team0.free : 0;
-    html += `<div class="zv-bank"><span>Бесплатных обменов: <b>${free}</b></span><span>В кассе <b>${zvIceN(team0.bank || 0)}</b></span></div>`;
+    const freeText = zvFirstWindow() ? "До первого дедлайна обмены без ограничений" : zvBoostOn(team0) ? "Тур залит: обмены бесплатны" : `Бесплатных обменов: <b>${free}</b>`;
+    html += `<div class="zv-bank"><span>${freeText}</span><span>В кассе <b>${zvIceN(team0.bank || 0)}</b></span></div>`;
     if (ZV.local) html += `<div class="zv-cta"><button type="button" class="btn" data-zv="save">Сохранить состав</button><button type="button" class="btn ghost" data-zv="undo">Вернуть как было</button></div><p class="zv-err" id="zv-save-err" hidden></p>`;
   }
   html += `<div class="label">«Звено»</div><div class="menu zv-set">
@@ -1245,7 +1248,7 @@ function zvMarket() {
   const now = zvTourNow();
   const out = zvP(M.out);
   let html = "";
-  if (!out) html += zvMission(team0);
+  if (!out) html += zvMission(team0) + zvBoost(team0);
   const slotChips = [["all", "Все"], ["F", "Нап"], ["D", "Защ"], ["G", "Ворота"]];
   if (out) M.slot = out.slot;
   html += out ? `<div class="zv-note"><span class="ps" style="width:40px;height:40px">${figure({ kit: out.club, role: out.slot === "G" ? "G" : "F", number: out.slot === "G" ? null : out.number })}</span><p>Замена: <b>${esc(out.name)}</b>. Отдашь за <b>${zvIceN(zvSale(team0, out.id))}</b>, можно потратить <b>${zvIceN((team0.bank || 0) + zvSale(team0, out.id))}</b>.</p><button type="button" class="zv-pill btn-mini" data-zv="out-cancel">Отмена</button></div>`
@@ -1305,6 +1308,41 @@ function zvMission(team0) {
   const left = (m.clubs_left || []).filter((c) => state.teams[c]);
   return `<div class="zv-note">${guideFig(state.fav, "point")}<div><p><b>Задание недели:</b> поставь в основу клуб, которого не было в твоём альбоме, — +1 обмен. Засчитаю в дедлайн.</p>${left.length ? `<div class="ems">${left.slice(0, 8).map((c) => `<span title="${esc(team(c).name)}">${emblem(c)}</span>`).join("")}${left.length > 8 ? `<small>и ещё ${left.length - 8}</small>` : ""}</div>` : ""}</div></div>`;
 }
+// Буст «Заливка»: все обмены тура бесплатны. Один буст за тур; слова «сгорят» нет (ADR-014, раздел 8)
+// До первого дедлайна обмены без ограничений (ADR-014, раздел 6)
+const zvFirstWindow = () => !!ZV.tours && !zvTourNow() && !!ZV.tours.first_tour && zvTourNext() === ZV.tours.first_tour;
+const zvBoostOn = (team0) => !!team0 && (team0.boost === "zalivka" || (team0.boosts && team0.boosts.active === "zalivka"));
+function zvBoost(team0) {
+  const t = zvTourNext();
+  if (zvFirstWindow()) return "";
+  if (zvBoostOn(team0)) return `<div class="zv-note">${guideFig(state.fav, "cheer")}<p><b>Тур ${t} залит:</b> все обмены в нём бесплатны.</p></div>`;
+  const n = team0.boosts && team0.boosts.zalivka;
+  if (!n) return "";
+  return `<div class="zv-note zv-boost"><p><b>Заливка</b> — все обмены тура бесплатны. У тебя ${n} ${plural(n, "заливка", "заливки", "заливок")}, одна на тур.</p><button type="button" class="zv-pill btn-mini" data-zv="boost-ask">Залить тур ${t}</button></div>`;
+}
+function zvBoostSheet() {
+  const t = zvTourNext();
+  showSheet(`<div class="grab"></div>
+    <div class="sheet-head"><span class="when">Буст «Заливка»</span><button class="btn-round" data-close aria-label="Закрыть">${ICON.close}</button></div>
+    ${zvGuideCard("point", `Залить тур ${t}? Все обмены в нём станут бесплатными — меняй сколько нужно до дедлайна. Отменить заливку нельзя.`)}
+    <p class="zv-err" id="zv-err" hidden></p>
+    <div class="zv-sheet-btns"><button type="button" class="btn" data-zv="boost">Залить тур ${t}</button><button type="button" class="btn ghost" data-close>Не сейчас</button></div>`);
+}
+async function zvDoBoost() {
+  if (ZV.busy) return;
+  ZV.busy = true;
+  try {
+    ZV.team[zvTourNext()] = await zvApi("POST", "/team/boost", { boost: "zalivka" });
+    closeMatch();
+    if (inTelegram && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    zvPaintBody();
+  } catch (e) {
+    zvSheetErr(e.message);
+  } finally {
+    ZV.busy = false;
+  }
+}
+
 // «Итог недели»: только рост своих наклеек
 function zvWeekUp(team0, sq) {
   const up = zvIds(sq).map((id) => zvP(id)).filter((p) => p && p.price_monday != null && p.price > p.price_monday && !zvIsMy(p.id));
@@ -1333,7 +1371,7 @@ function zvDealSheet(outId, inId) {
   const inn = zvP(inId);
   if (!team0 || !out || !inn) return;
   const sale = zvSale(team0, outId);
-  const free = (team0.free || 0) > 0 || out.status === "rest";
+  const free = (team0.free || 0) > 0 || out.status === "rest" || zvBoostOn(team0) || zvFirstWindow();
   const opts = (team0.fee_options || ["points", "ice"]).filter((x) => x === "points" || x === "ice");
   if (!ZV.deal || ZV.deal.out !== outId || ZV.deal.in !== inId) ZV.deal = { out: outId, in: inId, pay: free ? "free" : opts[0] || "points", why: false };
   const D = ZV.deal;
@@ -1343,7 +1381,10 @@ function zvDealSheet(outId, inId) {
   const stick = (p) => `<span class="ps">${figure({ kit: p.club, role: p.slot === "G" ? "G" : "F", number: p.slot === "G" ? null : p.number })}${emblem(p.club)}</span>`;
   let fee;
   if (free) {
-    fee = out.status === "rest" ? "Наклейка «отдыхает» — этот обмен бесплатный." : `Обмен бесплатный, их у тебя ${team0.free}.`;
+    fee = out.status === "rest" ? "Наклейка «отдыхает» — этот обмен бесплатный."
+      : zvBoostOn(team0) ? "Тур залит — этот обмен бесплатный."
+      : zvFirstWindow() ? "До первого дедлайна обмены без ограничений и бесплатно."
+      : `Обмен бесплатный, их у тебя ${team0.free}.`;
   } else if (!opts.length) {
     fee = "Платных обменов в этом туре больше нет.";
   } else {
@@ -1736,6 +1777,8 @@ function zvAct(act, arg, el) {
     case "pay": ZV.deal.pay = arg; haptic(); return zvDealSheet(ZV.deal.out, ZV.deal.in);
     case "why": ZV.deal.why = !ZV.deal.why; return zvDealSheet(ZV.deal.out, ZV.deal.in);
     case "deal": return zvDoDeal();
+    case "boost-ask": return zvBoostSheet();
+    case "boost": return zvDoBoost();
     case "keep":
       el.disabled = true;
       return zvApi("POST", "/team/keep", { id: arg }).then((t) => { ZV.team[zvTourNext()] = t; zvPaintBody(); zvDue(); })
@@ -1834,6 +1877,23 @@ document.addEventListener("keydown", (e) => {
     zvLeagueJoin(e.target.value);
   }
 }, true);
+
+// Точка на вкладке при запуске, пока «Звено» не открывали: только если сервер подключён и это Telegram.
+// pool.json не качаем — он большой и нужен только во вкладке
+async function zvPeek() {
+  if (ZV.status || zvMockMode() || !zvApiBase() || !inTelegram || !tg.initData) return;
+  try {
+    const r = await fetch("data/zveno/tours.json", { cache: "no-cache" });
+    const tours = r.ok ? await r.json() : null;
+    if (!tours || tours.status !== "open" || ZV.status) return;
+    const me = await zvApi("GET", "/me");
+    if (!me || !me.manager || ZV.status) return;
+    const t = (me.season && me.season.tour_next) || tours.tour_next;
+    const team0 = t ? await zvApi("GET", `/team?tour=${t}`) : null;
+    if (!team0 || ZV.status) return;
+    zvDue(team0);
+  } catch (e) { /* точки не будет — не страшно */ }
+}
 
 // Ссылка из бота или от друга: startapp=zveno и startapp=lg-<код>. Разбираем раньше id команды
 function zvLinkParam(sp) {

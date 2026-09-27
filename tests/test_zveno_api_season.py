@@ -58,7 +58,7 @@ class Autopilot(ApiCase):
     async def test_warning_before(self):
         t = await self.call("GET", "/team", 1)
         w = [x for x in t["warnings"] if x["id"] == F("rostov")]
-        self.assertEqual(w[0]["text"], "Мишка заменит Нападающий21_0 в пн 09:00")
+        self.assertEqual(w[0]["text"], "Нападающий21_0 пропустил 4 матча подряд. Мишка заменит его в пн 09:00")
         self.assertEqual((await self.call("GET", "/team", 2))["warnings"], [])       # «Оставить»
         self.assertEqual((await self.call("GET", "/team", 3))["warnings"], [])       # «Мой игрок»
         w4 = (await self.call("GET", "/team", 4))["warnings"]
@@ -79,7 +79,8 @@ class Autopilot(ApiCase):
         self.assertEqual(t1["lineup"]["L1"]["F"][0], pick)   # замена — до заморозки
         j = await self.call("GET", "/journal", 1)
         self.assertEqual(j[0]["kind"], "autopilot")
-        self.assertIn("Мишка", j[0]["text"])
+        self.assertTrue(j[0]["text"].startswith("Нападающий21_0 пропустил 4 матча подряд. Мишка заменил его, "
+                                                "теперь на этом месте "), j[0]["text"])
         for uid in (2, 3, 4):
             t = await self.call("GET", "/team", uid)
             self.assertEqual(t["lineup"]["L1"]["F"][0], F("rostov"), uid)
@@ -153,7 +154,7 @@ class Close(ApiCase):
         self.assertEqual(t["lineup"]["L1"]["F"][2], F("progress"))
         self.assertEqual(t["bench"][2], F("belgorod"))
         self.assertEqual(t["points"]["by_id"][F("rostov")], {"matches": [5, 3, 7], "best2": 12, "synergy": 1, "mult": 2,
-                                                            "points": 26})
+                                                            "points": 26, "total": 26})
         j = await self.call("GET", "/journal")
         self.assertEqual(j[0]["kind"], "autosub")
         # опоздавшая правка протокола — снимок не меняется

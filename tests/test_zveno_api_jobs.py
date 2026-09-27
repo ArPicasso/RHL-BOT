@@ -92,7 +92,7 @@ class Sunday(MessagesCase):
         self.player(F("belgorod"))["status"] = "rest"
         self.reload()
         await self.run_at(SUNDAY)
-        self.assertIn("Мишка заменит Нападающий15_0 в пн 09:00. Не хочешь — нажми «Оставить»", self.bot.to(1)[0])
+        self.assertIn("Нападающий15_0 пропустил 4 матча подряд. Мишка заменит его в пн 09:00. Не хочешь — «Оставить» в «Звене»", self.bot.to(1)[0])
 
 
 class SundayRules(MessagesCase):

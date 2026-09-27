@@ -170,6 +170,7 @@ class Transfers(ApiCase):
         cost = self.player(F("samara"))["price"] + self.player(F("sokol"))["price"]
         self.assertEqual(t["bank"], t0["bank"] + sale - cost)
         self.assertEqual(t["points"]["penalty"], 0)
+        self.assertEqual(t["fee_options"], [])          # до первого дедлайна платить не за что
 
     async def test_three_ways_to_pay(self):
         t0 = await self.create()
@@ -264,6 +265,8 @@ class Boost(ApiCase):
         await self.call("POST", "/team/transfer", 1, {"out": F("krasnodar"), "in": F("sokol"), "pay": "points"})
         t = await self.call("POST", "/team/boost", 1, {"boost": "zalivka"})
         self.assertEqual(t["boost"], "zalivka")
+        self.assertTrue(t["unlimited"])
+        self.assertEqual(t["fee_options"], [])
         self.assertEqual(t["boosts"], {"zalivka": 0})
         self.assertEqual((t["free"], t["paid_this_tour"], t["points"]["penalty"]), (1, 0, 0))
         t = await self.call("POST", "/team/transfer", 1, {"out": F("belgorod"), "in": F("tambov"), "pay": "free"})

@@ -80,6 +80,16 @@ def surname(p: dict | None) -> str:
     return p["name"].split()[0] if p.get("name") else p["id"]
 
 
+def rested(p: dict | None) -> str:
+    """«Максимов пропустил 4 матча подряд» — фамилия в именительном, без склонения."""
+    return f"{surname(p)} пропустил {rules.REST_MISSED} матча подряд"
+
+
+def with_totals(by_id: dict) -> dict:
+    """У каждой наклейки готовый total — с капитаном и сыгранностью, мини-апп правил не повторяет."""
+    return {x: {**v, "total": v["points"]} for x, v in by_id.items()}
+
+
 def full_name(p: dict | None) -> str:
     return p["name"] if p else "игрок скрыт"
 
@@ -644,7 +654,7 @@ class Game:
             locked = False
             sb = manager.tour_score(sq["lineup"], sq["captain"], sq["assistant"], tour, idx, self.data.match_list,
                                     penalty=rules.FEE_POINTS * self.window(uid, tour)["paid_points"])
-            points = {"total": sb.total, "provisional": True, "by_id": sb.by_id, "subs": [], "penalty": sb.penalty}
+            points = {"total": sb.total, "provisional": True, "by_id": with_totals(sb.by_id), "subs": [], "penalty": sb.penalty}
             warnings = self.warnings(m, sq, hold, s)
             if tour >= rules.MISSION_FROM_TOUR and tour > m["start_tour"]:
                 mission = {"done": manager.mission_done(sq["lineup"], album, idx),
@@ -658,19 +668,19 @@ class Game:
             if snap:
                 d = json.loads(snap["detail"])
                 sq = {"lineup": d["lineup"], "bench": d["bench"], "captain": d["captain"], "assistant": d["assistant"]}
-                points = {"total": d["total"], "provisional": False, "by_id": d["by_id"], "subs": d["subs"],
+                points = {"total": d["total"], "provisional": False, "by_id": with_totals(d["by_id"]), "subs": d["subs"],
                           "penalty": d["penalty"]}
             else:
                 sq = json.loads(row["squad"])
                 sb = manager.tour_score(sq["lineup"], sq["captain"], sq["assistant"], tour, idx, self.data.match_list,
                                         penalty=row["penalty"])
-                points = {"total": sb.total, "provisional": True, "by_id": sb.by_id, "subs": [], "penalty": sb.penalty}
+                points = {"total": sb.total, "provisional": True, "by_id": with_totals(sb.by_id), "subs": [], "penalty": sb.penalty}
             mr = self.db.execute("SELECT done FROM missions WHERE manager_id = ? AND tour = ?", (uid, tour)).fetchone()
             if mr:
                 mission = {"done": bool(mr["done"]), "clubs_left": []}
         win = self.window(uid, tn) if tn else None
         paid = (win["paid_points"] + win["paid_ice"]) if win else 0
-        unlimited = self.now() < parse_iso(m["unlimited_until"])
+        unlimited = self.now() < parse_iso(m["unlimited_until"]) or bool(win and win["boost"] == "zalivka")
         seen = set(all_ids(sq)) | set(points["by_id"])
         try:
             deadline = iso(tours.deadline_of(self.data.tours, tour))
@@ -681,7 +691,7 @@ class Game:
             "lineup": sq["lineup"], "bench": sq["bench"], "captain": sq.get("captain"), "assistant": sq.get("assistant"),
             "bank": m["bank"], "value": sum(self.sale(h) for h in hold.values()), "free": m["free"],
             "unlimited": unlimited, "paid_this_tour": paid,
-            "fee_options": manager.fee_options(tn, m["bank"], paid) if tn else [],
+            "fee_options": manager.fee_options(tn, m["bank"], paid) if tn and not unlimited else [],
             "sale": {x: self.sale(h) for x, h in hold.items()}, "bought": {x: h["bought"] for x, h in hold.items()},
             "points": points,
             "album": [t["id"] for t in self.data.teams if t["id"] in album],
@@ -707,9 +717,9 @@ class Game:
                     continue
                 pick = self._autopilot_pick(x, cur, hold, bank)
                 if pick:
-                    out.append({"id": x, "text": f"{who} заменит {surname(p)} в {dl}", "in": pick})
+                    out.append({"id": x, "text": f"{rested(p)}. {who} заменит его в {dl}", "in": pick})
                 else:
-                    out.append({"id": x, "text": f"{surname(p)} отдыхает, а замены по карману нет — загляни в «Обмен»."})
+                    out.append({"id": x, "text": f"{rested(p)}. Замены по карману нет — загляни в «Обмен»."})
         else:
             for slot, x in places(sq):
                 if x is None:
@@ -717,7 +727,7 @@ class Game:
                     continue
                 p = self.data.idx.get(x)
                 if p and p["status"] == "rest" and x != m["my_player"] and not self.kept(m["id"], x):
-                    out.append({"id": x, "text": f"{surname(p)} отдыхает. Замени сам или включи автопилот."})
+                    out.append({"id": x, "text": f"{rested(p)}. Замени сам или включи автопилот."})
         return out
 
     def _autopilot_pick(self, out_id: str | None, sq: dict, hold: dict, bank: int, slot: str | None = None) -> str | None:
@@ -803,14 +813,14 @@ class Game:
                 p_in = self.data.idx[pick]
                 sq = replace(sq, None, pick, slot)
                 bank -= p_in["price"]
-                text = f"Автопилот: на пустое место — «{p_in['name']}», взята за {num(p_in['price'])} ❄."
+                text = f"{who} поставил на пустое место {surname(p_in)}: наклейка взята за {num(p_in['price'])} ❄ — бесплатно."
             else:
                 p = self.data.idx.get(x)
                 if not p or p["status"] != "rest" or x == m["my_player"] or self.kept(uid, x):
                     continue
                 pick = self._autopilot_pick(x, sq, hold, bank)
                 if not pick:
-                    self.journal_add(uid, "autopilot", f"Автопилот: {surname(p)} отдыхает, а замены по карману нет.", dl)
+                    self.journal_add(uid, "autopilot", f"{rested(p)}. {who} не нашёл замену по карману.", dl)
                     continue
                 p_in = self.data.idx[pick]
                 sale = manager.sale_price(hold[x]["bought"], p["price"], "rest")
@@ -818,8 +828,8 @@ class Game:
                 bank += sale - p_in["price"]
                 self.db.execute("DELETE FROM holdings WHERE manager_id = ? AND sid = ?", (uid, x))
                 self.db.execute("DELETE FROM keeps WHERE manager_id = ? AND sid = ?", (uid, x))
-                text = (f"{who} заменил: «{p['name']}» отдыхает → «{p_in['name']}». Отдана за {num(sale)} ❄, "
-                        f"взята за {num(p_in['price'])} ❄; бесплатно.")
+                text = (f"{rested(p)}. {who} заменил его, теперь на этом месте {surname(p_in)}. "
+                        f"Наклейка отдана за {num(sale)} ❄, новая взята за {num(p_in['price'])} ❄ — бесплатно.")
             self.db.execute("INSERT INTO holdings (manager_id, sid, slot, bought, last_price, since) VALUES (?, ?, ?, ?, ?, ?)",
                             (uid, pick, slot, p_in["price"], p_in["price"], iso(dl)))
             self.journal_add(uid, "autopilot", text, dl)

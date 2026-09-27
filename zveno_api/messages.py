@@ -112,7 +112,7 @@ class Messenger:
         for w in self.g.warnings(m, sq, self.g.holdings(m["id"]), s):
             text = html.escape(w["text"].rstrip("."))
             if w.get("in"):
-                text += ". Не хочешь — нажми «Оставить»"
+                text += ". Не хочешь — «Оставить» в «Звене»"
             items.append(text)
         if not items:
             return None

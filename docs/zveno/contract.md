@@ -239,6 +239,43 @@ from zveno.manager import (
  "boosts": {"zalivka": 1}, "warnings": [{"id": "p:…", "text": "Мишка заменит Иванова в пн 09:00"}]}
 ```
 
+### Уточнения сервера и мини-аппа (27.09.2026)
+
+Всё — дополнения, пути и старые поля не менялись. Подробно, с кодами ошибок — `deploy/README.md`,
+раздел «API».
+
+1. `GET /me`: `manager` = `{name: [прил, сущ], title, fav_club, my_player, settings: {autopilot,
+   messages, show_tg_name}, start_tour, budget, created_at}`; `season` = `{status, tour_next,
+   tour_now, deadline, first_tour}`, `null` — данные ещё не загрузились. `GET /health` — без
+   авторизации
+2. `POST /team` — только при `status: "open"`, иначе `409`; необязательные `assistant` и
+   `my_player`. «Мой игрок» автопилот не трогает, только если сервер о нём знает: мини-апп присылает
+   `my_player` в `POST /team` и `PUT /settings`
+3. `Team.boost` — буст на этот тур (`"zalivka"` или `null`), `boosts: {"zalivka": 1|0}` — остаток
+4. `Team.unlimited: true` — обмены бесплатные и без лимита: до первого дедлайна команды
+   (`tour_now: null`, `tour_next: first_tour`; у опоздавшего — до его первого дедлайна) и в тур с
+   «Заливкой». Тогда `fee_options: []`, `free` не тратится
+5. `points.by_id[id].total` — готовые очки наклейки с капитаном и сыгранностью (= `points`).
+   Закрытый тур — снимок, `provisional: false`, `lineup`/`bench` после автозамен, `points.subs`;
+   до закрытия — без автозамен. `points.penalty` — очки за платные обмены тура
+6. `GET /team?tour=N`, если на тур N состава нет (пришёл после дедлайна) — `404` и `{"error"}`
+7. `warnings[]`: `{id, text, in?}` — `id: null` у пустого места после скрытого игрока, `in` — кого
+   поставит автопилот. Тексты предупреждений и журнала — без склонения фамилий: «Максимов пропустил
+   4 матча подряд. Мишка заменит его в пн 09:00», имя проводника — `mascot.name` из `teams.json`
+8. `Team.hidden` — id из состава и очков, которых нет в пуле («игрок скрыт»); `start_tour`; `value` —
+   сумма «Отдашь за» без кассы; `mission` — `null` до тура 3 и в первый тур команды
+9. `POST /team/transfer`: `out: null` — наклейка на пустое место своего слота. Есть бесплатный обмен —
+   тратится он, какой бы ни была `pay`; «отдыхающего» отдают без расхода обмена
+10. `POST /team/keep {id, keep: false}` снимает «Оставить»; `POST /team/boost` посреди окна делает
+    бесплатными и уже сделанные обмены тура
+11. `GET /leagues`: у `own` — `code` (ссылка `startapp=lg-<code>`) и `owner`; у `step` — `step`,
+    `group`, `month`; у опоздавшего в `overall` — `since_tour`, `since_place`, `since_points`. Id:
+    `own:<n>`, `club:<клуб>`, `conf:west|east`, `step:<ГГГГ-ММ>:<ступень>:<группа>`, `month:<ГГГГ-ММ>`,
+    `circle:1|2`, `overall`. Очки — только закрытых туров
+12. `GET /leagues/{id}` — первые 100 и своя строка; в своей лиге у строки `tg_name`, если менеджер
+    поставил галочку. Чужая группа ступени — `404`
+13. `PUT /settings` — частично, ещё `my_player`; отвечает `manager`. `POST /team`, `POST /leagues` — `201`
+
 ## 5. Бот
 
 - Лист ожидания Пролога — в боте, без сервера: диплинк `t.me/<бот>?start=zveno` и `/zveno`, файл

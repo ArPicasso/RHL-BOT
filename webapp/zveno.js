@@ -110,6 +110,8 @@ function zvDaysTo(iso) {
   return Math.round((parseISO(d) - parseISO(zvToday())) / 864e5);
 }
 const zvFmt = (n) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0");   // «100 000» не рвётся
+// Тексты сервера (журнал, предупреждения) пишут льдинку символом ❄ — в интерфейсе она SVG (DESIGN.md)
+const zvText = (t) => esc(t).replace(/(\d)[\s\u00a0]*❄\uFE0F?/g, "$1" + Z_ICE).replace(/❄\uFE0F?/g, Z_ICE);
 const zvIceN = (n) => `<span class="ice-n">${zvFmt(n)}${Z_ICE}</span>`;
 const zvTour = (t) => (ZV.tours && ZV.tours.tours.find((x) => x.t === t)) || null;
 const zvTourNow = () => (ZV.me && ZV.me.season && "tour_now" in ZV.me.season ? ZV.me.season.tour_now : ZV.tours && ZV.tours.tour_now) || null;
@@ -539,7 +541,7 @@ function zvStick(key, id, o) {
   const off = tr && n === 0;
   let bottom = "";
   if (p.status === "rest") bottom = '<span class="zs-tag">отдыхает</span>';
-  else if (o.marks && o.marks[id]) bottom = `<span class="zs-tag">${o.marks[id]}</span>`;
+  else if (o.marks && o.marks[id]) bottom = `<span class="zs-tag" title="${o.marks[id] === "уйдёт" ? "Уйдёт после этого тура: её уже обменяли" : ""}">${o.marks[id]}</span>`;
   else if (off && zvIsMain(key)) bottom = '<span class="zs-pts none" title="Нет матчей в туре">нет игр</span>';
   else if (o.view === "points" && zvIsMain(key)) bottom = `<span class="zs-pts num">${zvPts(id, o.t, o.team)}${cap === "К" ? "<i>К</i>" : ""}</span>`;
   const nm = zvSurname(p);
@@ -1094,7 +1096,7 @@ function zvIceSeg() {
   const nextTeam = ZV.team[next];
   if (pointsView && nextTeam) {
     const later = new Set(zvIds(zvSqOf(nextTeam)));
-    zvIds(sq).forEach((id) => { if (!later.has(id)) marks[id] = "уйдёт после тура"; });
+    zvIds(sq).forEach((id) => { if (!later.has(id)) marks[id] = "уйдёт"; });
   } else if (now && ZV.team[now]) {
     const was = new Set(zvIds(zvSqOf(ZV.team[now])));
     zvIds(sq).forEach((id) => { if (!was.has(id)) marks[id] = `с тура ${next}`; });
@@ -1139,7 +1141,7 @@ function zvWarnings(team0) {
     const inn = x.in && zvP(x.in);
     const btn = x.id ? `<button type="button" class="zv-pill btn-mini" data-zv="keep" data-zv-arg="${esc(x.id)}">Оставить</button>`
       : `<button type="button" class="zv-pill btn-mini" data-zv="fill-empty">Выбрать замену</button>`;
-    return `<div class="zv-note">${guideFig(state.fav, "point")}<p>${esc(x.text)}${inn ? `<br><small class="muted">Поставит: ${esc(inn.name)}</small>` : ""}</p>${btn}</div>`;
+    return `<div class="zv-note">${guideFig(state.fav, "point")}<p>${zvText(x.text)}${inn ? `<br><small class="muted">Поставит: ${esc(inn.name)}</small>` : ""}</p>${btn}</div>`;
   }).join("");
 }
 
@@ -1610,7 +1612,7 @@ async function zvJournalSheet() {
   try { rows = await zvApi("GET", "/journal"); } catch (e) { if (sheetOpen()) showSheet(head + `<div class="empty">${esc(e.message)}</div>`); return; }
   if (!sheetOpen()) return;
   const KIND = { deal: "Обмен", autopilot: "Автопилот", autosub: "Автозамена", mission: "Задание" };
-  showSheet(head + (rows && rows.length ? `<div class="list">${rows.map((r) => `<div class="row static" style="grid-template-columns:1fr"><span class="lr-who"><b style="white-space:normal">${esc(r.text)}</b><small>${esc(KIND[r.kind] || "")} · ${esc(zvWhen(r.at))}</small></span></div>`).join("")}</div>` : '<div class="empty">Пока пусто: здесь будут обмены и всё, что сделал автопилот.</div>'));
+  showSheet(head + (rows && rows.length ? `<div class="list">${rows.map((r) => `<div class="row static" style="grid-template-columns:1fr"><span class="lr-who"><b style="white-space:normal">${zvText(r.text)}</b><small>${esc(KIND[r.kind] || "")} · ${esc(zvWhen(r.at))}</small></span></div>`).join("")}</div>` : '<div class="empty">Пока пусто: здесь будут обмены и всё, что сделал автопилот.</div>'));
 }
 function zvSettings() {
   const m = (ZV.me && ZV.me.manager) || {};

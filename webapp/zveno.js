@@ -1218,7 +1218,7 @@ function zvCardButtons(p, ctx, sq, inKey) {
   }
   if (ctx === "ice") {
     let b = "";
-    if (inKey && zvIsMain(inKey) && p.slot !== "G" && sq.captain !== p.id) b += `<button type="button" class="btn" data-zv="cap" data-zv-arg="${id}" ${c}>Сделать капитаном</button>`;
+    if (inKey && zvIsMain(inKey) && p.slot !== "G" && sq.captain !== p.id) b += `<button type="button" class="btn${p.status === "rest" ? " ghost" : ""}" data-zv="cap" data-zv-arg="${id}" ${c}>Сделать капитаном</button>`;
     const benchKey = inKey && zvIsMain(inKey) ? Z_BENCH.find(([k, s]) => s === p.slot && zvGet(sq, k)) : null;
     if (benchKey) b += `<button type="button" class="btn ghost" data-zv="swap" data-zv-arg="${id}">Поменять с запасным</button>`;
     if (inKey && !zvIsMain(inKey)) b += `<button type="button" class="btn ghost" data-zv="swap" data-zv-arg="${id}">В основу</button>`;
@@ -1611,8 +1611,8 @@ async function zvJournalSheet() {
   let rows;
   try { rows = await zvApi("GET", "/journal"); } catch (e) { if (sheetOpen()) showSheet(head + `<div class="empty">${esc(e.message)}</div>`); return; }
   if (!sheetOpen()) return;
-  const KIND = { deal: "Обмен", autopilot: "Автопилот", autosub: "Автозамена", mission: "Задание" };
-  showSheet(head + (rows && rows.length ? `<div class="list">${rows.map((r) => `<div class="row static" style="grid-template-columns:1fr"><span class="lr-who"><b style="white-space:normal">${zvText(r.text)}</b><small>${esc(KIND[r.kind] || "")} · ${esc(zvWhen(r.at))}</small></span></div>`).join("")}</div>` : '<div class="empty">Пока пусто: здесь будут обмены и всё, что сделал автопилот.</div>'));
+  const KIND = { deal: "", autopilot: "Автопилот", autosub: "Автозамена", mission: "Задание" };
+  showSheet(head + (rows && rows.length ? `<div class="list">${rows.map((r) => `<div class="row static" style="grid-template-columns:1fr"><span class="lr-who"><b style="white-space:normal">${zvText(r.text)}</b><small>${KIND[r.kind] ? `${esc(KIND[r.kind])} · ` : ""}${esc(zvWhen(r.at))}</small></span></div>`).join("")}</div>` : '<div class="empty">Пока пусто: здесь будут обмены и всё, что сделал автопилот.</div>'));
 }
 function zvSettings() {
   const m = (ZV.me && ZV.me.manager) || {};

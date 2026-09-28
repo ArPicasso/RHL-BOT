@@ -11,6 +11,7 @@
   --band-lavender: #e9ccff;
   --band-mint: #55db9c;
   --band-concrete: #cccccc;
+  --band-peach: #ffd9c7;     /* «Звено» (ADR-014) */
   --backdrop: rgba(0, 0, 0, .35);
   /* стикеры — одинаковые в обеих темах */
   --sticker: #ffffff;
@@ -58,6 +59,7 @@
   --band-lavender: #211d33;
   --band-mint: #15291f;
   --band-concrete: #1c222c;
+  --band-peach: #2a1f1b;
   --backdrop: rgba(4, 7, 12, .6);
   --act: #4da2ff;
   --on-act: #08121f;
@@ -718,11 +720,20 @@ h1, .display {
    которые app.js ведёт одними transform и opacity (FLIP) */
 .tabs button span { display: none; white-space: nowrap; }
 .tabs svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
-.tabs button.active { flex: 1.8; color: var(--on-act); }
+/* Пять вкладок: активная шире ровно под подпись (DESIGN.md → «Нижняя навигация») */
+.tabs button.active { flex: 2.2; color: var(--on-act); }
 .tabs:not(.ready) button.active { background: var(--act); }
 .tabs button.active span { display: inline; }
 .tabs svg { transition: transform .12s; }
 .tabs button:not(.active):active svg { transform: scale(.88); }
+/* На экране уже 360px «Календарь» не влезает — «Матчи» */
+@media (max-width: 359px) {
+  .tabs span[data-short] { font-size: 0; }
+  .tabs span[data-short]::after { content: attr(data-short); font-size: 13px; }
+}
+/* Точка «надо решить» на иконке «Звена» — в самой иконке, едет вместе с ней */
+.tabs svg .due { fill: var(--ember); stroke: var(--paper); stroke-width: 2; }
+.tabs button.active svg .due { stroke: var(--act); }
 
 /* ---------- карточка матча ---------- */
 

@@ -608,11 +608,12 @@ function zvScreen() {
   if (ZV.status === "fail") return zvBandPlain() + zvFailBlock("Не удалось загрузить «Звено». Проверь интернет.", "load");
   if (ZV.status === "none") return zvBandPlain() + zvWaiting();
   if (!zvLive()) return zvProlog();
+  // сначала ошибка: иначе каждая перерисовка снова спрашивает /me, и при недоступном сервере — по кругу
+  if (ZV.meFail) return zvBandPlain() + zvFailBlock(esc(ZV.meFail), "me");
   if (ZV.me === undefined) {
     zvLoadMe().then(zvPaint);
     return zvBandPlain(false) + `<div id="zv-body">${zvSkeleton()}</div>`;
   }
-  if (ZV.meFail) return zvBandPlain() + zvFailBlock(esc(ZV.meFail), "me");
   if (!ZV.me.manager) return zvOnboardScreen();
   return zvMain();
 }
@@ -1690,7 +1691,7 @@ async function zvSave() {
   if (!ZV.local || ZV.busy) return;
   ZV.busy = true;
   try {
-    const t = await zvApi("PUT", "/team/lineup", { lineup: ZV.local.lineup, bench: ZV.local.bench, captain: ZV.local.captain });
+    const t = await zvApi("PUT", "/team/lineup", { lineup: ZV.local.lineup, bench: ZV.local.bench, captain: ZV.local.captain, assistant: ZV.local.assistant });
     ZV.team[zvTourNext()] = t;
     ZV.local = null;
     if (inTelegram && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");

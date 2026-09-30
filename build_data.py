@@ -661,6 +661,8 @@ def write_feeds(out_dir: Path, teams: Teams, data: dict, h2h: dict, history: lis
         shown += sum(1 for c in sheet["cards"] if c["kind"] == "post")
         (feed_dir / f"{club}.json").write_text(json.dumps(sheet, ensure_ascii=False, separators=(",", ":")),
                                                encoding="utf-8")
+    stream = feed.build_stream(now, games=data["games"], history=history, recaps=recaps, channels=channels, posts=posts)
+    (feed_dir / "stream.json").write_text(json.dumps(stream, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     return shown
 
 

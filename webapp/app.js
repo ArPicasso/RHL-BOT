@@ -53,6 +53,9 @@ const state = {
   leaders: null,    // лидеры лиги: грузятся при первом открытии «Игроков»
   feed: {},         // лист дня «Главной» по клубу (ADR-015): null — не загрузился
   feedSeen: {},     // прошлый заход по клубу, мс: отметки «новое» до конца сессии
+  stream: undefined,    // лента лиги за неделю под листом: null — не загрузилась
+  streamFilter: "all",  // «Все · Мой клуб · Соперник»
+  streamShown: 0,       // сколько элементов ленты уже на экране: подгружаем порциями
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -498,7 +501,7 @@ function renderHome() {
       </div>`;
   }
 
-  html += `<div id="feed">${feedHTML(me)}</div>`;
+  html += `<div id="feed">${feedHTML(me)}</div><div id="stream-wrap">${streamHTML()}</div>`;
   return html + footer();
 }
 
@@ -607,7 +610,8 @@ function feedCard(c, isNew) {
         ${feedMatchLine(c.home, c.away, c.score, c.decision)}${feedStory(c.story)}`);
     case "story": {
       const g = findGame(c.match);
-      return fcard("", `data-game="${esc(c.match)}"`, `${feedTop("Сюжет дня · вчера в лиге", isNew)}
+      const when = !c.date || daysFromToday(c.date) === -1 ? "вчера в лиге" : esc(dayMonth(c.date));
+      return fcard("", `data-game="${esc(c.match)}"`, `${feedTop(`Сюжет дня · ${when}`, isNew)}
         ${feedStory(c.story)}${g && g.score ? feedMatchLine(g.home, g.away, [g.score.home, g.score.away], g.score.decision) : ""}`);
     }
     case "today": {
@@ -649,7 +653,9 @@ function feedCard(c, isNew) {
 function postCard(c, isNew) {
   const title = c.ctitle || c.channel;
   const em = c.club ? emblem(c.club, "") : '<span class="em ab" aria-hidden="true">РХЛ</span>';
-  const who = [CKIND[c.ckind] || "канал", c.slot === "opp" ? "соперник серии" : ""].filter(Boolean).join(" · ");
+  const rel = c.slot === "opp" || (c.slot === "stream" && c.club && c.club === feedOpp()) ? "соперник серии"
+    : c.slot === "stream" && c.club === state.fav ? "твой клуб" : "";
+  const who = [CKIND[c.ckind] || "канал", rel].filter(Boolean).join(" · ");
   const img = c.image && POST_IMG.test(c.image)
     ? `<div class="fc-img"><img src="${esc(c.image)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">${c.video ? '<span class="tag">видео</span>' : c.media > 1 ? `<span class="tag">+${c.media - 1} фото</span>` : ""}</div>`
     : "";
@@ -668,11 +674,11 @@ function feedEndSay(f) {
   const soon = g ? daysFromToday(g.date) : null;
   const st = soon === 0 ? "match" : soon === 1 ? "eve" : f.state;
   switch (st) {
-    case "match": return `Лист собран. Сегодня играем${g && g.time ? ` в ${g.time}` : ""} — до встречи на трибуне!`;
-    case "eve": return "Лист собран. Завтра играем — не пропусти!";
-    case "start": return g ? `Лист собран. Сезон стартует ${fmtLong(g.date).replace(/ (?=\S+$)/, "\u00a0")} — осталось чуть-чуть!` : "Лист собран. Скоро сезон!";
-    case "over": return "Лист собран. Сезон окончен — спасибо, что болел!";
-    default: return "Лист собран! Новое появится после матчей лиги.";
+    case "match": return `Сегодня играем${g && g.time ? ` в ${g.time}` : ""} — до встречи на трибуне! Ниже — что пишут в лиге.`;
+    case "eve": return "Завтра играем — не пропусти! Ниже — что пишут в лиге.";
+    case "start": return g ? `Сезон стартует ${fmtLong(g.date).replace(/ (?=\S+$)/, "\u00a0")}. Пока ждём — что пишут в лиге.` : "Скоро сезон. Пока ждём — что пишут в лиге.";
+    case "over": return "Сезон окончен — спасибо, что болел! Ниже — что пишут в лиге.";
+    default: return "Ниже — что пишут в лиге за неделю.";
   }
 }
 
@@ -684,6 +690,7 @@ function feedHTML(me) {
       box.innerHTML = feedHTML(me);
       fadeIn(box);
       watchFeedImages(box);
+      refreshStream();   // посты, которые попали в лист, из ленты ниже уходят
     });
     return '<div class="sk sk-label"></div><div class="sk" style="height:132px"></div>';
   }
@@ -696,8 +703,7 @@ function feedHTML(me) {
     ? `<div class="label">С прошлого захода<span class="aside">${fresh} ${plural(fresh, "новая", "новые", "новых")}</span></div>`
     : `<div class="label">Лист дня<span class="aside">${esc(fmtLong(todayISO()))}</span></div>`;
   return `${label}${cards.map((c) => feedCard(c, prev && Date.parse(c.at) > prev)).join("")}
-    <div class="fc-end">${guideFig(me, "cheer")}<p>${esc(feedEndSay(f))}</p>
-      <div class="pills"><button type="button" data-tab="calendar">Весь календарь</button><button type="button" data-tab="table">Таблица</button></div></div>`;
+    <div class="fc-end fc-caught">${guideFig(me, "cheer")}<p><b>Ты в курсе за сутки.</b> ${esc(feedEndSay(f))}</p></div>`;
 }
 
 // Картинка из CDN Telegram не загрузилась — карточка остаётся без неё
@@ -714,6 +720,109 @@ function refreshFeed() {
   if (!box || state.tab !== "home") return;
   box.innerHTML = feedHTML(state.fav);
   watchFeedImages(box);
+  refreshStream();
+}
+
+// ---------- лента лиги под листом (ADR-015, пересмотр 30.09) ----------
+// Одна на всех: data/feed/stream.json, посты всех каналов за неделю по времени и наши карточки через
+// каждые пять. Свой клуб и соперник уже в листе выше. Подгружается порциями, пока листаешь
+
+const STREAM_PAGE = 20;
+let streamLoading = null;
+let streamObs = null;
+
+function loadStream() {
+  if (!streamLoading) {
+    streamLoading = fetch("data/feed/stream.json")
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.status))))
+      .then((d) => (state.stream = d))
+      .catch(() => { state.stream = null; streamLoading = null; return null; });
+  }
+  return streamLoading;
+}
+
+// Соперник серии — по ближайшему матчу из листа клуба
+function feedOpp() {
+  const f = state.feed[state.fav];
+  const g = f && f.next && findGame(f.next);
+  return g ? (g.home === state.fav ? g.away : g.home) : null;
+}
+
+function streamItems() {
+  if (!state.stream) return [];
+  const now = Date.now();
+  const hidden = feedHidden();
+  const inSheet = new Set(((state.feed[state.fav] || {}).cards || []).map((c) => c.id));
+  const want = state.streamFilter === "mine" ? state.fav : state.streamFilter === "opp" ? feedOpp() : null;
+  const out = [];
+  for (const c of state.stream.items || []) {
+    // в «Все» не повторяем лист выше, а в чипе клуба нужна вся его неделя
+    if (!(Date.parse(c.until) > now) || (!want && inSheet.has(c.id))) continue;
+    if (c.kind === "post" && (hidden[c.channel] || !POST_URL.test(c.url || ""))) continue;
+    if (want && (c.kind !== "post" || c.club !== want)) continue;
+    out.push(c);
+  }
+  return out;
+}
+
+const streamItem = (c) => (c.kind === "post" ? postCard(c, false) : feedCard(c, false));
+
+function streamEnd(all) {
+  if (state.streamShown < all.length) return '<div id="stream-more" class="sk" style="height:132px"></div>';
+  const empty = state.streamFilter === "all" ? "Здесь пока пусто: каналы молчат."
+    : `У ${state.streamFilter === "mine" ? "твоего клуба" : "соперника"} за неделю нет постов о молодёжке в Telegram.`;
+  return `<div class="fc-end"><p>${all.length ? "Это вся неделя. Новые посты — в течение часа после публикации." : esc(empty)}</p>
+    <div class="pills"><button type="button" data-tab="calendar">Весь календарь</button><button type="button" data-tab="table">Таблица</button></div></div>`;
+}
+
+function streamHTML() {
+  if (state.stream === undefined) {
+    loadStream().then(() => refreshStream());
+    return "";
+  }
+  if (!state.stream) return "";
+  const opp = feedOpp();
+  // у соперника без канала чипа нет: пустой выбор разочаровывает
+  const oppPosts = opp && (state.stream.items || []).some((c) => c.kind === "post" && c.club === opp);
+  const chips = [["all", "Все"], ["mine", "Мой клуб"], ...(oppPosts ? [["opp", "Соперник"]] : [])];
+  if (!chips.some(([k]) => k === state.streamFilter)) state.streamFilter = "all";
+  const all = streamItems();
+  state.streamShown = Math.min(STREAM_PAGE, all.length);
+  return `<div class="label">Лента лиги<span class="aside">за неделю</span></div>
+    <div class="pills stream-pills" role="group" aria-label="Чьи посты">${chips.map(([k, v]) =>
+      `<button type="button" class="${state.streamFilter === k ? "on" : ""}" data-stream-filter="${k}" aria-pressed="${state.streamFilter === k}">${v}</button>`).join("")}</div>
+    <div id="stream">${all.slice(0, state.streamShown).map(streamItem).join("")}</div>${streamEnd(all)}`;
+}
+
+function refreshStream() {
+  const box = $("#stream-wrap");
+  if (!box || state.tab !== "home") return;
+  box.innerHTML = streamHTML();
+  watchFeedImages(box);
+  mountStream();
+}
+
+// Следующая порция — когда до конца ленты остаётся экран
+function mountStream() {
+  if (streamObs) streamObs.disconnect();
+  const more = $("#stream-more");
+  if (!more || !("IntersectionObserver" in window)) return;
+  streamObs = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) moreStream(); }, { rootMargin: "800px 0px" });
+  streamObs.observe(more);
+}
+
+function moreStream() {
+  const box = $("#stream");
+  const more = $("#stream-more");
+  if (!box || !more) return;
+  const all = streamItems();
+  const from = state.streamShown;
+  state.streamShown = Math.min(from + STREAM_PAGE, all.length);
+  box.insertAdjacentHTML("beforeend", all.slice(from, state.streamShown).map(streamItem).join(""));
+  watchFeedImages(box);
+  more.insertAdjacentHTML("afterend", streamEnd(all));
+  more.remove();
+  mountStream();
 }
 
 function openPost(url) {
@@ -3084,6 +3193,7 @@ function render(dir = 0) {
   if (state.tab === "home") {
     countUp(screen);
     watchFeedImages(screen);
+    mountStream();
   }
   if (state.tab === "zveno") zvMounted();
   if (dir && !calm()) {
@@ -3141,7 +3251,7 @@ function confirmTeam(id = state.draft || state.fav) {
 }
 
 document.addEventListener("click", (e) => {
-  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],#sheet-backdrop");
+  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],#sheet-backdrop");
   if (!el || el.disabled) return;
   if (el.dataset.guide) return guideHop(el);
   if (el.hasAttribute("data-meet-close") || (el.hasAttribute("data-coach-back") && state.meet)) return closeCoach();
@@ -3186,6 +3296,17 @@ document.addEventListener("click", (e) => {
   if (el.hasAttribute("data-feed-league")) {
     state.cal = calFor(null);
     return go("calendar");
+  }
+  if (el.dataset.streamFilter) {
+    if (el.dataset.streamFilter === state.streamFilter) return;
+    state.streamFilter = el.dataset.streamFilter;
+    haptic();
+    const top = $("#stream-wrap").getBoundingClientRect().top;
+    refreshStream();
+    // лента меняется под пилюлями, а пилюли остаются под пальцем
+    const now = $("#stream-wrap").getBoundingClientRect().top;
+    if (Math.abs(now - top) > 1) window.scrollBy(0, now - top);
+    return;
   }
   if (el.hasAttribute("data-feed-leaders")) {
     state.tableView = "players";

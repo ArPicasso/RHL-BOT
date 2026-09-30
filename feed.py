@@ -374,3 +374,88 @@ def build(club: str, now: datetime, *, clubs: list[str], games: list[dict], stan
     if nxt:
         out["next"] = nxt["id"]
     return out
+
+
+# ---------- лента лиги под листом (ADR-015, пересмотр 30.09) ----------
+# Под сегодняшним листом — непрерывная лента всех каналов за неделю, одна на всех: свой клуб и
+# соперник уже подняты в лист, ниже — лига по времени. Клиент подгружает её порциями при прокрутке
+
+STREAM_DAYS = 7        # глубина ленты: дальше посты устаревают, а картинки CDN — тем более
+STREAM_RUN = 2         # один канал — не больше двух постов подряд
+STREAM_EVERY = 5       # после каждых пяти постов — наша карточка
+STREAM_DAY_CARDS = 5   # «в этот день» по лиге — не больше пяти
+
+
+def limit_runs(posts: list[dict], run: int = STREAM_RUN) -> list[dict]:
+    """Порядок по времени, но третий подряд пост одного канала уступает место ближайшему чужому."""
+    out, rest = [], list(posts)
+    while rest:
+        i = 0
+        if len(out) >= run and all(x["channel"] == out[-1]["channel"] for x in out[-run:]):
+            i = next((k for k, p in enumerate(rest) if p["channel"] != out[-1]["channel"]), 0)
+        out.append(rest.pop(i))
+    return out
+
+
+def stream_posts(channels: list[dict], posts: dict, now: datetime) -> list[dict]:
+    """Посты всех показываемых каналов за неделю, новые первыми. Трансляция по ходу матча сюда не идёт:
+    через час она шум, а своему клубу её показывает лист."""
+    out = []
+    for c in shown_channels(channels):
+        got = posts.get(c["handle"]) or {}
+        if not got.get("ok"):
+            continue
+        title = got.get("title") or c.get("title") or c["handle"]
+        for p in got.get("posts", []):
+            at = datetime.fromisoformat(p["at"])
+            if p.get("live") or not timedelta(0) <= now - at <= timedelta(days=STREAM_DAYS):
+                continue
+            card = post_card(p, c, title, "stream")
+            card["until"] = iso(at + timedelta(days=STREAM_DAYS))
+            out.append(card)
+    out.sort(key=lambda x: (x["at"], x["id"]), reverse=True)
+    return limit_runs(out)
+
+
+def stream_cards(games: list[dict], history: list[dict], recaps: dict, today: date) -> list[dict]:
+    """Наши карточки для ленты лиги: сюжет каждого игрового дня недели и «в этот день» по всей лиге."""
+    cards = []
+    for k in range(1, STREAM_DAYS + 1):
+        day = (today - timedelta(days=k)).isoformat()
+        told = [g for g in games if g["date"] == day and g.get("score") and (recaps.get(g["id"]) or {}).get("story")]
+        if told:
+            g = min(told, key=lambda x: (story_rank(recaps[x["id"]]["story"]), x["id"]))
+            cards.append({"id": f"story-{g['id']}", "kind": "story", "match": g["id"], "date": day,
+                          "story": recaps[g["id"]]["story"], "at": iso(day_start(d(day) + timedelta(days=1))),
+                          "until": iso(day_start(d(day) + timedelta(days=STREAM_DAYS + 1)))})
+    md = today.isoformat()[4:]
+    past = [h for h in history if h["date"][4:] == md and h["date"] < today.isoformat() and h.get("score")]
+    story = lambda h: (recaps.get(history_id(h)) or {}).get("story", "")   # noqa: E731
+    # сначала с сюжетом и поярче, потом свежие сезоны; по одному матчу на сезон — разнообразнее
+    past.sort(key=lambda h: h["date"], reverse=True)
+    past.sort(key=lambda h: (not story(h), story_rank(story(h))))
+    seen: set[str] = set()
+    for h in past:
+        if len(seen) >= STREAM_DAY_CARDS or h["date"][:4] in seen:
+            continue
+        seen.add(h["date"][:4])
+        hid = history_id(h)
+        card = {"id": f"day-{hid}", "kind": "day", "date": h["date"], "season": h.get("season", ""),
+                "home": h["home"], "away": h["away"], "score": score_pair(h["score"]),
+                "decision": h.get("decision", ""), "at": None, "until": iso(day_start(today + timedelta(days=1)))}
+        if hid in recaps:
+            card["match"] = hid
+            card["story"] = story(h)
+        cards.append(card)
+    return cards
+
+
+def build_stream(now: datetime, *, games: list[dict], history: list[dict], recaps: dict, channels: list[dict],
+                 posts: dict) -> dict:
+    """Лента лиги: посты по времени, после каждых STREAM_EVERY — наша карточка, пока они есть."""
+    items, own = [], stream_cards(games, history, recaps, now.astimezone(TZ).date())
+    for i, p in enumerate(stream_posts(channels, posts, now), 1):
+        items.append(p)
+        if i % STREAM_EVERY == 0 and own:
+            items.append(own.pop(0))
+    return {"built": iso(now), "items": items + own}

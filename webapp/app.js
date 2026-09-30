@@ -474,6 +474,7 @@ function renderHome() {
   let html = `<section class="band sky">${RIBBON}
     <div class="hero"><button type="button" class="hero-em" data-switch-open aria-label="Сменить команду">${emblem(me, "xl")}</button><div><h1 style="--w:${longestChunk(t.name)}">${esc(t.name)}</h1><div class="meta">${esc(t.city)} · ${CONF[t.conf] || ""}</div></div></div>
   </section>`;
+  html += `<div id="packs">${packsHTML()}</div>`;
 
   const stats = seasonStats(me, true);
   if (stats) html += `<div class="stats">${stats}</div>`;
@@ -795,11 +796,113 @@ function streamHTML() {
 }
 
 function refreshStream() {
+  refreshPacks();
   const box = $("#stream-wrap");
   if (!box || state.tab !== "home") return;
   box.innerHTML = streamHTML();
   watchFeedImages(box);
   mountStream();
+}
+
+// ---------- ряд «Сегодня» (ADR-015, шаг 6) ----------
+// Кружки клубов со свежими постами, как истории: свой клуб, соперник, лига, дальше — у кого новее.
+// Кольцо --ember — есть посты новее прошлого просмотра. Нажатие — посты клуба листом, листаются
+// касанием: справа — дальше, слева — назад. Таймера автоперехода нет
+
+const PACKS_KEY = "packs_seen";   // { клуб или "league": ISO последнего просмотренного поста }
+const PACK_HOURS = 48;
+const PACK_MAX = 12;
+
+function packs() {
+  if (!state.stream) return [];
+  const now = Date.now();
+  const hidden = feedHidden();
+  const by = new Map();
+  for (const c of state.stream.items || []) {
+    if (c.kind !== "post" || hidden[c.channel] || !POST_URL.test(c.url || "")) continue;
+    if (now - Date.parse(c.at) > PACK_HOURS * 36e5 || !(Date.parse(c.until) > now)) continue;
+    const key = c.club || "league";
+    if (!by.has(key)) by.set(key, []);
+    by.get(key).push(c);
+  }
+  const opp = feedOpp();
+  const rank = (k) => (k === state.fav ? 0 : k === opp ? 1 : k === "league" ? 2 : 3);
+  return [...by].map(([key, posts]) => ({ key, posts: posts.sort((a, b) => Date.parse(a.at) - Date.parse(b.at)) }))
+    .sort((a, b) => rank(a.key) - rank(b.key) || Date.parse(b.posts[b.posts.length - 1].at) - Date.parse(a.posts[a.posts.length - 1].at))
+    .slice(0, PACK_MAX);
+}
+
+const packSeen = () => readJSON(PACKS_KEY);
+const packNew = (p) => p.posts.some((c) => Date.parse(c.at) > (Date.parse(packSeen()[p.key]) || 0));
+const packName = (key) => (key === "league" ? "Лига" : key === state.fav ? "Мой клуб" : team(key).name);
+
+function packsHTML() {
+  if (state.stream === undefined) return `<div class="packs" aria-hidden="true">${'<span class="pack sk-pack"><i class="sk"></i></span>'.repeat(5)}</div>`;
+  const list = packs();
+  if (!list.length) return "";
+  return `<div class="packs" role="list" aria-label="Сегодня в каналах">${list.map((p) => {
+    const em = p.key === "league" ? '<span class="em ab" aria-hidden="true">РХЛ</span>' : emblem(p.key, "");
+    return `<button type="button" role="listitem" class="pack${packNew(p) ? " new" : ""}" data-pack="${esc(p.key)}" aria-label="${esc(packName(p.key))}: ${p.posts.length} ${plural(p.posts.length, "пост", "поста", "постов")}${packNew(p) ? ", есть новое" : ""}">
+      <span class="pack-ring">${em}</span><span class="pack-name">${esc(packName(p.key))}</span></button>`;
+  }).join("")}</div>`;
+}
+
+function refreshPacks() {
+  const box = $("#packs");
+  if (box && state.tab === "home") box.innerHTML = packsHTML();
+}
+
+// Открыть пакет: с первого непросмотренного поста, всё просмотрено — с начала
+function openPack(key) {
+  const list = packs();
+  const ki = list.findIndex((p) => p.key === key);
+  if (ki < 0) return;
+  const seen = Date.parse(packSeen()[key]) || 0;
+  const i = Math.max(0, list[ki].posts.findIndex((c) => Date.parse(c.at) > seen));
+  state.pack = { list, ki, i };
+  showPack(0);
+}
+
+function showPack(dir) {
+  const { list, ki, i } = state.pack;
+  const p = list[ki];
+  const c = p.posts[i];
+  const all = packSeen();
+  if (!(Date.parse(all[p.key]) >= Date.parse(c.at))) {
+    all[p.key] = c.at;
+    lsSet(PACKS_KEY, JSON.stringify(all));
+  }
+  const img = c.image && POST_IMG.test(c.image)
+    ? `<div class="fc-img pack-img"><img src="${esc(c.image)}" alt="" decoding="async" referrerpolicy="no-referrer">${c.video ? '<span class="tag">видео</span>' : c.media > 1 ? `<span class="tag">+${c.media - 1} фото</span>` : ""}</div>` : "";
+  const bar = p.posts.map((_, k) => `<i class="${k < i ? "done" : k === i ? "on" : ""}"></i>`).join("");
+  showSheet(`<div class="grab"></div>
+    <div class="pack-bar" aria-label="Пост ${i + 1} из ${p.posts.length}">${bar}</div>
+    <div class="sheet-head"><span class="when">${esc(c.ctitle || c.channel)} · ${esc(ago(c.at))}</span>
+    <button class="btn-round" data-close aria-label="Закрыть">${ICON.close}</button></div>
+    <div class="pack-page">${img}<p class="pack-text">${c.title ? `<b>${esc(c.title)}</b><br>` : ""}${esc(c.text)}</p>
+      <button type="button" class="pack-zone prev" data-pack-nav="-1" aria-label="Предыдущий пост"></button>
+      <button type="button" class="pack-zone next" data-pack-nav="1" aria-label="Следующий пост"></button></div>
+    <button type="button" class="btn" data-post="${esc(c.url)}">${c.media ? "Смотреть в канале" : "Читать в канале"}</button>
+    <p class="pack-foot">${esc(packName(p.key))} · ${ki + 1} из ${list.length}. Касание справа — дальше, слева — назад</p>`, dir);
+  watchFeedImages($("#sheet"));
+  const btn = document.querySelector(`#packs [data-pack="${CSS.escape(p.key)}"]`);
+  if (btn && !packNew(p)) btn.classList.remove("new");
+}
+
+// Дальше — следующий пост, после последнего — следующий клуб; назад — наоборот
+function packNav(step) {
+  const s = state.pack;
+  if (!s) return;
+  haptic();
+  let { ki, i } = s;
+  i += step;
+  if (i >= s.list[ki].posts.length) { ki += 1; i = 0; }
+  if (i < 0) { ki -= 1; i = ki >= 0 ? s.list[ki].posts.length - 1 : 0; }
+  if (ki < 0) { ki = 0; i = 0; }
+  if (ki >= s.list.length) { state.pack = null; return closeMatch(); }
+  s.ki = ki;
+  s.i = i;
+  showPack(step);
 }
 
 // Следующая порция — когда до конца ленты остаётся экран
@@ -3251,7 +3354,7 @@ function confirmTeam(id = state.draft || state.fav) {
 }
 
 document.addEventListener("click", (e) => {
-  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],#sheet-backdrop");
+  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],[data-pack],[data-pack-nav],#sheet-backdrop");
   if (!el || el.disabled) return;
   if (el.dataset.guide) return guideHop(el);
   if (el.hasAttribute("data-meet-close") || (el.hasAttribute("data-coach-back") && state.meet)) return closeCoach();
@@ -3297,6 +3400,8 @@ document.addEventListener("click", (e) => {
     state.cal = calFor(null);
     return go("calendar");
   }
+  if (el.dataset.pack) return openPack(el.dataset.pack);
+  if (el.dataset.packNav) return packNav(Number(el.dataset.packNav));
   if (el.dataset.streamFilter) {
     if (el.dataset.streamFilter === state.streamFilter) return;
     state.streamFilter = el.dataset.streamFilter;

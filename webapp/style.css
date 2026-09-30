@@ -1096,8 +1096,8 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
   border: var(--line); border-radius: 20px; background: var(--paper);
   transition: transform .12s cubic-bezier(.2, .8, .2, 1), background-color .2s;
 }
-.fc[role="button"] { cursor: pointer; }
-.fc[role="button"]:active { transform: scale(.985); background: var(--sel); transition-delay: 60ms; }
+.fc[role="button"], .fc-post { cursor: pointer; }
+.fc[role="button"]:active, .fc-post:active { transform: scale(.985); background: var(--sel); transition-delay: 60ms; }
 .fc-top { display: flex; align-items: center; gap: 6px; font: 700 12px/1.2 var(--ui); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
 .fc-new { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ember); }
 .fc-sub { margin-top: 8px; font-size: 13px; color: var(--muted); }
@@ -1130,9 +1130,12 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 .fc-head { display: grid; grid-template-columns: 24px 1fr 40px; align-items: center; gap: 10px; }
 .fc-who { min-width: 0; }
 .fc-who .fc-new { display: inline-block; margin-right: 6px; vertical-align: 1px; }
-.fc-who b { font-weight: 700; font-size: 15px; }
-.fc-who b, .fc-who small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fc-who small { display: block; margin-top: 1px; font-size: 12px; color: var(--muted); }
+/* название канала — одной строкой с многоточием: блоком, иначе длинное уходит под «⋯» и за край карточки */
+.fc-who b { display: block; font-weight: 700; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* «канал клуба · соперник серии · 3 ч»: сжимается метка, время остаётся целым */
+.fc-who small { display: flex; min-width: 0; margin-top: 1px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.fc-kind { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.fc-ago { flex: none; }
 .fc-more { display: grid; place-items: center; width: 40px; height: 40px; margin: -8px -10px -8px 0; border: 0; border-radius: 9999px; background: none; color: var(--muted); cursor: pointer; }
 .fc-more svg { width: 20px; height: 20px; fill: currentColor; }
 .fc-more:active { background: var(--mist); }
@@ -1141,7 +1144,9 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 .fc-img .tag { position: absolute; right: 8px; bottom: 8px; height: 22px; padding: 0 9px; font-size: 11px; }
 .fc-text { margin: 10px 0 0; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .fc-text b { font-weight: 700; }
-.fc-go { display: inline-flex; align-items: center; height: 36px; margin-top: 12px; padding: 0 14px; border: 1px solid var(--edge); border-radius: 9999px; background: var(--paper); font: 700 13px/1 var(--ui); letter-spacing: .03em; }
+/* пилюля «Читать в канале ›» — настоящая кнопка: с неё пост открывают с клавиатуры и в VoiceOver */
+.fc-go { display: inline-flex; align-items: center; min-height: 40px; margin-top: 12px; padding: 0 16px; border: 1px solid var(--edge); border-radius: 9999px; background: var(--paper); color: var(--ink); font: 700 13px/1 var(--ui); letter-spacing: .03em; cursor: pointer; transition: transform .12s cubic-bezier(.2, .8, .2, 1); }
+.fc-go:active { transform: scale(.97); }
 .fc-link { display: inline-flex; align-items: center; min-height: 40px; margin-top: 4px; padding: 0; border: 0; background: none; color: var(--ink); font: 700 13px/1.2 var(--ui); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 
 /* «Дальше» внутри карточки листа: строки календаря без второй рамки, во всю ширину карточки */
@@ -1173,7 +1178,7 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 .menu-row.static-row .fc-link { margin: 0; }
 
 @media (hover: hover) and (pointer: fine) {
-  .fc[role="button"]:hover, .fc-game:hover { background: var(--sel); }
+  .fc[role="button"]:hover, .fc-post:hover, .fc-game:hover { background: var(--sel); }
   .fc-more:hover { background: var(--mist); }
 }
 @media (max-width: 359px) {
@@ -1190,12 +1195,19 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 .pack .em { width: 52px; height: 52px; border: var(--line); }
 .pack .em.ab { font-size: 11px; }
 .pack-name { max-width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 700 11px/1.2 var(--ui); }
-.pack:active .pack-ring { transform: scale(.94); }
+/* ряд листают вбок: нажатие проявляется через 60 мс, чтобы кружки не мигали под пальцем при прокрутке */
+.pack:active .pack-ring { transform: scale(.94); transition-delay: 60ms; }
 .sk-pack i { display: block; width: 64px; height: 64px; border-radius: 50%; }
 
 .pack-bar { display: flex; gap: 3px; margin: 0 0 12px; }
 .pack-bar i { flex: 1; height: 4px; border-radius: 9999px; border: 1px solid var(--muted); }
 .pack-bar i.done, .pack-bar i.on { background: var(--ink); border-color: var(--ink); }
+/* Рамка историй одной высоты: отрезки прогресса и крестик не прыгают от поста к посту. Кнопка в канал
+   прижата к низу рамки и не уходит под край на 320×568 — длинный текст прокручивается под ней */
+.sheet.pack-open { height: min(90vh, 640px); padding-bottom: 0; }
+.sheet.pack-open > .sheet-page { display: flex; flex-direction: column; min-height: 100%; }
+.sheet.pack-open .pack-page { flex: 1 0 auto; }
+.pack-cta { position: sticky; bottom: 0; z-index: 1; padding: 8px 0 calc(12px + env(safe-area-inset-bottom)); background: var(--paper); }
 .pack-page { position: relative; min-height: 200px; }
 .pack-img { max-width: none; aspect-ratio: 4 / 3; margin-top: 0; }
 .pack-text { margin: 12px 0 16px; font-size: 16px; line-height: 1.45; overflow-wrap: anywhere; }
@@ -1204,3 +1216,8 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 .pack-zone.prev { left: 0; width: 30%; }
 .pack-zone.next { right: 0; width: 70%; }
 .pack-foot { margin: 12px 0 4px; text-align: center; font-size: 12px; color: var(--muted); }
+
+/* prefers-reduced-motion: нажатие на карточку, пилюлю и кружок — без перехода, сразу конечное состояние */
+@media (prefers-reduced-motion: reduce) {
+  .fc, .fc-go, .pack-ring { transition: none; }
+}

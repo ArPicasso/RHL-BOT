@@ -358,5 +358,44 @@ class Sheet(unittest.TestCase):
         self.assertIsNone(feed.table_card("a", standings, last, date(2026, 10, 12)))
 
 
+
+class Stream(unittest.TestCase):
+    def test_week_newest_first_without_live(self):
+        chans = [channel("ch_a", "a"), channel("ch_b", "b", kind="fan")]
+        posts = {"ch_a": posts_of("ch_a", 1, 30, 160, 200), "ch_b": posts_of("ch_b", 2)}
+        posts["ch_a"]["posts"][0]["live"] = True
+        got = feed.stream_posts(chans, posts, NOW)
+        self.assertEqual([p["id"] for p in got], ["post-ch_a-101", "post-ch_a-102"])   # 200 ч — старше недели
+        self.assertEqual(got[0]["slot"], "stream")
+
+    def test_one_channel_not_three_in_a_row(self):
+        chans = [channel("ch_a", "a"), channel("ch_b", "b")]
+        posts = {"ch_a": posts_of("ch_a", 1, 2, 3, 4, 5), "ch_b": posts_of("ch_b", 10, 11)}
+        order = [p["channel"] for p in feed.stream_posts(chans, posts, NOW)]
+        self.assertEqual(order, ["ch_a", "ch_a", "ch_b", "ch_a", "ch_a", "ch_b", "ch_a"])
+
+    def test_own_card_every_five_posts(self):
+        w = World()
+        w.games[0]["date"] = "2026-10-09"
+        stream = feed.build_stream(NOW, games=w.games, history=w.history, recaps=w.recaps,
+                                   channels=w.channels, posts=w.posts)
+        kinds_ = [c["kind"] for c in stream["items"]]
+        self.assertEqual(kinds_[:6], ["post"] * 5 + ["story"])
+        self.assertIn("day", kinds_)
+        self.assertEqual(len({c["id"] for c in stream["items"]}), len(kinds_))
+
+    def test_story_per_played_day(self):
+        games = [game("x1", "2026-10-09", "d", "e", (2, 1)), game("x2", "2026-10-07", "f", "b", (4, 3))]
+        recaps = {"x1": {"story": "Всё решили буллиты."}, "x2": {"story": "Камбэк «f»."}}
+        cards = feed.stream_cards(games, [], recaps, date(2026, 10, 10))
+        self.assertEqual([(c["match"], c["date"]) for c in cards], [("x1", "2026-10-09"), ("x2", "2026-10-07")])
+
+    def test_this_day_one_per_season_story_first(self):
+        history = [{"date": f"{y}-10-10", "season": "", "home": "a", "away": b, "score": [1, 0], "decision": "",
+                    "game_id": n} for n, (y, b) in enumerate([(2022, "b"), (2022, "c"), (2023, "d"), (2024, "e")])]
+        cards = feed.stream_cards([], history, {"h2": {"story": "Камбэк."}}, date(2026, 10, 10))
+        self.assertEqual([(c["date"][:4], c.get("match")) for c in cards], [("2023", "h2"), ("2024", None), ("2022", None)])
+
+
 if __name__ == "__main__":
     unittest.main()

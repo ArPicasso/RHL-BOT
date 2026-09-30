@@ -60,6 +60,7 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `tools/render_stickers.js` | Перерисовать стикеры и эмодзи (Playwright, запускается руками) |
 | `tools/upload_emoji.py` | Опубликовать эмодзи набором `t.me/addemoji/rhl_u21_by_<бот>` |
 | `.claude/agents/bot-logic.md` | Агент для логики бота: онбординг, хендлеры, напоминания |
+| `.claude/agents/feed-designer.md` | Агент-дизайнер ленты «Главной» (ADR-015): аудит по скриншотам, концепт, спецификация, прототип за флагом `?feed_v2=1` |
 | `calendar.pdf` | Календарь на печать, отдаётся по кнопке |
 | `docs/research/` | Результаты разведки: источники данных, аудитория, письмо клубу |
 

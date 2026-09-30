@@ -51,6 +51,11 @@ class Page(unittest.TestCase):
     def test_live_play_by_play(self):
         self.assertTrue(tg.is_live(self.by_id(self.samara, 3281)["text"]))
         self.assertFalse(tg.is_live(self.by_id(self.samara, 3286)["text"]))   # итог «завершаем со счётом»
+        for text in ("27 секунд осталось до конца основного времени", "Будем ещё 52 секунды играть вчетвером",
+                     "Текстовая трансляция", "5 минут до старта встречи. Ссылка на трансляцию"):
+            self.assertTrue(tg.is_live(text), text)
+        self.assertFalse(tg.is_live("Календарь сезона: 48 матчей, начинаем 6 октября дома. Трансляции всех "
+                                    "домашних игр — в нашей группе, билеты уже в продаже на сайте клуба."))
 
     def test_repost_skipped(self):
         self.assertEqual(tg.skip_reason(self.by_id(self.samara, 3301), CLUB), "репост")
@@ -76,7 +81,8 @@ class Page(unittest.TestCase):
 
 class Filters(unittest.TestCase):
     def reason(self, text, channel=CLUB, names=()):
-        return tg.skip_reason(post(text), channel, names)
+        # с картинкой: правило «коротко» проверяется отдельно, здесь — остальные фильтры
+        return tg.skip_reason(post(text, media=1), channel, names)
 
     def test_ads_and_bookmakers(self):
         self.assertEqual(self.reason("Реклама. ООО «Ромашка», erid: 2Vtzq"), "реклама")
@@ -102,15 +108,28 @@ class Filters(unittest.TestCase):
         self.assertEqual(self.reason("Гол Петрова на 12-й минуте", names=["Петров"]), "скрытый игрок")
         self.assertIsNone(self.reason("Гол Иванова на 12-й минуте", names=["Петров"]))
 
-    def test_league_channel_needs_marker(self):
-        league = {"handle": "rusicehockey", "club": None, "kind": "league", "scope": "u21_only",
-                  "markers": ["РХЛ", "Российской хоккейной лиги"]}
-        self.assertEqual(self.reason("Сборная U18 выиграла турнир", league), "не о молодёжке")
-        self.assertIsNone(self.reason("Утверждён регламент РХЛ на сезон 2026/27", league))
+    def test_markers_by_scope(self):
+        general = {"handle": "fed", "club": None, "kind": "league", "scope": "u21_only",
+                   "markers": ["РХЛ", "Российской хоккейной лиги"]}
+        self.assertEqual(self.reason("Сборная U18 выиграла турнир", general), "не о молодёжке")
+        self.assertIsNone(self.reason("Утверждён регламент РХЛ на сезон 2026/27", general))
+        league = {"handle": "nmhlpervenstvo", "club": None, "kind": "league", "scope": "all", "markers": []}
+        self.assertIsNone(self.reason("Итоги игрового дня", league))
 
-    def test_media_only_and_empty(self):
+    def test_own_markers_replace_general(self):
+        khl = {"handle": "hcseverstal", "club": "metallurg", "kind": "system", "scope": "u21_only",
+               "markers": ["МХК «Металлург»", "РХЛ"]}
+        self.assertEqual(self.reason("МХК «Алмаз» обыграл «Локо»", khl), "не о молодёжке")
+        self.assertIsNone(self.reason("МХК «Металлург» открыл сезон РХЛ", khl))
+        vhl = {"handle": "hc_tambov", "club": "tambov", "kind": "system", "scope": "u21_only", "markers": []}
+        self.assertIsNone(self.reason("Молодёжка готовится к старту", vhl))
+
+    def test_media_only_empty_short_and_service(self):
         self.assertEqual(tg.skip_reason(post(""), CLUB), "пусто")
         self.assertEqual(tg.skip_reason(post("", media=1), CLUB), "без текста")
+        self.assertEqual(tg.skip_reason(post("🤩 С победой!"), CLUB), "коротко")
+        self.assertIsNone(tg.skip_reason(post("🤩 С победой!", media=1), CLUB))   # с фото — понятно
+        self.assertEqual(tg.skip_reason(post("ХК «Факел» pinned a photo", service=True), CLUB), "служебное")
 
     def test_preview_cut_by_word(self):
         long = "Молодёжка " + "провела открытую тренировку на арене " * 10

@@ -264,7 +264,8 @@ flowchart LR
 каналов. Разбор и проверка каналов — `docs/research/2026-09-28-feed-engagement.md`.
 
 **30.09.2026, лист собран.** Шаги 2–5 ADR-015 одним PR:
-- `channels.json` — база каналов клубов, свод — `docs/research/2026-09-30-club-channels.md`;
+- `channels.json` — 32 канала 24 клубов и канал лиги `@nmhlpervenstvo` вместо ФХР, свод —
+  `docs/research/2026-09-30-club-channels.md`;
 - `tg_channels.py` — сбор с `t.me/s` и фильтры → `channel_posts.json`, кэш сборки не в git;
 - `feed.py` — правила листа, `build_data.py` → `webapp/data/feed/<клуб>.json`;
 - на «Главной» — карточки, превью постов, «Лист собран», в «Я» — «Посты каналов».

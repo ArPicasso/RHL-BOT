@@ -33,8 +33,7 @@ PREVIEW = 180          # знаков превью, обрыв по слову (
 TITLE_MAX = 90         # первая строка короче — заголовок поста
 SHOWN_KINDS = {"club", "academy", "system", "league"}   # фан-каналы в первой версии не берём
 
-# Маркеры молодёжной команды для каналов со scope "u21_only": у каждого канала свои в channels.json
-# плюс общие. Название команды РХЛ добавляет feed при сборке, если оно не совпадает со взрослым
+# Маркеры молодёжной команды для каналов со scope "u21_only", если у канала в channels.json своих нет
 U21_MARKERS = ("МХК", "молодёжн", "молодежн", "молодёжк", "молодежк", "РХЛ", "НМХЛ", "U21", "U-21")
 
 AD_RE = re.compile(r"\berid\b|реклам|промокод", re.I)   # розыгрыш билетов у клуба — не реклама
@@ -48,8 +47,14 @@ AGE_RE = re.compile(r"\b\d{1,2}\.\d{1,2}\.(199\d|20[01]\d)\b|\b(19|20)\d{2}\s*г
 RUDE_RE = re.compile(r"\b(х[уy][йеёяи]|пизд|[её]б[аоу]?н|[её]бат|бля[дт]?|муда[кч]|пидор|гандон|залуп|сук[аи]\b)", re.I)
 # Трансляция матча по ходу: «56’ Нарушение…», «ГОООЛ!», «Перерыв», «Счёт: 2:1». Через час это шум
 LIVE_RE = re.compile(r"^\s*\d{1,2}\s*[’'′]|ГО{2,}Л|шайбу забросил|^\s*перерыв|конец\s+\d[-‑]?го\s+периода"
-                     r"|\bсч[её]т:?\s*\d+\s*:\s*\d+|\bпериод\s*[:·—-]", re.I | re.M)
+                     r"|\bсч[её]т:?\s*\d+\s*:\s*\d+|\bпериод\s*[:·—-]|\d+\s+секунд\w*\s+(осталось|до)"
+                     r"|осталось\s+\d+\s+секунд|вчетвером|втро[её]м|в\s+меньшинств|в\s+большинств|удал[её]н"
+                     r"|тайм-аут|вбрасывани", re.I | re.M)
 LIVE_MAX = 300         # длинный пост со счётом — итог или анонс, не трансляция
+# Совсем короткий пост о трансляции («Текстовая трансляция», «5 минут до старта. Ссылка») — тоже по ходу
+LIVE_SHORT_RE = re.compile(r"трансляци|до\s+старта|стартовое\s+вбрасывание|начинаем\s+матч", re.I)
+LIVE_SHORT = 80
+MIN_LETTERS = 25       # пост без картинки короче — «С победой!», «Работаем»: в ленте без контекста не понять
 # Хвост поста: «🐦 ХК «САМАРА» / 🇷🇺 СТРИЖИ В МАКС», «@rostovhc», «Мы в ВК | Мы в МАКС», хэштеги
 TAIL_RE = re.compile(r"@\w+|\bMAX\b|\bМАКС\b|\bVK\b|\bВК\b|ВКонтакте|vk\.(com|ru)|t\.me/|#\w+|подписывай", re.I)
 TAIL_MAX = 90
@@ -99,6 +104,7 @@ def parse_page(page: str, handle: str) -> dict:
             "media": len(photos) + videos,
             "video": videos > 0,
             "forwarded": "tgme_widget_message_forwarded_from" in block,
+            "service": bool(re.search(r'class="tgme_widget_message [^"]*service_message', block)),
             "poll": "tgme_widget_message_poll" in block,
         })
     return {"title": title, "posts": posts}
@@ -144,7 +150,13 @@ def preview(text: str) -> tuple[str, str]:
 
 
 def is_live(text: str) -> bool:
+    if len(text) < LIVE_SHORT and LIVE_SHORT_RE.search(text):
+        return True
     return len(text) < LIVE_MAX and bool(LIVE_RE.search(text))
+
+
+def letters(text: str) -> int:
+    return len(re.findall(r"[A-Za-zА-Яа-яЁё]", text))
 
 
 def load_hidden_names(path: Path = HIDDEN_FILE) -> list[str]:
@@ -163,6 +175,8 @@ def load_hidden_names(path: Path = HIDDEN_FILE) -> list[str]:
 def skip_reason(post: dict, channel: dict, hidden_names: list[str] = ()) -> str | None:
     """Почему пост не идёт в ленту, или None. Причина — для канарейки и тестов."""
     text = post["text"]
+    if post.get("service"):
+        return "служебное"   # «канал закрепил фото»
     if post["forwarded"]:
         return "репост"
     if post["poll"]:
@@ -182,12 +196,15 @@ def skip_reason(post: dict, channel: dict, hidden_names: list[str] = ()) -> str 
     low = text.lower()
     if any(re.search(rf"\b{re.escape(n.lower())}", low) for n in hidden_names):
         return "скрытый игрок"
-    if channel.get("scope") == "u21_only" or channel.get("kind") == "league":
-        markers = list(channel.get("markers") or []) + list(U21_MARKERS if channel.get("kind") != "league" else ())
+    if channel.get("scope") == "u21_only":
+        # свои маркеры канала заменяют общие: у «Северстали» «МХК» — это МХЛ, а не команда РХЛ
+        markers = channel.get("markers") or U21_MARKERS
         if not any(m.lower() in low for m in markers):
             return "не о молодёжке"
     if not text:
         return "без текста"   # только картинка: превью без слов в ленте не понять
+    if not post["media"] and letters(text) < MIN_LETTERS:
+        return "коротко"
     return None
 
 

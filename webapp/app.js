@@ -520,7 +520,7 @@ const POST_URL = /^https:\/\/t\.me\/\w+\/\d+$/;
 const POST_IMG = /^https:\/\/cdn\d*\.telesco\.pe\//;
 const STAR_SUN = '<svg class="fc-star" viewBox="0 0 100 100" aria-hidden="true"><path d="m50 6 12.5 27 29.5 3.5-22 20 6 29.5L50 71 23.5 86l6-29.5-22-20L37 33z"/></svg>';
 const DOTS = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>';
-const CKIND = { club: "канал клуба", academy: "канал академии", system: "канал клуба", league: "канал ФХР" };
+const CKIND = { club: "канал клуба", academy: "канал академии", system: "канал клуба", league: "канал лиги" };
 const feedLoading = {};
 
 function loadFeed(club) {
@@ -648,7 +648,7 @@ function feedCard(c, isNew) {
 
 function postCard(c, isNew) {
   const title = c.ctitle || c.channel;
-  const em = c.club ? emblem(c.club, "") : '<span class="em ab" aria-hidden="true">ФХР</span>';
+  const em = c.club ? emblem(c.club, "") : '<span class="em ab" aria-hidden="true">РХЛ</span>';
   const who = [CKIND[c.ckind] || "канал", c.slot === "opp" ? "соперник серии" : ""].filter(Boolean).join(" · ");
   const img = c.image && POST_IMG.test(c.image)
     ? `<div class="fc-img"><img src="${esc(c.image)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">${c.video ? '<span class="tag">видео</span>' : c.media > 1 ? `<span class="tag">+${c.media - 1} фото</span>` : ""}</div>`
@@ -742,7 +742,7 @@ function openPostMenu(handle) {
 }
 
 const FEED_RULES = [
-  "Показываем публичные каналы клубов РХЛ и канал ФХР — только посты о молодёжной команде.",
+  "Показываем публичные каналы клубов РХЛ и канал лиги. Из общих каналов со взрослым клубом — только посты о молодёжке.",
   "Из поста — начало текста и одна картинка. Всё остальное — в самом канале: нажми на карточку.",
   "Сначала твой клуб и соперник серии, потом клубы лиги по кругу. Сколько канал пишет, не важно: очередь одна для всех.",
   "Не показываем рекламу, букмекеров, дни рождения и возраст игроков.",

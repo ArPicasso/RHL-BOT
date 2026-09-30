@@ -1162,7 +1162,7 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 /* «Посты каналов» в «Я»: правила и скрытые каналы */
 .fc-rules { margin: 0 0 8px; padding: 0 0 0 20px; font-size: 15px; line-height: 1.45; }
 .fc-rules li + li { margin-top: 8px; }
-.menu-row.static-row { grid-template-columns: 0 1fr auto; cursor: default; }
+.menu-row.static-row { grid-template-columns: 1fr auto; cursor: default; }
 .menu-row.static-row:active { background: none; }
 .menu-row.static-row .fc-link { margin: 0; }
 

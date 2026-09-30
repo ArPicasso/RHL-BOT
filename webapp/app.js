@@ -664,7 +664,10 @@ function postCard(c, isNew) {
 
 function feedEndSay(f) {
   const g = f.next && findGame(f.next);
-  switch (f.state) {
+  // сыграли вчера, а следующий матч уже завтра — важнее, что впереди
+  const soon = g ? daysFromToday(g.date) : null;
+  const st = soon === 0 ? "match" : soon === 1 ? "eve" : f.state;
+  switch (st) {
     case "match": return `Лист собран. Сегодня играем${g && g.time ? ` в ${g.time}` : ""} — до встречи на трибуне!`;
     case "eve": return "Лист собран. Завтра играем — не пропусти!";
     case "start": return g ? `Лист собран. Сезон стартует ${fmtLong(g.date).replace(/ (?=\S+$)/, "\u00a0")} — осталось чуть-чуть!` : "Лист собран. Скоро сезон!";
@@ -748,7 +751,7 @@ const FEED_RULES = [
 
 function openFeedRules() {
   const hidden = Object.entries(feedHidden());
-  const rows = hidden.map(([h, t]) => `<div class="menu-row static-row"><span></span><span><b>${esc(t || h)}</b><small>Скрыт на «Главной»</small></span>
+  const rows = hidden.map(([h, t]) => `<div class="menu-row static-row"><span><b>${esc(t || h)}</b><small>Скрыт на «Главной»</small></span>
     <button type="button" class="fc-link" data-feed-unhide="${esc(h)}">Вернуть</button></div>`).join("");
   showSheet(`<div class="grab"></div>
     <div class="sheet-head"><span class="when">Посты каналов на «Главной»</span>

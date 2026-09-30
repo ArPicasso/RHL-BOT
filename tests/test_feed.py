@@ -268,13 +268,9 @@ class Sheet(unittest.TestCase):
         self.assertNotIn("h2h", kinds(far))
         self.assertIn("h2h", kinds(self.w.build(now=NOW - timedelta(days=1))))
 
-    def test_notice_gate(self):
+    def test_posts_without_letter(self):
+        # предварительного согласия не ждём: письма нет — посты всё равно идут (ADR-015, 30.09)
         self.w.channels = [channel(f"ch_{c}", c, notified=None) for c in CLUBS]
-        self.assertNotIn("post", kinds(self.w.build()))
-        self.assertIn("post", kinds(self.w.build(gate=False)))
-        self.w.channels = [channel(f"ch_{c}", c, notified="2026-10-04") for c in CLUBS]   # 6 дней
-        self.assertNotIn("post", kinds(self.w.build()))
-        self.w.channels = [channel(f"ch_{c}", c, notified="2026-10-03") for c in CLUBS]   # неделя
         self.assertIn("post", kinds(self.w.build()))
 
     def test_slots_mine_rival_first(self):

@@ -11,7 +11,7 @@
   клуба (не свой и не соперник серии) — один пост;
 - слот «клуб по ротации» обходит клубы по кругу со сдвигом (номер дня + индекс клуба): за 24 дня
   каждый клуб побывает в листе каждого. Активность канала частоту не покупает;
-- посты канала — только через неделю после письма клубу (`notified` в channels.json), свежее 48 часов,
+- посты всех публичных каналов из channels.json, кроме отказавшихся (`optout`), свежее 48 часов,
   трансляция матча по минутам — только своего клуба и не старше 3 часов;
 - лист не длиннее 12 карточек.
 """
@@ -29,7 +29,6 @@ LIVE_TTL = timedelta(hours=3)
 SERIES_DAYS = 7        # соперник серии: матч с ним в ближайшую неделю
 H2H_DAYS = 3           # очные встречи и прошлая встреча — за три дня до матча
 PAUSE_DAYS = 5         # своего матча нет пять дней и больше — пауза
-NOTICE_DAYS = 7        # неделя, чтобы клуб успел отказаться до первого показа
 SHOWN_KINDS = ("club", "academy", "system", "league")
 KIND_ORDER = {k: i for i, k in enumerate(SHOWN_KINDS)}
 # «Сюжет дня»: самая яркая история вчерашних матчей — камбэк > буллиты > овертайм > серия шайб > «сухарь»
@@ -253,15 +252,10 @@ def own_cards(club: str, state: str, nxt: dict | None, last: dict | None, *, gam
 
 # ---------- посты каналов ----------
 
-def shown_channels(channels: list[dict], today: date, gate: bool = True) -> list[dict]:
-    """Каналы, чьи посты лента может показать сегодня. gate=False — для просмотра разработкой до писем."""
-    out = []
-    for c in channels:
-        if c["kind"] not in SHOWN_KINDS or (c.get("optout") or {}).get("level") == "all":
-            continue
-        if gate and not (c.get("notified") and d(c["notified"]) + timedelta(days=NOTICE_DAYS) <= today):
-            continue
-        out.append(c)
+def shown_channels(channels: list[dict]) -> list[dict]:
+    """Каналы, чьи посты лента может показать: без фан-каналов и без клубов, которые отказались.
+    Предварительного согласия не ждём — решение владельца 30.09 (ADR-015)."""
+    out = [c for c in channels if c["kind"] in SHOWN_KINDS and (c.get("optout") or {}).get("level") != "all"]
     return sorted(out, key=lambda c: KIND_ORDER[c["kind"]])
 
 
@@ -367,15 +361,14 @@ def assemble(own: list[dict], queue: list[dict]) -> list[dict]:
 # ---------- лист клуба ----------
 
 def build(club: str, now: datetime, *, clubs: list[str], games: list[dict], standings: dict, h2h: dict,
-          history: list[dict], recaps: dict, channels: list[dict], posts: dict, leaders: dict | None = None,
-          gate: bool = True) -> dict:
+          history: list[dict], recaps: dict, channels: list[dict], posts: dict, leaders: dict | None = None) -> dict:
     """Лист клуба на сейчас: состояние дня, ближайший матч и карточки по порядку."""
     today = now.astimezone(TZ).date()
     nxt, last = schedule(club, games, today)
     state = day_state(nxt, last, today)
     own = own_cards(club, state, nxt, last, games=games, standings=standings, h2h=h2h, history=history,
                     recaps=recaps, leaders=leaders, today=today)
-    shown = shown_channels(channels, today, gate)
+    shown = shown_channels(channels)
     queue = post_queue(club, series_opponent(nxt, club, today), clubs, shown, posts, now)
     out = {"club": club, "built": iso(now), "state": state, "cards": assemble(own, queue)}
     if nxt:

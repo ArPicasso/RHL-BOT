@@ -36,7 +36,7 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `build_zveno.py` | Собирает `webapp/data/zveno/`: `tours.json`, `pool.json`, `matches.json`, `names.json`. В Pages-задании сразу после `build_data.py` |
 | `docs/zveno/contract.md` | Контракт частей «Звена»: опубликованные данные, функции движка, API сервера, бот |
 | `rhockey.py` | Календарь всей лиги с r-hockey.ru — временно, до открытия rhl.fhr.ru |
-| `channels.json` | Telegram-каналы клубов и лиги для листа «Главной» (ADR-015): `kind`, `scope`, `markers`, отказ клуба `optout`, дата письма клубу `notified` — посты идут через неделю после неё. Правится руками |
+| `channels.json` | Telegram-каналы клубов и лиги для листа «Главной» (ADR-015): `kind`, `scope`, `markers`, отказ клуба `optout` (`images` — без картинок, `all` — не показываем), дата письма клубу `notified`. Правится руками |
 | `tg_channels.py` | Посты каналов из `t.me/s` → `channel_posts.json` (не в git): только превью, фильтры рекламы, букмекеров, дней рождения и возраста, постов не о молодёжке |
 | `feed.py` | Правила листа дня «Главной» (ADR-015): свои карточки и посты каналов, доли 60/40, лимиты, ротация клубов. `build_data.py` пишет `webapp/data/feed/<клуб>.json` |
 | `build_data.py` | Собирает `webapp/data/league.json` (команды, матчи, результаты, таблица), `h2h.json`, разборы матчей `matches/<id>.json` (ADR-008) и `leaders.json` (ADR-009) |
@@ -81,7 +81,6 @@ venv/bin/python history.py                       # прошлые сезоны �
 venv/bin/python history.py --protocols           # затем протоколы прошлых встреч, ~30 минут
 venv/bin/python tg_channels.py                   # посты каналов клубов в channel_posts.json (ADR-015)
 venv/bin/python build_data.py                    # собрать webapp/data/league.json, h2h.json и листы feed/
-venv/bin/python build_data.py --preview-posts    # то же, посты всех каналов без проверки писем — только у себя
 cd webapp && python3 -m http.server 8000         # мини-апп в браузере: localhost:8000
 ```
 

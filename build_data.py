@@ -649,7 +649,7 @@ def load_posts(path: Path = POSTS_FILE) -> dict:
 
 
 def write_feeds(out_dir: Path, teams: Teams, data: dict, h2h: dict, history: list[dict], recaps: dict[str, dict],
-                now: datetime, channels: list[dict], posts: dict, top: dict | None = None, gate: bool = True) -> int:
+                now: datetime, channels: list[dict], posts: dict, top: dict | None = None) -> int:
     """Лист дня «Главной» на каждый клуб: webapp/data/feed/<клуб>.json (ADR-015). Возвращает число постов."""
     feed_dir = out_dir / "feed"
     feed_dir.mkdir(exist_ok=True)
@@ -657,7 +657,7 @@ def write_feeds(out_dir: Path, teams: Teams, data: dict, h2h: dict, history: lis
     shown = 0
     for club in clubs:
         sheet = feed.build(club, now, clubs=clubs, games=data["games"], standings=data["standings"], h2h=h2h,
-                           history=history, recaps=recaps, channels=channels, posts=posts, leaders=top, gate=gate)
+                           history=history, recaps=recaps, channels=channels, posts=posts, leaders=top)
         shown += sum(1 for c in sheet["cards"] if c["kind"] == "post")
         (feed_dir / f"{club}.json").write_text(json.dumps(sheet, ensure_ascii=False, separators=(",", ":")),
                                                encoding="utf-8")
@@ -670,8 +670,6 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=OUT)
     ap.add_argument("--now", type=datetime.fromisoformat,
                     help="момент сборки листа «Главной» с поясом, например 2026-10-03T12:00+03:00")
-    ap.add_argument("--preview-posts", action="store_true",
-                    help="посты всех каналов без проверки письма клубу — только посмотреть у себя, не публиковать")
     args = ap.parse_args()
     if args.now and args.now.tzinfo is None:
         ap.error("--now нужен с поясом: 2026-10-03T12:00+03:00")
@@ -700,8 +698,7 @@ def main() -> None:
     top = leaders(teams, load_leaders(), load_hidden())
     if top:
         (args.out.parent / "leaders.json").write_text(json.dumps(top, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    posts = write_feeds(args.out.parent, teams, data, h2h, history, details, now, load_channels(), load_posts(), top,
-                        gate=not args.preview_posts)
+    posts = write_feeds(args.out.parent, teams, data, h2h, history, details, now, load_channels(), load_posts(), top)
     print(f"Лист «Главной»: {len(teams.all)} клубов, постов каналов в листах: {posts}")
     played = sum(1 for g in data["games"] if g.get("score"))
     print(f"Матчей: {len(data['games'])}, сыграно: {played} → {args.out}")

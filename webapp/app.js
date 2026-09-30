@@ -51,6 +51,8 @@ const state = {
   h2h: null,        // история очных встреч (ADR-006): грузится при первом открытии карточки матча
   tableView: "teams",   // «Таблица»: команды или лидеры лиги (ADR-009)
   leaders: null,    // лидеры лиги: грузятся при первом открытии «Игроков»
+  feed: {},         // лист дня «Главной» по клубу (ADR-015): null — не загрузился
+  feedSeen: {},     // прошлый заход по клубу, мс: отметки «новое» до конца сессии
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -463,10 +465,8 @@ function longestChunk(name) {
 function renderHome() {
   const me = state.fav;
   const t = team(me);
-  const mine = gamesOf(me);
   const next = nextGame(me);
   const last = lastPlayed(me);
-  const upcoming = mine.filter(isUpcoming).slice(1, 4);
 
   let html = `<section class="band sky">${RIBBON}
     <div class="hero"><button type="button" class="hero-em" data-switch-open aria-label="Сменить команду">${emblem(me, "xl")}</button><div><h1 style="--w:${longestChunk(t.name)}">${esc(t.name)}</h1><div class="meta">${esc(t.city)} · ${CONF[t.conf] || ""}</div></div></div>
@@ -498,11 +498,266 @@ function renderHome() {
       </div>`;
   }
 
-  if (upcoming.length) {
-    html += `<div class="label">Дальше<button type="button" class="aside link" data-tab="calendar">Весь календарь</button></div>
-      <div class="list">${upcoming.map((g) => gameRow(g, me, false)).join("")}</div>`;
-  }
+  html += `<div id="feed">${feedHTML(me)}</div>`;
   return html + footer();
+}
+
+// Три ближайшие игры после следующей: на «Главной» без листа дня — пока он не загрузился или его нет
+function upcomingBlock(me) {
+  const upcoming = gamesOf(me).filter(isUpcoming).slice(1, 4);
+  if (!upcoming.length) return "";
+  return `<div class="label">Дальше<button type="button" class="aside link" data-tab="calendar">Весь календарь</button></div>
+    <div class="list">${upcoming.map((g) => gameRow(g, me, false)).join("")}</div>`;
+}
+
+// ---------- лист дня (ADR-015) ----------
+// Лист собирает build_data.py: data/feed/<клуб>.json. Здесь только прячем просроченное и скрытые
+// каналы, отмечаем новое с прошлого захода и рисуем. Всё из поста — через esc(), ссылки не кликабельны
+
+const FEED_SEEN_KEY = "feed_seen";       // когда в последний раз видели лист: { клуб: ISO }
+const FEED_HIDDEN_KEY = "feed_hidden";   // скрытые каналы { адрес: название }, на устройстве и в облаке
+const POST_URL = /^https:\/\/t\.me\/\w+\/\d+$/;
+const POST_IMG = /^https:\/\/cdn\d*\.telesco\.pe\//;
+const STAR_SUN = '<svg class="fc-star" viewBox="0 0 100 100" aria-hidden="true"><path d="m50 6 12.5 27 29.5 3.5-22 20 6 29.5L50 71 23.5 86l6-29.5-22-20L37 33z"/></svg>';
+const DOTS = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>';
+const CKIND = { club: "канал клуба", academy: "канал академии", system: "канал клуба", league: "канал лиги" };
+const feedLoading = {};
+
+function loadFeed(club) {
+  if (!feedLoading[club]) {
+    feedLoading[club] = fetch(`data/feed/${encodeURIComponent(club)}.json`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.status))))
+      .then((d) => (state.feed[club] = d))
+      .catch(() => { state.feed[club] = null; return null; });
+  }
+  return feedLoading[club];
+}
+
+function readJSON(key) {
+  try { return JSON.parse(lsGet(key) || "{}") || {}; } catch (e) { return {}; }
+}
+function feedHidden() { return readJSON(FEED_HIDDEN_KEY); }
+function saveFeedHidden(v) {
+  const s = JSON.stringify(v);
+  lsSet(FEED_HIDDEN_KEY, s);
+  if (cloud()) cloud().setItem(FEED_HIDDEN_KEY, s, () => {});
+}
+
+// Время прошлого захода берём один раз за сессию: перерисовки не гасят отметки «новое»
+function feedSeenPrev(club) {
+  if (!(club in state.feedSeen)) {
+    const all = readJSON(FEED_SEEN_KEY);
+    state.feedSeen[club] = all[club] ? Date.parse(all[club]) || 0 : 0;
+    all[club] = new Date().toISOString();
+    lsSet(FEED_SEEN_KEY, JSON.stringify(all));
+  }
+  return state.feedSeen[club];
+}
+
+// Живые карточки: не просроченные, без скрытых каналов и без двух постов подряд
+function feedCards(f) {
+  const now = Date.now();
+  const hidden = feedHidden();
+  const out = [];
+  for (const c of f.cards || []) {
+    if (!(Date.parse(c.until) > now)) continue;
+    if (c.kind === "post" && (hidden[c.channel] || !POST_URL.test(c.url || "") || !out.length || out[out.length - 1].kind === "post")) continue;
+    out.push(c);
+  }
+  return out;
+}
+
+function ago(iso) {
+  const min = Math.max(1, Math.round((Date.now() - Date.parse(iso)) / 6e4));
+  if (min < 60) return `${min} мин`;
+  if (min < 24 * 60) return `${Math.round(min / 60)} ч`;
+  const day = new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(new Date(iso));
+  return daysFromToday(day) === -1 ? "вчера" : dayMonth(day);
+}
+
+const scoreText = (s, dec) => `${s[0]}:${s[1]}${dec ? ` ${dec}` : ""}`;
+function feedMatchLine(home, away, score, dec) {
+  const me = state.fav;
+  const nm = (id) => `<span class="${id === me ? "me" : ""}">${esc(team(id).name)}</span>`;
+  return `<div class="fc-match">${emblem(home)}${nm(home)}<span class="fc-dash">—</span>${nm(away)}${emblem(away)}<b class="num">${esc(scoreText(score, dec))}</b></div>`;
+}
+const feedStory = (text) => (text ? `<p class="fc-story">${STAR_SUN}<span>${esc(text)}</span></p>` : "");
+function feedTop(text, isNew) {
+  return `<div class="fc-top">${isNew ? '<i class="fc-new" title="Новое"></i>' : ""}<span>${text}</span></div>`;
+}
+// Карточка листа нажимается целиком: attrs — куда ведёт
+const fcard = (cls, attrs, inner) => `<article class="fc ${cls}"${attrs ? ` ${attrs} role="button" tabindex="0"` : ""}>${inner}</article>`;
+
+function feedCard(c, isNew) {
+  const me = state.fav;
+  switch (c.kind) {
+    case "h2h": {
+      const [wm, wo] = c.wins, [gm, gt] = c.goals;
+      const h = { games: c.games, wins: { [me]: wm, [c.opp]: wo } };
+      return fcard("fc-h2h", `data-game="${esc(c.game)}"`, `${feedTop(`Очные встречи${c.since ? ` · с ${esc(c.since)}` : ""}`, isNew)}
+        <div class="fc-h2h-row">${emblem(me, "md")}<b class="num">${wm}</b><span>победы</span><b class="num">${wo}</b>${emblem(c.opp, "md")}</div>
+        <div class="fc-sub">Шайбы ${gm}:${gt} · ${c.games} ${plural(c.games, "матч", "матча", "матчей")} с ${quoted(c.opp)}</div>
+        <div class="fc-verdict">${esc(h2hVerdict(h, me, c.opp))}</div>`);
+    }
+    case "meeting":
+      return fcard("", `data-game="${esc(c.match)}"`, `${feedTop(`Как сыграли в прошлый раз · ${esc(shortDate(c.date))}`, isNew)}
+        ${feedMatchLine(c.home, c.away, c.score, c.decision)}${feedStory(c.story)}`);
+    case "day":
+      return fcard("", c.match ? `data-game="${esc(c.match)}"` : "", `${feedTop(`В этот день · ${esc(parseISO(c.date).getUTCFullYear())}`, isNew)}
+        ${feedMatchLine(c.home, c.away, c.score, c.decision)}${feedStory(c.story)}`);
+    case "story": {
+      const g = findGame(c.match);
+      return fcard("", `data-game="${esc(c.match)}"`, `${feedTop("Сюжет дня · вчера в лиге", isNew)}
+        ${feedStory(c.story)}${g && g.score ? feedMatchLine(g.home, g.away, [g.score.home, g.score.away], g.score.decision) : ""}`);
+    }
+    case "today": {
+      const rows = c.games.map(findGame).filter(Boolean).map((g) => {
+        const r = g.score ? `<b class="num">${g.score.home}:${g.score.away}</b>` : `<span class="kick">${g.time ? esc(g.time) : ""}</span>`;
+        const nm = (id) => `<span class="${id === me ? "me" : ""}">${esc(team(id).name)}</span>`;
+        return `<div class="fc-game" data-game="${esc(g.id)}" role="button" tabindex="0">${emblem(g.home)}${nm(g.home)}<span class="fc-dash">—</span>${nm(g.away)}${emblem(g.away)}${r}</div>`;
+      }).join("");
+      const more = c.n - c.games.length;
+      return fcard("fc-today", "", `${feedTop(`Сегодня в лиге · ${c.n} ${plural(c.n, "матч", "матча", "матчей")}`, isNew)}
+        <div class="fc-games">${rows}</div>
+        <button type="button" class="fc-link" data-feed-league>${more > 0 ? `Ещё ${more} ${plural(more, "матч", "матча", "матчей")} — в календаре` : "Весь день в календаре"}</button>`);
+    }
+    case "table": {
+      const conf = { east: "на Востоке", west: "на Западе" }[c.conf] || "";
+      const sub = c.to8 !== undefined ? (c.to8 ? `До восьмёрки — ${c.to8} ${plural(c.to8, "очко", "очка", "очков")}` : "Восьмёрка — рядом, по очкам вровень")
+        : c.up !== undefined ? (c.up ? `До ${c.place - 1}-го места — ${c.up} ${plural(c.up, "очко", "очка", "очков")}` : `По очкам вровень с ${c.place - 1}-м местом`)
+        : "Первое место в конференции";
+      return fcard("fc-table", 'data-tab="table"', `${feedTop("Таблица", isNew)}
+        <div class="fc-place"><b class="num">${c.place}</b><div><strong>${quoted(me)} — ${c.place}-е место ${conf}</strong><small>${esc(sub)}</small></div></div>`);
+    }
+    case "upcoming": {
+      const list = c.games.map(findGame).filter(Boolean);
+      if (!list.length) return "";
+      return fcard("fc-list", "", `${feedTop("Дальше", false)}
+        <div class="list">${list.map((g) => gameRow(g, me, false)).join("")}</div>`);
+    }
+    case "leaders": {
+      const rows = c.rows.map((r) => `<div class="fc-lead" data-feed-leaders role="button" tabindex="0"><b>${esc(r.name)}</b><span>${r.rank}-й ${esc(LEAD_BY[r.cat] || "")}</span></div>`).join("");
+      return fcard("fc-leaders", "", `${feedTop(`В лидерах · ${esc(c.league)} ${esc(c.season)}`, isNew)}${rows}`);
+    }
+    case "post":
+      return postCard(c, isNew);
+    default:
+      return "";
+  }
+}
+
+function postCard(c, isNew) {
+  const title = c.ctitle || c.channel;
+  const em = c.club ? emblem(c.club, "") : '<span class="em ab" aria-hidden="true">РХЛ</span>';
+  const who = [CKIND[c.ckind] || "канал", c.slot === "opp" ? "соперник серии" : ""].filter(Boolean).join(" · ");
+  const img = c.image && POST_IMG.test(c.image)
+    ? `<div class="fc-img"><img src="${esc(c.image)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">${c.video ? '<span class="tag">видео</span>' : c.media > 1 ? `<span class="tag">+${c.media - 1} фото</span>` : ""}</div>`
+    : "";
+  const text = `${c.title ? `<b>${esc(c.title)}</b><br>` : ""}${esc(c.text)}`;
+  return `<article class="fc fc-post" data-post="${esc(c.url)}" role="button" tabindex="0" aria-label="Пост канала ${esc(title)} — открыть в Telegram">
+    <div class="fc-head">${em}<div class="fc-who">${isNew ? '<i class="fc-new" title="Новое"></i>' : ""}<b>${esc(title)}</b><small>${esc(who)} · ${esc(ago(c.at))}</small></div>
+      <button type="button" class="fc-more" data-post-more="${esc(c.channel)}" aria-label="Ещё о канале">${DOTS}</button></div>
+    ${img}<p class="fc-text">${text}</p>
+    <span class="fc-go">${c.media ? "Смотреть в канале" : "Читать в канале"} ›</span>
+  </article>`;
+}
+
+function feedEndSay(f) {
+  const g = f.next && findGame(f.next);
+  // сыграли вчера, а следующий матч уже завтра — важнее, что впереди
+  const soon = g ? daysFromToday(g.date) : null;
+  const st = soon === 0 ? "match" : soon === 1 ? "eve" : f.state;
+  switch (st) {
+    case "match": return `Лист собран. Сегодня играем${g && g.time ? ` в ${g.time}` : ""} — до встречи на трибуне!`;
+    case "eve": return "Лист собран. Завтра играем — не пропусти!";
+    case "start": return g ? `Лист собран. Сезон стартует ${fmtLong(g.date).replace(/ (?=\S+$)/, "\u00a0")} — осталось чуть-чуть!` : "Лист собран. Скоро сезон!";
+    case "over": return "Лист собран. Сезон окончен — спасибо, что болел!";
+    default: return "Лист собран! Новое появится после матчей лиги.";
+  }
+}
+
+function feedHTML(me) {
+  if (!(me in state.feed)) {
+    loadFeed(me).then(() => {
+      const box = $("#feed");
+      if (!box || state.tab !== "home" || state.fav !== me) return;
+      box.innerHTML = feedHTML(me);
+      fadeIn(box);
+      watchFeedImages(box);
+    });
+    return '<div class="sk sk-label"></div><div class="sk" style="height:132px"></div>';
+  }
+  const f = state.feed[me];
+  const cards = f ? feedCards(f) : [];
+  if (!cards.length) return upcomingBlock(me);   // не загрузился или сегодня нечего показать — как раньше
+  const prev = feedSeenPrev(me);
+  const fresh = cards.filter((c) => prev && Date.parse(c.at) > prev).length;
+  const label = fresh
+    ? `<div class="label">С прошлого захода<span class="aside">${fresh} ${plural(fresh, "новая", "новые", "новых")}</span></div>`
+    : `<div class="label">Лист дня<span class="aside">${esc(fmtLong(todayISO()))}</span></div>`;
+  return `${label}${cards.map((c) => feedCard(c, prev && Date.parse(c.at) > prev)).join("")}
+    <div class="fc-end">${guideFig(me, "cheer")}<p>${esc(feedEndSay(f))}</p>
+      <div class="pills"><button type="button" data-tab="calendar">Весь календарь</button><button type="button" data-tab="table">Таблица</button></div></div>`;
+}
+
+// Картинка из CDN Telegram не загрузилась — карточка остаётся без неё
+function watchFeedImages(root) {
+  root.querySelectorAll(".fc-img img").forEach((img) => {
+    const drop = () => img.parentNode && img.parentNode.remove();
+    if (img.complete && !img.naturalWidth) drop();
+    else img.addEventListener("error", drop, { once: true });
+  });
+}
+
+function refreshFeed() {
+  const box = $("#feed");
+  if (!box || state.tab !== "home") return;
+  box.innerHTML = feedHTML(state.fav);
+  watchFeedImages(box);
+}
+
+function openPost(url) {
+  if (!POST_URL.test(url)) return;
+  haptic();
+  // мини-апп не закрывается (Bot API 7.0+): болельщик вернётся на то же место листа
+  if (inTelegram) tg.openTelegramLink(url);
+  else window.open(url, "_blank", "noopener");
+}
+
+function feedChannelTitle(handle) {
+  const f = state.feed[state.fav];
+  const c = f && (f.cards || []).find((x) => x.channel === handle);
+  return (c && c.ctitle) || feedHidden()[handle] || handle;
+}
+
+function openPostMenu(handle) {
+  const title = feedChannelTitle(handle);
+  showSheet(`<div class="grab"></div>
+    <div class="sheet-head"><span class="when">${esc(title)}</span>
+    <button class="btn-round" data-close aria-label="Закрыть">${ICON.close}</button></div>
+    <div class="menu">
+      <button type="button" class="menu-row" data-feed-hide="${esc(handle)}">${ICON_ME.hide}<span><b>Не показывать этот канал</b><small>Вернуть — «Я» → «Посты каналов»</small></span>${ICON_ME.chev}</button>
+      <button type="button" class="menu-row" data-feed-rules>${ICON_ME.help}<span><b>Как мы выбираем посты</b><small>Чьи каналы и чего в ленте не бывает</small></span>${ICON_ME.chev}</button>
+    </div>`);
+}
+
+const FEED_RULES = [
+  "Показываем публичные каналы клубов РХЛ и канал лиги. Из общих каналов со взрослым клубом — только посты о молодёжке.",
+  "Из поста — начало текста и одна картинка. Всё остальное — в самом канале: нажми на карточку.",
+  "Сначала твой клуб и соперник серии, потом клубы лиги по кругу. Сколько канал пишет, не важно: очередь одна для всех.",
+  "Не показываем рекламу, букмекеров, дни рождения и возраст игроков.",
+  "Клуб может попросить убрать картинки или весь канал — снимаем за сутки. Скрыть канал у себя — «⋯» на карточке.",
+];
+
+function openFeedRules() {
+  const hidden = Object.entries(feedHidden());
+  const rows = hidden.map(([h, t]) => `<div class="menu-row static-row"><span><b>${esc(t || h)}</b><small>Скрыт на «Главной»</small></span>
+    <button type="button" class="fc-link" data-feed-unhide="${esc(h)}">Вернуть</button></div>`).join("");
+  showSheet(`<div class="grab"></div>
+    <div class="sheet-head"><span class="when">Посты каналов на «Главной»</span>
+    <button class="btn-round" data-close aria-label="Закрыть">${ICON.close}</button></div>
+    <ol class="fc-rules">${FEED_RULES.map((r) => `<li>${esc(r)}</li>`).join("")}</ol>
+    ${rows ? `<div class="label">Скрытые каналы</div><div class="menu">${rows}</div>` : ""}`);
 }
 
 function calFor(id) {
@@ -2139,6 +2394,8 @@ const ICON_ME = {
   swap: '<svg viewBox="0 0 24 24"><path d="M4 8h14M14 4l4 4-4 4M20 16H6M10 12l-4 4 4 4"/></svg>',
   chev: '<svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>',
   help: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1 .9-1 1.6v.4M12 16.8v.2"/></svg>',
+  hide: '<svg viewBox="0 0 24 24"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6Z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 20 20 4"/></svg>',
+  posts: '<svg viewBox="0 0 24 24"><path d="M20 4 3 11l6.5 2.5L12 20z"/><path d="M6 17.5h4M6 20.5h8"/></svg>',
 };
 
 function passport(me) {
@@ -2182,6 +2439,7 @@ function renderMe() {
       : `<div class="menu-row off">${ICON_ME.bell}<span><b>Напоминания о матчах</b><small>Пока только о «Рязань-ВДВ». Скоро — о любой команде</small></span></div>`;
   }
   html += `<button type="button" class="menu-row" data-switch-open>${ICON_ME.swap}<span><b>Сменить команду</b><small>Сейчас: ${esc(t.name)}</small></span>${ICON_ME.chev}</button>
+  <button type="button" class="menu-row" data-feed-rules>${ICON_ME.posts}<span><b>Посты каналов</b><small>${Object.keys(feedHidden()).length ? `Скрыто: ${Object.keys(feedHidden()).length}. ` : ""}Как мы их выбираем</small></span>${ICON_ME.chev}</button>
   <button type="button" class="menu-row" data-tour-restart>${ICON_ME.help}<span><b>Показать подсказки</b><small>${guideOf(me) ? `${esc(guideOf(me).name)} покажет всё или одну главу` : "Покажем всё или одну главу"}</small></span>${ICON_ME.chev}</button>
   </div>`;
   html += themePills();
@@ -2823,7 +3081,10 @@ function render(dir = 0) {
   } else if (state.tab !== "calendar") {
     window.scrollTo(0, 0);
   }
-  if (state.tab === "home") countUp(screen);
+  if (state.tab === "home") {
+    countUp(screen);
+    watchFeedImages(screen);
+  }
   if (state.tab === "zveno") zvMounted();
   if (dir && !calm()) {
     // двигаем детей, а не сам экран: его край обрезает сдвиг (#screen в style.css)
@@ -2880,7 +3141,7 @@ function confirmTeam(id = state.draft || state.fav) {
 }
 
 document.addEventListener("click", (e) => {
-  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],#sheet-backdrop");
+  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],#sheet-backdrop");
   if (!el || el.disabled) return;
   if (el.dataset.guide) return guideHop(el);
   if (el.hasAttribute("data-meet-close") || (el.hasAttribute("data-coach-back") && state.meet)) return closeCoach();
@@ -2901,6 +3162,34 @@ document.addEventListener("click", (e) => {
       else window.open(url, "_blank", "noopener");
     }
     return tourEnd();
+  }
+  if (el.dataset.postMore) return openPostMenu(el.dataset.postMore);
+  if (el.dataset.post) return openPost(el.dataset.post);
+  if (el.dataset.feedHide) {
+    const all = feedHidden();
+    all[el.dataset.feedHide] = feedChannelTitle(el.dataset.feedHide);
+    saveFeedHidden(all);
+    haptic();
+    closeMatch();
+    return refreshFeed();
+  }
+  if (el.dataset.feedUnhide) {
+    const all = feedHidden();
+    delete all[el.dataset.feedUnhide];
+    saveFeedHidden(all);
+    haptic();
+    openFeedRules();
+    if (state.tab === "me") render();
+    return;
+  }
+  if (el.hasAttribute("data-feed-rules")) return openFeedRules();
+  if (el.hasAttribute("data-feed-league")) {
+    state.cal = calFor(null);
+    return go("calendar");
+  }
+  if (el.hasAttribute("data-feed-leaders")) {
+    state.tableView = "players";
+    return go("table");
   }
   if (el.hasAttribute("data-tour-restart")) return openHints();
   if (el.hasAttribute("data-tour-all")) return replayTour(null);
@@ -3137,6 +3426,17 @@ function initTelegram() {
         closeCoach();
         if (cv === "1") tourNews();
       }
+    });
+  }
+  if (c) {
+    c.getItem(FEED_HIDDEN_KEY, (err, v) => {
+      if (err || !v) return;
+      let far = {};
+      try { far = JSON.parse(v) || {}; } catch (e) { return; }
+      const all = { ...far, ...feedHidden() };
+      if (Object.keys(all).length === Object.keys(feedHidden()).length) return;
+      lsSet(FEED_HIDDEN_KEY, JSON.stringify(all));
+      refreshFeed();
     });
   }
   if (!state.fav && state.data && c) {

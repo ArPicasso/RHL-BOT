@@ -51,6 +51,12 @@ jobs:
         continue-on-error: true
         run: python league.py --leaders --site "${{ vars.LEAGUE_SITE }}"
 
+      # Посты каналов клубов для листа «Главной» (ADR-015): превью с t.me/s, по одному запросу в секунду.
+      # Упадёт или половина каналов не откроется — лист соберётся из своих данных, шаг станет красным
+      - name: Посты каналов клубов
+        continue-on-error: true
+        run: python tg_channels.py
+
       # Ссылки на бота и мини-апп (ADR-004) заданы в build_data.py; Variables BOT_LINK, APP_LINK их заменяют
       - name: Собрать данные
         env:

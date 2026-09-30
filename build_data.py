@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import feed
 import league
 import rhockey
 
@@ -23,6 +24,8 @@ HIDDEN_FILE = BASE / "hidden_players.json"
 KITS_FILE = BASE / "art" / "players" / "kits.json"   # форма клубов для стикеров игроков, tools/player_kits.py
 PAST_CLUBS_FILE = BASE / "past_clubs.json"   # клубы прошлых сезонов, которых нет в РХЛ: эмблемы для лидеров (ADR-009)
 OUT = BASE / "webapp" / "data" / "league.json"
+CHANNELS_FILE = BASE / "channels.json"       # каналы клубов для листа «Главной» (ADR-015)
+POSTS_FILE = BASE / "channel_posts.json"     # их посты: собирает tg_channels.py перед этим шагом
 HIDDEN_NAME = "Игрок скрыт"
 H2H_LAST = 5
 
@@ -630,11 +633,47 @@ def build(teams: Teams, raw: list[rhockey.RawGame], results: league.Results,
     return data, unmatched, details
 
 
+def load_channels(path: Path = CHANNELS_FILE) -> list[dict]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))["channels"]
+    except (FileNotFoundError, ValueError, KeyError):
+        return []
+
+
+def load_posts(path: Path = POSTS_FILE) -> dict:
+    """Посты каналов по адресу канала. Нет файла — лист собирается из своих данных."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))["channels"]
+    except (FileNotFoundError, ValueError, KeyError):
+        return {}
+
+
+def write_feeds(out_dir: Path, teams: Teams, data: dict, h2h: dict, history: list[dict], recaps: dict[str, dict],
+                now: datetime, channels: list[dict], posts: dict, top: dict | None = None) -> int:
+    """Лист дня «Главной» на каждый клуб: webapp/data/feed/<клуб>.json (ADR-015). Возвращает число постов."""
+    feed_dir = out_dir / "feed"
+    feed_dir.mkdir(exist_ok=True)
+    clubs = [t["id"] for t in teams.all]
+    shown = 0
+    for club in clubs:
+        sheet = feed.build(club, now, clubs=clubs, games=data["games"], standings=data["standings"], h2h=h2h,
+                           history=history, recaps=recaps, channels=channels, posts=posts, leaders=top)
+        shown += sum(1 for c in sheet["cards"] if c["kind"] == "post")
+        (feed_dir / f"{club}.json").write_text(json.dumps(sheet, ensure_ascii=False, separators=(",", ":")),
+                                               encoding="utf-8")
+    return shown
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Собрать webapp/data/league.json")
     ap.add_argument("--results", type=Path, default=league.RESULTS_FILE)
     ap.add_argument("--out", type=Path, default=OUT)
+    ap.add_argument("--now", type=datetime.fromisoformat,
+                    help="момент сборки листа «Главной» с поясом, например 2026-10-03T12:00+03:00")
     args = ap.parse_args()
+    if args.now and args.now.tzinfo is None:
+        ap.error("--now нужен с поясом: 2026-10-03T12:00+03:00")
+    now = args.now or datetime.now(TZ)
     teams = load_teams()
     raw = asyncio.run(rhockey.fetch_season())
     data, unmatched, details = build(teams, raw, league.load_results(args.results), load_hidden())
@@ -643,6 +682,8 @@ def main() -> None:
     history, past_protocols = load_history(), load_history_protocols()
     h2h = head_to_head(data["games"], history, set(past_protocols))
     wanted = {m["id"] for pair in h2h.values() for m in pair["last"] if m.get("id", "").startswith("h")}
+    # «В этот день» на «Главной»: прошлые матчи сегодняшнего числа с протоколом получают разбор
+    wanted |= {past_id(h) for h in history if h.get("game_id") and h["date"][4:] == now.date().isoformat()[4:]}
     names = {t["id"]: t["name"] for t in teams.all}
     details.update(past_recaps(history, past_protocols, wanted, names, load_hidden()))
     mark_stories(h2h, details)
@@ -657,6 +698,8 @@ def main() -> None:
     top = leaders(teams, load_leaders(), load_hidden())
     if top:
         (args.out.parent / "leaders.json").write_text(json.dumps(top, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    posts = write_feeds(args.out.parent, teams, data, h2h, history, details, now, load_channels(), load_posts(), top)
+    print(f"Лист «Главной»: {len(teams.all)} клубов, постов каналов в листах: {posts}")
     played = sum(1 for g in data["games"] if g.get("score"))
     print(f"Матчей: {len(data['games'])}, сыграно: {played} → {args.out}")
     for u in unmatched:

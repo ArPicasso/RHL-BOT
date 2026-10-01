@@ -571,12 +571,14 @@ function feedCards(f) {
   return out;
 }
 
+// Когда вышел пост: «18 мин», «3 ч», «вчера», «26 сен» — коротко, чтобы влезало в подпись карточки на 320px
 function ago(iso) {
   const min = Math.max(1, Math.round((Date.now() - Date.parse(iso)) / 6e4));
   if (min < 60) return `${min} мин`;
   if (min < 24 * 60) return `${Math.round(min / 60)} ч`;
   const day = new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(new Date(iso));
-  return daysFromToday(day) === -1 ? "вчера" : dayMonth(day);
+  const d = parseISO(day);
+  return daysFromToday(day) === -1 ? "вчера" : `${d.getUTCDate()} ${MON_SHORT[d.getUTCMonth()]}`;
 }
 
 const scoreText = (s, dec) => `${s[0]}:${s[1]}${dec ? ` ${dec}` : ""}`;
@@ -586,33 +588,36 @@ function feedMatchLine(home, away, score, dec) {
   return `<div class="fc-match">${emblem(home)}${nm(home)}<span class="fc-dash">—</span>${nm(away)}${emblem(away)}<b class="num">${esc(scoreText(score, dec))}</b></div>`;
 }
 const feedStory = (text) => (text ? `<p class="fc-story">${STAR_SUN}<span>${esc(text)}</span></p>` : "");
+// Точка «новое» — картинка для экранного диктора, а не только цвет
+const NEW_DOT = '<i class="fc-new" role="img" aria-label="Новое" title="Новое"></i>';
 function feedTop(text, isNew) {
-  return `<div class="fc-top">${isNew ? '<i class="fc-new" title="Новое"></i>' : ""}<span>${text}</span></div>`;
+  return `<div class="fc-top">${isNew ? NEW_DOT : ""}<span>${text}</span></div>`;
 }
-// Карточка листа нажимается целиком: attrs — куда ведёт
-const fcard = (cls, attrs, inner) => `<article class="fc ${cls}"${attrs ? ` ${attrs} role="button" tabindex="0"` : ""}>${inner}</article>`;
+// Карточка листа нажимается целиком: attrs — куда ведёт. data-id — чтобы после перерисовки найти то же место
+const fcard = (cls, attrs, inner, id) => `<article class="fc ${cls}"${id ? ` data-id="${esc(id)}"` : ""}${attrs ? ` ${attrs} role="button" tabindex="0"` : ""}>${inner}</article>`;
 
 function feedCard(c, isNew) {
   const me = state.fav;
+  const card = (cls, attrs, inner) => fcard(cls, attrs, inner, c.id);
   switch (c.kind) {
     case "h2h": {
       const [wm, wo] = c.wins, [gm, gt] = c.goals;
       const h = { games: c.games, wins: { [me]: wm, [c.opp]: wo } };
-      return fcard("fc-h2h", `data-game="${esc(c.game)}"`, `${feedTop(`Очные встречи${c.since ? ` · с ${esc(c.since)}` : ""}`, isNew)}
+      return card("fc-h2h", `data-game="${esc(c.game)}"`, `${feedTop(`Очные встречи${c.since ? ` · с ${esc(c.since)}` : ""}`, isNew)}
         <div class="fc-h2h-row">${emblem(me, "md")}<b class="num">${wm}</b><span>победы</span><b class="num">${wo}</b>${emblem(c.opp, "md")}</div>
         <div class="fc-sub">Шайбы ${gm}:${gt} · ${c.games} ${plural(c.games, "матч", "матча", "матчей")} с ${quoted(c.opp)}</div>
         <div class="fc-verdict">${esc(h2hVerdict(h, me, c.opp))}</div>`);
     }
     case "meeting":
-      return fcard("", `data-game="${esc(c.match)}"`, `${feedTop(`Как сыграли в прошлый раз · ${esc(shortDate(c.date))}`, isNew)}
+      return card("", `data-game="${esc(c.match)}"`, `${feedTop(`Как сыграли в прошлый раз · ${esc(shortDate(c.date))}`, isNew)}
         ${feedMatchLine(c.home, c.away, c.score, c.decision)}${feedStory(c.story)}`);
     case "day":
-      return fcard("", c.match ? `data-game="${esc(c.match)}"` : "", `${feedTop(`В этот день · ${esc(parseISO(c.date).getUTCFullYear())}`, isNew)}
+      return card("", c.match ? `data-game="${esc(c.match)}"` : "", `${feedTop(`В этот день · ${esc(parseISO(c.date).getUTCFullYear())}`, isNew)}
         ${feedMatchLine(c.home, c.away, c.score, c.decision)}${feedStory(c.story)}`);
     case "story": {
       const g = findGame(c.match);
       const when = !c.date || daysFromToday(c.date) === -1 ? "вчера в лиге" : esc(dayMonth(c.date));
-      return fcard("", `data-game="${esc(c.match)}"`, `${feedTop(`Сюжет дня · ${when}`, isNew)}
+      return card("", `data-game="${esc(c.match)}"`, `${feedTop(`Сюжет дня · ${when}`, isNew)}
         ${feedStory(c.story)}${g && g.score ? feedMatchLine(g.home, g.away, [g.score.home, g.score.away], g.score.decision) : ""}`);
     }
     case "today": {
@@ -622,7 +627,7 @@ function feedCard(c, isNew) {
         return `<div class="fc-game" data-game="${esc(g.id)}" role="button" tabindex="0">${emblem(g.home)}${nm(g.home)}<span class="fc-dash">—</span>${nm(g.away)}${emblem(g.away)}${r}</div>`;
       }).join("");
       const more = c.n - c.games.length;
-      return fcard("fc-today", "", `${feedTop(`Сегодня в лиге · ${c.n} ${plural(c.n, "матч", "матча", "матчей")}`, isNew)}
+      return card("fc-today", "", `${feedTop(`Сегодня в лиге · ${c.n} ${plural(c.n, "матч", "матча", "матчей")}`, isNew)}
         <div class="fc-games">${rows}</div>
         <button type="button" class="fc-link" data-feed-league>${more > 0 ? `Ещё ${more} ${plural(more, "матч", "матча", "матчей")} — в календаре` : "Весь день в календаре"}</button>`);
     }
@@ -631,18 +636,18 @@ function feedCard(c, isNew) {
       const sub = c.to8 !== undefined ? (c.to8 ? `До восьмёрки — ${c.to8} ${plural(c.to8, "очко", "очка", "очков")}` : "Восьмёрка — рядом, по очкам вровень")
         : c.up !== undefined ? (c.up ? `До ${c.place - 1}-го места — ${c.up} ${plural(c.up, "очко", "очка", "очков")}` : `По очкам вровень с ${c.place - 1}-м местом`)
         : "Первое место в конференции";
-      return fcard("fc-table", 'data-tab="table"', `${feedTop("Таблица", isNew)}
+      return card("fc-table", 'data-tab="table"', `${feedTop("Таблица", isNew)}
         <div class="fc-place"><b class="num">${c.place}</b><div><strong>${quoted(me)} — ${c.place}-е место ${conf}</strong><small>${esc(sub)}</small></div></div>`);
     }
     case "upcoming": {
       const list = c.games.map(findGame).filter(Boolean);
       if (!list.length) return "";
-      return fcard("fc-list", "", `${feedTop("Дальше", false)}
+      return card("fc-list", "", `${feedTop("Дальше", false)}
         <div class="list">${list.map((g) => gameRow(g, me, false)).join("")}</div>`);
     }
     case "leaders": {
       const rows = c.rows.map((r) => `<div class="fc-lead" data-feed-leaders role="button" tabindex="0"><b>${esc(r.name)}</b><span>${r.rank}-й ${esc(LEAD_BY[r.cat] || "")}</span></div>`).join("");
-      return fcard("fc-leaders", "", `${feedTop(`В лидерах · ${esc(c.league)} ${esc(c.season)}`, isNew)}${rows}`);
+      return card("fc-leaders", "", `${feedTop(`В лидерах · ${esc(c.league)} ${esc(c.season)}`, isNew)}${rows}`);
     }
     case "post":
       return postCard(c, isNew);
@@ -660,12 +665,15 @@ function postCard(c, isNew) {
   const img = c.image && POST_IMG.test(c.image)
     ? `<div class="fc-img"><img src="${esc(c.image)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">${c.video ? '<span class="tag">видео</span>' : c.media > 1 ? `<span class="tag">+${c.media - 1} фото</span>` : ""}</div>`
     : "";
-  const text = `${c.title ? `<b>${esc(c.title)}</b><br>` : ""}${esc(c.text)}`;
-  return `<article class="fc fc-post" data-post="${esc(c.url)}" role="button" tabindex="0" aria-label="Пост канала ${esc(title)} — открыть в Telegram">
-    <div class="fc-head">${em}<div class="fc-who">${isNew ? '<i class="fc-new" title="Новое"></i>' : ""}<b>${esc(title)}</b><small>${esc(who)} · ${esc(ago(c.at))}</small></div>
-      <button type="button" class="fc-more" data-post-more="${esc(c.channel)}" aria-label="Ещё о канале">${DOTS}</button></div>
-    ${img}<p class="fc-text">${text}</p>
-    <span class="fc-go">${c.media ? "Смотреть в канале" : "Читать в канале"} ›</span>
+  const text = c.title || c.text ? `<p class="fc-text">${c.title ? `<b>${esc(c.title)}</b>${c.text ? "<br>" : ""}` : ""}${esc(c.text)}</p>` : "";
+  const go = c.media ? "Смотреть в канале" : "Читать в канале";
+  // Карточка нажимается целиком (data-post), но это не кнопка: иначе экранный диктор читает только её
+  // подпись, а «⋯» внутри кнопки недоступен. С клавиатуры и в VoiceOver пост открывает пилюля — настоящая кнопка
+  return `<article class="fc fc-post" data-post="${esc(c.url)}" data-id="${esc(c.id)}">
+    <div class="fc-head">${em}<div class="fc-who"><b>${isNew ? NEW_DOT : ""}${esc(title)}</b><small><span class="fc-kind">${esc(who)}</span><span class="fc-ago">&nbsp;· ${esc(ago(c.at))}</span></small></div>
+      <button type="button" class="fc-more" data-post-more="${esc(c.channel)}" aria-label="Ещё о канале ${esc(title)}">${DOTS}</button></div>
+    ${img}${text}
+    <button type="button" class="fc-go" data-post="${esc(c.url)}" aria-label="${go}: ${esc(title)}">${go} ›</button>
   </article>`;
 }
 
@@ -691,7 +699,7 @@ function feedHTML(me) {
       box.innerHTML = feedHTML(me);
       fadeIn(box);
       watchFeedImages(box);
-      refreshStream();   // посты, которые попали в лист, из ленты ниже уходят
+      refreshStream(true);   // посты, которые попали в лист, из ленты ниже уходят
     });
     return '<div class="sk sk-label"></div><div class="sk" style="height:132px"></div>';
   }
@@ -700,17 +708,25 @@ function feedHTML(me) {
   if (!cards.length) return upcomingBlock(me);   // не загрузился или сегодня нечего показать — как раньше
   const prev = feedSeenPrev(me);
   const fresh = cards.filter((c) => prev && Date.parse(c.at) > prev).length;
+  // метка — заголовок для экранного диктора: к листу и к ленте можно перейти по заголовкам
   const label = fresh
-    ? `<div class="label">С прошлого захода<span class="aside">${fresh} ${plural(fresh, "новая", "новые", "новых")}</span></div>`
-    : `<div class="label">Лист дня<span class="aside">${esc(fmtLong(todayISO()))}</span></div>`;
+    ? `<div class="label" role="heading" aria-level="2">С прошлого захода<span class="aside">${fresh} ${plural(fresh, "новая", "новые", "новых")}</span></div>`
+    : `<div class="label" role="heading" aria-level="2">Лист дня<span class="aside">${esc(fmtLong(todayISO()))}</span></div>`;
   return `${label}${cards.map((c) => feedCard(c, prev && Date.parse(c.at) > prev)).join("")}
     <div class="fc-end fc-caught">${guideFig(me, "cheer")}<p><b>Ты в курсе за сутки.</b> ${esc(feedEndSay(f))}</p></div>`;
 }
 
-// Картинка из CDN Telegram не загрузилась — карточка остаётся без неё
+// Картинка из CDN Telegram не загрузилась — карточка остаётся без неё. Но без прыжка (DESIGN.md → «Загрузка
+// без прыжков»): рамка ниже экрана убирается, а на экране и выше него остаётся пустой, как при загрузке, —
+// иначе всё под ней уезжает вверх, пока болельщик читает
 function watchFeedImages(root) {
   root.querySelectorAll(".fc-img img").forEach((img) => {
-    const drop = () => img.parentNode && img.parentNode.remove();
+    const drop = () => {
+      const box = img.parentNode;
+      if (!box || !box.isConnected) return;
+      if (box.closest("#sheet") || box.getBoundingClientRect().top > innerHeight) box.remove();
+      else { img.remove(); box.classList.add("gone"); }
+    };
     if (img.complete && !img.naturalWidth) drop();
     else img.addEventListener("error", drop, { once: true });
   });
@@ -721,7 +737,26 @@ function refreshFeed() {
   if (!box || state.tab !== "home") return;
   box.innerHTML = feedHTML(state.fav);
   watchFeedImages(box);
-  refreshStream();
+  refreshStream(true);
+}
+
+// Место на экране — скрытая карточка и следующие за ней: после перерисовки на место скрытой встаёт
+// первая уцелевшая из следующих, лента не сбрасывается к началу
+function feedPlace(card) {
+  const out = [];
+  for (let n = card; n && out.length < 30; n = n.nextElementSibling) {
+    if (n.dataset && n.dataset.id) out.push({ id: n.dataset.id, top: n.getBoundingClientRect().top });
+  }
+  return out;
+}
+function keepPlace(place, skip) {
+  const at = place.find((p) => p.id !== skip && document.querySelector(`#screen [data-id="${CSS.escape(p.id)}"]`));
+  if (!at) return;
+  const el = document.querySelector(`#screen [data-id="${CSS.escape(at.id)}"]`);
+  window.scrollBy(0, el.getBoundingClientRect().top - place[0].top);
+  // фокус — на то, что встало на место скрытого: иначе с клавиатуры он улетает в начало страницы
+  const f = el.matches('[tabindex="0"]') ? el : el.querySelector('button, [tabindex="0"]');
+  if (f) f.focus({ preventScroll: true });
 }
 
 // ---------- лента лиги под листом (ADR-015, пересмотр 30.09) ----------
@@ -742,11 +777,14 @@ function loadStream() {
   return streamLoading;
 }
 
-// Соперник серии — по ближайшему матчу из листа клуба
+// Соперник серии — по ближайшему матчу из листа клуба, если он в ближайшую неделю: как SERIES_DAYS в feed.py.
+// Иначе чип «Соперник» и подпись «соперник серии» появлялись бы за три недели до встречи
+const SERIES_DAYS = 7;
 function feedOpp() {
   const f = state.feed[state.fav];
   const g = f && f.next && findGame(f.next);
-  return g ? (g.home === state.fav ? g.away : g.home) : null;
+  if (!g || daysFromToday(g.date) > SERIES_DAYS) return null;
+  return g.home === state.fav ? g.away : g.home;
 }
 
 function streamItems() {
@@ -776,10 +814,17 @@ function streamEnd(all) {
     <div class="pills"><button type="button" data-tab="calendar">Весь календарь</button><button type="button" data-tab="table">Таблица</button></div></div>`;
 }
 
-function streamHTML() {
+// keep — перерисовка на месте (скрыли канал, пришёл лист): столько же карточек, сколько уже долистали.
+// Без keep — новый фильтр или новый экран: первая порция
+function streamHTML(keep = false) {
   if (state.stream === undefined) {
-    loadStream().then(() => refreshStream());
-    return "";
+    loadStream().then(() => {
+      refreshStream();
+      fadeIn($("#stream-wrap"));
+      fadeIn($("#packs"));
+    });
+    // место под ленту занято сразу: подвал не мелькает под листом и не уезжает, когда она придёт
+    return '<div class="sk sk-label"></div><div class="sk" style="height:132px"></div>';
   }
   if (!state.stream) return "";
   const opp = feedOpp();
@@ -788,18 +833,18 @@ function streamHTML() {
   const chips = [["all", "Все"], ["mine", "Мой клуб"], ...(oppPosts ? [["opp", "Соперник"]] : [])];
   if (!chips.some(([k]) => k === state.streamFilter)) state.streamFilter = "all";
   const all = streamItems();
-  state.streamShown = Math.min(STREAM_PAGE, all.length);
-  return `<div class="label">Лента лиги<span class="aside">за неделю</span></div>
+  state.streamShown = Math.min(keep ? Math.max(STREAM_PAGE, state.streamShown) : STREAM_PAGE, all.length);
+  return `<div class="label" role="heading" aria-level="2">Лента лиги<span class="aside">за неделю</span></div>
     <div class="pills stream-pills" role="group" aria-label="Чьи посты">${chips.map(([k, v]) =>
       `<button type="button" class="${state.streamFilter === k ? "on" : ""}" data-stream-filter="${k}" aria-pressed="${state.streamFilter === k}">${v}</button>`).join("")}</div>
     <div id="stream">${all.slice(0, state.streamShown).map(streamItem).join("")}</div>${streamEnd(all)}`;
 }
 
-function refreshStream() {
+function refreshStream(keep = false) {
   refreshPacks();
   const box = $("#stream-wrap");
   if (!box || state.tab !== "home") return;
-  box.innerHTML = streamHTML();
+  box.innerHTML = streamHTML(keep);
   watchFeedImages(box);
   mountStream();
 }
@@ -835,21 +880,29 @@ function packs() {
 const packSeen = () => readJSON(PACKS_KEY);
 const packNew = (p) => p.posts.some((c) => Date.parse(c.at) > (Date.parse(packSeen()[p.key]) || 0));
 const packName = (key) => (key === "league" ? "Лига" : key === state.fav ? "Мой клуб" : team(key).name);
+const packLabel = (p) => `${packName(p.key)}: ${p.posts.length} ${plural(p.posts.length, "пост", "поста", "постов")}${packNew(p) ? ", есть новое" : ""}`;
+// Был ли ряд в прошлый раз: пока лента грузится, скелетон рисуем, только если кружки ожидаются. Иначе
+// в тихие дни, когда каналы молчат, пустой ряд схлопывается и табло прыгает вверх на 112px
+const PACKS_ROW_KEY = "packs_row";
 
 function packsHTML() {
-  if (state.stream === undefined) return `<div class="packs" aria-hidden="true">${'<span class="pack sk-pack"><i class="sk"></i></span>'.repeat(5)}</div>`;
+  if (state.stream === undefined) {
+    return lsGet(PACKS_ROW_KEY) === "0" ? "" : `<div class="packs" aria-hidden="true">${'<span class="pack sk-pack"><i class="sk"></i></span>'.repeat(5)}</div>`;
+  }
   const list = packs();
   if (!list.length) return "";
-  return `<div class="packs" role="list" aria-label="Сегодня в каналах">${list.map((p) => {
+  // группа кнопок, а не список: role="listitem" на кнопке отнимает у неё роль кнопки
+  return `<div class="packs" role="group" aria-label="Сегодня в каналах">${list.map((p) => {
     const em = p.key === "league" ? '<span class="em ab" aria-hidden="true">РХЛ</span>' : emblem(p.key, "");
-    return `<button type="button" role="listitem" class="pack${packNew(p) ? " new" : ""}" data-pack="${esc(p.key)}" aria-label="${esc(packName(p.key))}: ${p.posts.length} ${plural(p.posts.length, "пост", "поста", "постов")}${packNew(p) ? ", есть новое" : ""}">
-      <span class="pack-ring">${em}</span><span class="pack-name">${esc(packName(p.key))}</span></button>`;
+    return `<button type="button" class="pack${packNew(p) ? " new" : ""}" data-pack="${esc(p.key)}" aria-label="${esc(packLabel(p))}">
+      <span class="pack-ring">${em}</span><span class="pack-name" aria-hidden="true">${esc(packName(p.key))}</span></button>`;
   }).join("")}</div>`;
 }
 
 function refreshPacks() {
   const box = $("#packs");
   if (box && state.tab === "home") box.innerHTML = packsHTML();
+  if (state.stream !== undefined) lsSet(PACKS_ROW_KEY, packs().length ? "1" : "0");
 }
 
 // Открыть пакет: с первого непросмотренного поста, всё просмотрено — с начала
@@ -875,18 +928,24 @@ function showPack(dir) {
   const img = c.image && POST_IMG.test(c.image)
     ? `<div class="fc-img pack-img"><img src="${esc(c.image)}" alt="" decoding="async" referrerpolicy="no-referrer">${c.video ? '<span class="tag">видео</span>' : c.media > 1 ? `<span class="tag">+${c.media - 1} фото</span>` : ""}</div>` : "";
   const bar = p.posts.map((_, k) => `<i class="${k < i ? "done" : k === i ? "on" : ""}"></i>`).join("");
+  const text = c.title || c.text ? `<p class="pack-text">${c.title ? `<b>${esc(c.title)}</b>${c.text ? "<br>" : ""}` : ""}${esc(c.text)}</p>` : "";
   showSheet(`<div class="grab"></div>
-    <div class="pack-bar" aria-label="Пост ${i + 1} из ${p.posts.length}">${bar}</div>
+    <div class="pack-bar" role="img" aria-label="Пост ${i + 1} из ${p.posts.length}">${bar}</div>
     <div class="sheet-head"><span class="when">${esc(c.ctitle || c.channel)} · ${esc(ago(c.at))}</span>
     <button class="btn-round" data-close aria-label="Закрыть">${ICON.close}</button></div>
-    <div class="pack-page">${img}<p class="pack-text">${c.title ? `<b>${esc(c.title)}</b><br>` : ""}${esc(c.text)}</p>
+    <div class="pack-page">${img}${text}
       <button type="button" class="pack-zone prev" data-pack-nav="-1" aria-label="Предыдущий пост"></button>
       <button type="button" class="pack-zone next" data-pack-nav="1" aria-label="Следующий пост"></button></div>
-    <button type="button" class="btn" data-post="${esc(c.url)}">${c.media ? "Смотреть в канале" : "Читать в канале"}</button>
-    <p class="pack-foot">${esc(packName(p.key))} · ${ki + 1} из ${list.length}. Касание справа — дальше, слева — назад</p>`, dir);
+    <div class="pack-cta"><button type="button" class="btn" data-post="${esc(c.url)}">${c.media ? "Смотреть в канале" : "Читать в канале"}</button>
+    <p class="pack-foot">${esc(packName(p.key))} · ${ki + 1} из ${list.length}. Касание справа — дальше, слева — назад</p></div>`, dir);
+  // рамка одной высоты: отрезки и крестик не прыгают от поста к посту, кнопка в канал всегда на экране
+  $("#sheet").classList.add("pack-open");
   watchFeedImages($("#sheet"));
   const btn = document.querySelector(`#packs [data-pack="${CSS.escape(p.key)}"]`);
-  if (btn && !packNew(p)) btn.classList.remove("new");
+  if (btn) {
+    btn.classList.toggle("new", packNew(p));
+    btn.setAttribute("aria-label", packLabel(p));   // экранный диктор не должен дальше говорить «есть новое»
+  }
 }
 
 // Дальше — следующий пост, после последнего — следующий клуб; назад — наоборот
@@ -894,6 +953,8 @@ function packNav(step) {
   const s = state.pack;
   if (!s) return;
   haptic();
+  // с клавиатуры фокус остаётся на той же зоне: иначе после каждого Enter он прыгает на «Закрыть»
+  const zone = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.packNav;
   let { ki, i } = s;
   i += step;
   if (i >= s.list[ki].posts.length) { ki += 1; i = 0; }
@@ -903,6 +964,8 @@ function packNav(step) {
   s.ki = ki;
   s.i = i;
   showPack(step);
+  const again = zone && $(`#sheet [data-pack-nav="${zone}"]`);
+  if (again) again.focus({ preventScroll: true });
 }
 
 // Следующая порция — когда до конца ленты остаётся экран
@@ -920,8 +983,11 @@ function moreStream() {
   if (!box || !more) return;
   const all = streamItems();
   const from = state.streamShown;
+  const had = box.children.length;
   state.streamShown = Math.min(from + STREAM_PAGE, all.length);
   box.insertAdjacentHTML("beforeend", all.slice(from, state.streamShown).map(streamItem).join(""));
+  // порция проявляется на месте скелетона, как данные в карточке матча (DESIGN.md → «Загрузка без прыжков»)
+  [...box.children].slice(had).forEach(fadeIn);
   watchFeedImages(box);
   more.insertAdjacentHTML("afterend", streamEnd(all));
   more.remove();
@@ -936,13 +1002,21 @@ function openPost(url) {
   else window.open(url, "_blank", "noopener");
 }
 
+// Название канала: из листа или из ленты лиги — «⋯» есть на карточках обеих, а в «Скрытых каналах»
+// должно стоять название, а не адрес вроде hcsamara
 function feedChannelTitle(handle) {
-  const f = state.feed[state.fav];
-  const c = f && (f.cards || []).find((x) => x.channel === handle);
-  return (c && c.ctitle) || feedHidden()[handle] || handle;
+  const pools = [((state.feed[state.fav] || {}).cards) || [], (state.stream && state.stream.items) || []];
+  for (const list of pools) {
+    const c = list.find((x) => x.channel === handle && x.ctitle);
+    if (c) return c.ctitle;
+  }
+  return feedHidden()[handle] || handle;
 }
 
-function openPostMenu(handle) {
+// Карточка, с которой открыли «⋯»: в iOS нажатие не переводит фокус на кнопку, по фокусу её не найти
+let postMenuCard = null;
+function openPostMenu(handle, from) {
+  postMenuCard = from ? from.closest(".fc") : null;
   const title = feedChannelTitle(handle);
   showSheet(`<div class="grab"></div>
     <div class="sheet-head"><span class="when">${esc(title)}</span>
@@ -964,7 +1038,7 @@ const FEED_RULES = [
 function openFeedRules() {
   const hidden = Object.entries(feedHidden());
   const rows = hidden.map(([h, t]) => `<div class="menu-row static-row"><span><b>${esc(t || h)}</b><small>Скрыт на «Главной»</small></span>
-    <button type="button" class="fc-link" data-feed-unhide="${esc(h)}">Вернуть</button></div>`).join("");
+    <button type="button" class="fc-link" data-feed-unhide="${esc(h)}" aria-label="Вернуть ${esc(t || h)}">Вернуть</button></div>`).join("");
   showSheet(`<div class="grab"></div>
     <div class="sheet-head"><span class="when">Посты каналов на «Главной»</span>
     <button class="btn-round" data-close aria-label="Закрыть">${ICON.close}</button></div>
@@ -3148,6 +3222,7 @@ function showSheet(html, dir = 0) {
   sheet.style.transform = back.style.opacity = "";
   sheet.style.pointerEvents = back.style.pointerEvents = "";
   sheet.innerHTML = `<div class="sheet-page">${html}</div>`;
+  sheet.classList.remove("pack-open");   // рамку историй ставит showPack, остальным листам она не нужна
   sheet.hidden = false;
   back.hidden = false;
   sheet.scrollTop = 0;
@@ -3184,6 +3259,7 @@ function closeMatch(fromY = 0) {
   const done = () => {
     sheet.hidden = true;
     back.hidden = true;
+    sheet.classList.remove("pack-open");
     sheet.style.transform = back.style.opacity = "";
     sheet.style.pointerEvents = back.style.pointerEvents = "";
   };
@@ -3376,15 +3452,19 @@ document.addEventListener("click", (e) => {
     }
     return tourEnd();
   }
-  if (el.dataset.postMore) return openPostMenu(el.dataset.postMore);
+  if (el.dataset.postMore) return openPostMenu(el.dataset.postMore, el);
   if (el.dataset.post) return openPost(el.dataset.post);
   if (el.dataset.feedHide) {
     const all = feedHidden();
     all[el.dataset.feedHide] = feedChannelTitle(el.dataset.feedHide);
     saveFeedHidden(all);
     haptic();
+    // лента не сбрасывается к началу: на место скрытой карточки встаёт следующая
+    const card = postMenuCard && postMenuCard.isConnected ? postMenuCard : null;
+    const place = feedPlace(card);
     closeMatch();
-    return refreshFeed();
+    refreshFeed();
+    return keepPlace(place, card && card.dataset.id);
   }
   if (el.dataset.feedUnhide) {
     const all = feedHidden();
@@ -3581,6 +3661,11 @@ document.addEventListener("keydown", (e) => {
     if ($("#tour") && state.meet) return closeCoach();
     if (t && !t.away) return t.greet ? tourEnd() : tourSkip();
     return sheetBack();
+  }
+  // истории с клавиатуры (Telegram Desktop): стрелки — как касание справа и слева
+  if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && state.pack && sheetOpen() && $("#sheet .pack-page")) {
+    e.preventDefault();
+    return packNav(e.key === "ArrowRight" ? 1 : -1);
   }
   if ((e.key === "Enter" || e.key === " ") && e.target.matches('[role="button"]')) {
     e.preventDefault();

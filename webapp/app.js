@@ -544,20 +544,22 @@ function homeToday() {
   const stats = seasonStats(me, true);
   if (stats) html += `<div class="stats">${stats}</div>`;
 
-  // Истории и лист дня — на общей подложке, одним телом (ADR-017, пересмотр 02.10). Раньше ряд стоял
-  // между табло и цифрами сезона: вокруг — свой клуб, а в кружках вся лига, и ряд читался как чужой.
-  // Теперь белое — про мой клуб, подложка — про то, что сегодня пишут
-  const row = packsHTML();
-  html += `<section class="part deck packs-part" id="packs-part"${row ? "" : " hidden"}>
-      <div class="label" role="heading" aria-level="2">Истории<span class="aside">свежее из каналов</span></div>
-      <div id="packs">${row}</div>
-    </section>
-    <div id="feed" class="part deck">${feedHTML(me)}</div>`;
+  // лист дня — на своей подложке: переход от «моего матча» к листу виден цветом (ADR-017)
+  html += `<div id="feed" class="part deck">${feedHTML(me)}</div>`;
   return html + footer();
 }
 
-// «Лента лиги» — вторая половина «Главной»: своего заголовка нет, его имя уже в переключателе
-const homeStream = () => `<div id="stream-wrap">${streamHTML()}</div>${footer()}`;
+// «Лента лиги» — вторая половина «Главной». Своего заголовка нет, её имя уже в переключателе;
+// начинается историями (ADR-017, пересмотр 02.10): кружки — это каналы, то же, что и посты ниже,
+// а на «Сегодня» они стояли среди своего клуба и читались чужими
+function homeStream() {
+  const row = packsHTML();
+  return `<section class="part packs-part" id="packs-part"${row ? "" : " hidden"}>
+      <div class="label" role="heading" aria-level="2">Истории<span class="aside">свежее за 2 дня</span></div>
+      <div id="packs">${row}</div>
+    </section>
+    <div id="stream-wrap">${streamHTML()}</div>${footer()}`;
+}
 
 // Три ближайшие игры после следующей: на «Главной» без листа дня — пока он не загрузился или его нет
 function upcomingBlock(me) {
@@ -1975,14 +1977,14 @@ const STEP = {
     hold: 650, holdOnPress: true,
     prep: async () => {
       await leaveSheet();
-      const back = homeSeeToday();
+      const moved = homeSeeStream();
       if (state.tab !== "home") go("home");
-      else if (back) refreshHome();
+      else if (moved) refreshHome();
     },
-    aim: () => firstShown($("#screen"), ["#feed", "#stream-wrap"]),
+    aim: () => firstShown($("#screen"), ["#stream-wrap", "#feed"]),
     text: () => (streamHas()
-      ? "Ниже — лист дня о твоём клубе. Листай: в конце — кнопка в ленту всей лиги."
-      : "Ниже — лист дня о твоём клубе: матчи, очные встречи, посты каналов. Листай вниз."),
+      ? "Ниже — посты всех клубов лиги за неделю. Листай вниз, лента подгрузится сама."
+      : "Здесь посты клубов лиги за неделю. Про свой клуб — лист дня на «Сегодня»."),
     press: () => window.scrollBy({ top: Math.round(innerHeight * 0.6), behavior: calm() ? "auto" : "smooth" }),
   },
 
@@ -2057,11 +2059,14 @@ const ICON_CH = {
 
 // Ряд историй и лист дня живут на «Сегодня» (ADR-017): прежде чем на них целиться, возвращаем
 // «Главную» на этот сегмент. true — экран надо перерисовать
-function homeSeeToday() {
-  if (state.homeView === "today") return false;
-  state.homeView = "today";
+function homeSee(view) {
+  if (state.homeView === view) return false;
+  state.homeView = view;
   return true;
 }
+const homeSeeToday = () => homeSee("today");
+// истории и лента живут на «Ленте лиги» (ADR-017, пересмотр 02.10)
+const homeSeeStream = () => homeSee("stream");
 
 // Лист, который открыл тур, закрывается перед сменой экрана
 function leaveSheet() {
@@ -2122,9 +2127,10 @@ const TOUR = [
     id: 5, title: "Истории и лента", short: "Лента", hint: "Как листать истории клубов и ленту лиги",
     enter: async () => {
       await leaveSheet();
-      const back = homeSeeToday();
+      // глава целиком о втором сегменте: истории и лента лиги живут там (ADR-017, пересмотр 02.10)
+      const moved = homeSeeStream();
       if (state.tab !== "home") go("home");
-      else if (back) refreshHome();
+      else if (moved) refreshHome();
       else window.scrollTo(0, 0);
       // ряд и лента обычно уже пришли вместе с «Главной»; нет — ждём не дольше, чем цель в листе
       await Promise.race([Promise.all([loadStream(), loadFeed(state.fav)]), wait(SHEET_WAIT_MS)]);
@@ -2167,8 +2173,7 @@ const ord = (id) => FULL.indexOf(id);   // место главы в очеред
 const streamHas = () => !!(state.stream && (state.stream.items || []).length);
 function feedSteps() {
   const list = packs().length ? [STEP.packs, STEP.flip] : [];
-  const f = state.feed[state.fav];
-  if (streamHas() || (f && feedCards(f).length)) list.push(STEP.stream);
+  if (streamHas()) list.push(STEP.stream);
   return list;
 }
 

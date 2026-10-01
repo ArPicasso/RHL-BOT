@@ -474,7 +474,6 @@ function renderHome() {
   let html = `<section class="band sky">${RIBBON}
     <div class="hero"><button type="button" class="hero-em" data-switch-open aria-label="Сменить команду">${emblem(me, "xl")}</button><div><h1 style="--w:${longestChunk(t.name)}">${esc(t.name)}</h1><div class="meta">${esc(t.city)} · ${CONF[t.conf] || ""}</div></div></div>
   </section>`;
-  html += `<div id="packs">${packsHTML()}</div>`;
 
   const stats = seasonStats(me, true);
   if (stats) html += `<div class="stats">${stats}</div>`;
@@ -492,6 +491,8 @@ function renderHome() {
   } else {
     html += `<div class="label">Следующий матч</div><div class="empty">Матчей регулярного чемпионата больше нет</div>`;
   }
+  // ряд «Сегодня» — под табло: на 320×568 над ним он вытеснял табло с первого экрана (ADR-015, 01.10)
+  html += `<div id="packs">${packsHTML()}</div>`;
 
   if (last) {
     html += `<div class="label">Последний результат</div>
@@ -601,12 +602,16 @@ function feedCard(c, isNew) {
   const card = (cls, attrs, inner) => fcard(cls, attrs, inner, c.id);
   switch (c.kind) {
     case "h2h": {
+      // в листе — свой клуб и соперник, в ленте лиги — любая пара серии недели (club — хозяева)
+      const a = c.club || me;
       const [wm, wo] = c.wins, [gm, gt] = c.goals;
-      const h = { games: c.games, wins: { [me]: wm, [c.opp]: wo } };
+      const h = { games: c.games, wins: { [a]: wm, [c.opp]: wo } };
+      // названия не склоняем («матчей с «Белгород»»): в листе пара и так ясна по эмблемам, в ленте — именительный
+      const pair = a === me ? "" : `${quoted(a)} — ${quoted(c.opp)} · `;
       return card("fc-h2h", `data-game="${esc(c.game)}"`, `${feedTop(`Очные встречи${c.since ? ` · с ${esc(c.since)}` : ""}`, isNew)}
-        <div class="fc-h2h-row">${emblem(me, "md")}<b class="num">${wm}</b><span>победы</span><b class="num">${wo}</b>${emblem(c.opp, "md")}</div>
-        <div class="fc-sub">Шайбы ${gm}:${gt} · ${c.games} ${plural(c.games, "матч", "матча", "матчей")} с ${quoted(c.opp)}</div>
-        <div class="fc-verdict">${esc(h2hVerdict(h, me, c.opp))}</div>`);
+        <div class="fc-h2h-row">${emblem(a, "md")}<b class="num">${wm}</b><span>победы</span><b class="num">${wo}</b>${emblem(c.opp, "md")}</div>
+        <div class="fc-sub">${pair}Шайбы ${gm}:${gt} · ${c.games} ${plural(c.games, "матч", "матча", "матчей")}</div>
+        <div class="fc-verdict">${esc(h2hVerdict(h, a, c.opp))}</div>`);
     }
     case "meeting":
       return card("", `data-game="${esc(c.match)}"`, `${feedTop(`Как сыграли в прошлый раз · ${esc(shortDate(c.date))}`, isNew)}
@@ -627,7 +632,10 @@ function feedCard(c, isNew) {
         return `<div class="fc-game" data-game="${esc(g.id)}" role="button" tabindex="0">${emblem(g.home)}${nm(g.home)}<span class="fc-dash">—</span>${nm(g.away)}${emblem(g.away)}${r}</div>`;
       }).join("");
       const more = c.n - c.games.length;
-      return card("fc-today", "", `${feedTop(`Сегодня в лиге · ${c.n} ${plural(c.n, "матч", "матча", "матчей")}`, isNew)}
+      // в ленте лиги — и ближайшие дни: «Завтра в лиге», «3 октября в лиге»
+      const ahead = c.date ? daysFromToday(c.date) : 0;
+      const day = ahead <= 0 ? "Сегодня" : ahead === 1 ? "Завтра" : esc(dayMonth(c.date));
+      return card("fc-today", "", `${feedTop(`${day} в лиге · ${c.n} ${plural(c.n, "матч", "матча", "матчей")}`, isNew)}
         <div class="fc-games">${rows}</div>
         <button type="button" class="fc-link" data-feed-league>${more > 0 ? `Ещё ${more} ${plural(more, "матч", "матча", "матчей")} — в календаре` : "Весь день в календаре"}</button>`);
     }
@@ -635,6 +643,7 @@ function feedCard(c, isNew) {
       const conf = { east: "на Востоке", west: "на Западе" }[c.conf] || "";
       const sub = c.to8 !== undefined ? (c.to8 ? `До восьмёрки — ${c.to8} ${plural(c.to8, "очко", "очка", "очков")}` : "Восьмёрка — рядом, по очкам вровень")
         : c.up !== undefined ? (c.up ? `До ${c.place - 1}-го места — ${c.up} ${plural(c.up, "очко", "очка", "очков")}` : `По очкам вровень с ${c.place - 1}-м местом`)
+        : c.lead !== undefined ? (c.lead ? `Отрыв от 2-го места — ${c.lead} ${plural(c.lead, "очко", "очка", "очков")}` : "По очкам вровень со 2-м местом")
         : "Первое место в конференции";
       return card("fc-table", 'data-tab="table"', `${feedTop("Таблица", isNew)}
         <div class="fc-place"><b class="num">${c.place}</b><div><strong>${quoted(me)} — ${c.place}-е место ${conf}</strong><small>${esc(sub)}</small></div></div>`);
@@ -647,7 +656,9 @@ function feedCard(c, isNew) {
     }
     case "leaders": {
       const rows = c.rows.map((r) => `<div class="fc-lead" data-feed-leaders role="button" tabindex="0"><b>${esc(r.name)}</b><span>${r.rank}-й ${esc(LEAD_BY[r.cat] || "")}</span></div>`).join("");
-      return card("fc-leaders", "", `${feedTop(`В лидерах · ${esc(c.league)} ${esc(c.season)}`, isNew)}${rows}`);
+      // в ленте лиги — чужой клуб: его имя в метке
+      const who = c.club && c.club !== me ? `${esc(team(c.club).name)} · в лидерах` : "В лидерах";
+      return card("fc-leaders", "", `${feedTop(`${who} · ${esc(c.league)} ${esc(c.season)}`, isNew)}${rows}`);
     }
     case "post":
       return postCard(c, isNew);
@@ -656,24 +667,28 @@ function feedCard(c, isNew) {
   }
 }
 
-function postCard(c, isNew) {
+// compact — в ленте лиги: картинка-квадрат справа, текст и пилюля слева, вдвое ниже (ADR-015, 01.10)
+function postCard(c, isNew, compact = false) {
   const title = c.ctitle || c.channel;
   const em = c.club ? emblem(c.club, "") : '<span class="em ab" aria-hidden="true">РХЛ</span>';
   const rel = c.slot === "opp" || (c.slot === "stream" && c.club && c.club === feedOpp()) ? "соперник серии"
     : c.slot === "stream" && c.club === state.fav ? "твой клуб" : "";
   const who = [CKIND[c.ckind] || "канал", rel].filter(Boolean).join(" · ");
+  // на квадрате 72–88px «+5 фото» не помещается — там просто «+5»
+  const more = c.media > 1 ? `+${c.media - 1}${compact ? "" : " фото"}` : "";
   const img = c.image && POST_IMG.test(c.image)
-    ? `<div class="fc-img"><img src="${esc(c.image)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">${c.video ? '<span class="tag">видео</span>' : c.media > 1 ? `<span class="tag">+${c.media - 1} фото</span>` : ""}</div>`
+    ? `<div class="fc-img${compact ? " fc-thumb" : ""}"><img src="${esc(c.image)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">${c.video ? '<span class="tag">видео</span>' : more ? `<span class="tag">${more}</span>` : ""}</div>`
     : "";
   const text = c.title || c.text ? `<p class="fc-text">${c.title ? `<b>${esc(c.title)}</b>${c.text ? "<br>" : ""}` : ""}${esc(c.text)}</p>` : "";
   const go = c.media ? "Смотреть в канале" : "Читать в канале";
+  const goBtn = `<button type="button" class="fc-go" data-post="${esc(c.url)}" aria-label="${go}: ${esc(title)}">${go} ›</button>`;
+  const body = compact ? `<div class="fc-body${img ? " has-img" : ""}">${text}${img}${goBtn}</div>` : `${img}${text}${goBtn}`;
   // Карточка нажимается целиком (data-post), но это не кнопка: иначе экранный диктор читает только её
   // подпись, а «⋯» внутри кнопки недоступен. С клавиатуры и в VoiceOver пост открывает пилюля — настоящая кнопка
-  return `<article class="fc fc-post" data-post="${esc(c.url)}" data-id="${esc(c.id)}">
+  return `<article class="fc fc-post${compact ? " compact" : ""}" data-post="${esc(c.url)}" data-id="${esc(c.id)}">
     <div class="fc-head">${em}<div class="fc-who"><b>${isNew ? NEW_DOT : ""}${esc(title)}</b><small><span class="fc-kind">${esc(who)}</span><span class="fc-ago">&nbsp;· ${esc(ago(c.at))}</span></small></div>
       <button type="button" class="fc-more" data-post-more="${esc(c.channel)}" aria-label="Ещё о канале ${esc(title)}">${DOTS}</button></div>
-    ${img}${text}
-    <button type="button" class="fc-go" data-post="${esc(c.url)}" aria-label="${go}: ${esc(title)}">${go} ›</button>
+    ${body}
   </article>`;
 }
 
@@ -699,6 +714,7 @@ function feedHTML(me) {
       box.innerHTML = feedHTML(me);
       fadeIn(box);
       watchFeedImages(box);
+      watchSeen(box);
       refreshStream(true);   // посты, которые попали в лист, из ленты ниже уходят
     });
     return '<div class="sk sk-label"></div><div class="sk" style="height:132px"></div>';
@@ -707,13 +723,16 @@ function feedHTML(me) {
   const cards = f ? feedCards(f) : [];
   if (!cards.length) return upcomingBlock(me);   // не загрузился или сегодня нечего показать — как раньше
   const prev = feedSeenPrev(me);
-  const fresh = cards.filter((c) => prev && Date.parse(c.at) > prev).length;
+  const isNew = (c) => !!prev && Date.parse(c.at) > prev && !(c.kind === "post" && seenBefore(c));
+  const fresh = cards.filter(isNew).length;
   // метка — заголовок для экранного диктора: к листу и к ленте можно перейти по заголовкам
   const label = fresh
     ? `<div class="label" role="heading" aria-level="2">С прошлого захода<span class="aside">${fresh} ${plural(fresh, "новая", "новые", "новых")}</span></div>`
     : `<div class="label" role="heading" aria-level="2">Лист дня<span class="aside">${esc(fmtLong(todayISO()))}</span></div>`;
-  return `${label}${cards.map((c) => feedCard(c, prev && Date.parse(c.at) > prev)).join("")}
-    <div class="fc-end fc-caught">${guideFig(me, "cheer")}<p><b>Ты в курсе за сутки.</b> ${esc(feedEndSay(f))}</p></div>`;
+  // меньше трёх карточек — отметки нет: «Ты в курсе» после одной карточки звучит пусто
+  const caught = cards.length >= 3
+    ? `<div class="fc-end fc-caught">${guideFig(me, "cheer")}<p><b>Ты в курсе за сутки.</b> ${esc(feedEndSay(f))}</p></div>` : "";
+  return `${label}${cards.map((c) => feedCard(c, isNew(c))).join("")}${caught}`;
 }
 
 // Картинка из CDN Telegram не загрузилась — карточка остаётся без неё. Но без прыжка (DESIGN.md → «Загрузка
@@ -737,6 +756,7 @@ function refreshFeed() {
   if (!box || state.tab !== "home") return;
   box.innerHTML = feedHTML(state.fav);
   watchFeedImages(box);
+  watchSeen(box);
   refreshStream(true);
 }
 
@@ -804,7 +824,7 @@ function streamItems() {
   return out;
 }
 
-const streamItem = (c) => (c.kind === "post" ? postCard(c, false) : feedCard(c, false));
+const streamItem = (c) => (c.kind === "post" ? postCard(c, false, true) : feedCard(c, false));
 
 function streamEnd(all) {
   if (state.streamShown < all.length) return '<div id="stream-more" class="sk" style="height:132px"></div>';
@@ -828,13 +848,15 @@ function streamHTML(keep = false) {
   }
   if (!state.stream) return "";
   const opp = feedOpp();
-  // у соперника без канала чипа нет: пустой выбор разочаровывает
-  const oppPosts = opp && (state.stream.items || []).some((c) => c.kind === "post" && c.club === opp);
-  const chips = [["all", "Все"], ["mine", "Мой клуб"], ...(oppPosts ? [["opp", "Соперник"]] : [])];
+  // у клуба без постов за неделю чипа нет — ни у своего, ни у соперника: пустой выбор разочаровывает
+  const has = (club) => club && (state.stream.items || []).some((c) => c.kind === "post" && c.club === club);
+  const chips = [["all", "Все"], ...(has(state.fav) ? [["mine", "Мой клуб"]] : []), ...(has(opp) ? [["opp", "Соперник"]] : [])];
   if (!chips.some(([k]) => k === state.streamFilter)) state.streamFilter = "all";
   const all = streamItems();
   state.streamShown = Math.min(keep ? Math.max(STREAM_PAGE, state.streamShown) : STREAM_PAGE, all.length);
+  // фильтры прилипают под бегущей строкой; метка-«булавка» перед ними говорит, когда они прилипли
   return `<div class="label" role="heading" aria-level="2">Лента лиги<span class="aside">за неделю</span></div>
+    <i class="stream-pin" aria-hidden="true"></i>
     <div class="pills stream-pills" role="group" aria-label="Чьи посты">${chips.map(([k, v]) =>
       `<button type="button" class="${state.streamFilter === k ? "on" : ""}" data-stream-filter="${k}" aria-pressed="${state.streamFilter === k}">${v}</button>`).join("")}</div>
     <div id="stream">${all.slice(0, state.streamShown).map(streamItem).join("")}</div>${streamEnd(all)}`;
@@ -846,6 +868,7 @@ function refreshStream(keep = false) {
   if (!box || state.tab !== "home") return;
   box.innerHTML = streamHTML(keep);
   watchFeedImages(box);
+  watchSeen(box);
   mountStream();
 }
 
@@ -878,11 +901,43 @@ function packs() {
 }
 
 const packSeen = () => readJSON(PACKS_KEY);
-const packNew = (p) => p.posts.some((c) => Date.parse(c.at) > (Date.parse(packSeen()[p.key]) || 0));
+const packKey = (c) => c.club || "league";
+
+// Одна отметка «просмотрено» на пост (ADR-015, пересмотр 01.10): открыли в историях или карточка секунду
+// была на экране в листе или ленте. Хранится, пока жив пост. Старые отметки историй — «просмотрено до» в
+// packs_seen — тоже считаются
+const POSTS_SEEN_KEY = "posts_seen";   // { id поста: до какого времени помнить }
+let postsSeen = null;
+function seenPosts() {
+  if (!postsSeen) postsSeen = readJSON(POSTS_SEEN_KEY);
+  return postsSeen;
+}
+const postSeen = (c) => !!seenPosts()[c.id] || Date.parse(c.at) <= (Date.parse(packSeen()[packKey(c)]) || 0);
+function markSeen(c) {
+  const all = seenPosts();
+  if (all[c.id]) return false;
+  all[c.id] = c.until;
+  const now = Date.now();
+  for (const k of Object.keys(all)) if (!(Date.parse(all[k]) > now)) delete all[k];
+  lsSet(POSTS_SEEN_KEY, JSON.stringify(all));
+  return true;
+}
+// Что болельщик видел до этого захода: снимок один раз за сессию, как прошлый заход в листе, —
+// иначе точка «новое» гасла бы при перерисовке, пока он читает
+function seenBefore(c) {
+  if (!state.seenSnap) state.seenSnap = { ids: { ...seenPosts() }, packs: packSeen() };
+  const s = state.seenSnap;
+  return !!s.ids[c.id] || Date.parse(c.at) <= (Date.parse(s.packs[packKey(c)]) || 0);
+}
+
+const packNew = (p) => p.posts.some((c) => !postSeen(c));
+// Кольцо --ember — у своего клуба, соперника, лиги и клубов, чьи истории уже открывали. Остальные тихие:
+// при первом заходе новое всё, и двенадцать колец громче счёта
+const packRing = (p) => packNew(p) && (p.key === state.fav || p.key === "league" || p.key === feedOpp() || p.key in packSeen());
 const packName = (key) => (key === "league" ? "Лига" : key === state.fav ? "Мой клуб" : team(key).name);
-const packLabel = (p) => `${packName(p.key)}: ${p.posts.length} ${plural(p.posts.length, "пост", "поста", "постов")}${packNew(p) ? ", есть новое" : ""}`;
+const packLabel = (p) => `${packName(p.key)}: ${p.posts.length} ${plural(p.posts.length, "пост", "поста", "постов")}${packRing(p) ? ", есть новое" : ""}`;
 // Был ли ряд в прошлый раз: пока лента грузится, скелетон рисуем, только если кружки ожидаются. Иначе
-// в тихие дни, когда каналы молчат, пустой ряд схлопывается и табло прыгает вверх на 112px
+// в тихие дни, когда каналы молчат, пустой ряд схлопывается и всё ниже прыгает вверх на 112px
 const PACKS_ROW_KEY = "packs_row";
 
 function packsHTML() {
@@ -891,10 +946,11 @@ function packsHTML() {
   }
   const list = packs();
   if (!list.length) return "";
-  // группа кнопок, а не список: role="listitem" на кнопке отнимает у неё роль кнопки
-  return `<div class="packs" role="group" aria-label="Сегодня в каналах">${list.map((p) => {
+  // группа кнопок, а не список: role="listitem" на кнопке отнимает у неё роль кнопки. Ряд — одна остановка
+  // Tab, по кружкам — стрелками: иначе до табло двенадцать нажатий
+  return `<div class="packs" role="group" aria-label="Сегодня в каналах">${list.map((p, k) => {
     const em = p.key === "league" ? '<span class="em ab" aria-hidden="true">РХЛ</span>' : emblem(p.key, "");
-    return `<button type="button" class="pack${packNew(p) ? " new" : ""}" data-pack="${esc(p.key)}" aria-label="${esc(packLabel(p))}">
+    return `<button type="button" class="pack${packRing(p) ? " new" : ""}" data-pack="${esc(p.key)}" tabindex="${k ? -1 : 0}" aria-label="${esc(packLabel(p))}">
       <span class="pack-ring">${em}</span><span class="pack-name" aria-hidden="true">${esc(packName(p.key))}</span></button>`;
   }).join("")}</div>`;
 }
@@ -905,13 +961,59 @@ function refreshPacks() {
   if (state.stream !== undefined) lsSet(PACKS_ROW_KEY, packs().length ? "1" : "0");
 }
 
+// Кольца на месте, без перерисовки ряда: его прокрутка вбок и фокус остаются
+function refreshRings() {
+  const list = packs();
+  document.querySelectorAll("#packs [data-pack]").forEach((btn) => {
+    const p = list.find((x) => x.key === btn.dataset.pack);
+    if (!p) return;
+    btn.classList.toggle("new", packRing(p));
+    btn.setAttribute("aria-label", packLabel(p));
+  });
+}
+
+// Карточка поста секунду на экране — просмотрена. Пока открыт лист поверх, не считаем
+let seenObs = null;
+const seenTimers = new Map();
+function postById(id) {
+  const pools = [((state.feed[state.fav] || {}).cards) || [], (state.stream && state.stream.items) || []];
+  for (const list of pools) {
+    const c = list.find((x) => x.id === id && x.kind === "post");
+    if (c) return c;
+  }
+  return null;
+}
+function watchSeen(root) {
+  if (!root || !("IntersectionObserver" in window)) return;
+  if (!seenObs) {
+    seenObs = new IntersectionObserver((es) => {
+      for (const e of es) {
+        const el = e.target;
+        if (!el.isConnected) { seenObs.unobserve(el); continue; }
+        if (e.isIntersecting && !seenTimers.has(el)) {
+          seenTimers.set(el, setTimeout(() => {
+            seenTimers.delete(el);
+            if (!el.isConnected || sheetOpen() || document.hidden) return;
+            seenObs.unobserve(el);
+            const c = postById(el.dataset.id);
+            if (c && markSeen(c)) refreshRings();
+          }, 1000));
+        } else if (!e.isIntersecting && seenTimers.has(el)) {
+          clearTimeout(seenTimers.get(el));
+          seenTimers.delete(el);
+        }
+      }
+    }, { threshold: 0.6 });
+  }
+  root.querySelectorAll(".fc-post[data-id]").forEach((el) => { if (!seenPosts()[el.dataset.id]) seenObs.observe(el); });
+}
+
 // Открыть пакет: с первого непросмотренного поста, всё просмотрено — с начала
 function openPack(key) {
   const list = packs();
   const ki = list.findIndex((p) => p.key === key);
   if (ki < 0) return;
-  const seen = Date.parse(packSeen()[key]) || 0;
-  const i = Math.max(0, list[ki].posts.findIndex((c) => Date.parse(c.at) > seen));
+  const i = Math.max(0, list[ki].posts.findIndex((c) => !postSeen(c)));
   state.pack = { list, ki, i };
   showPack(0);
 }
@@ -925,6 +1027,7 @@ function showPack(dir) {
     all[p.key] = c.at;
     lsSet(PACKS_KEY, JSON.stringify(all));
   }
+  markSeen(c);
   const img = c.image && POST_IMG.test(c.image)
     ? `<div class="fc-img pack-img"><img src="${esc(c.image)}" alt="" decoding="async" referrerpolicy="no-referrer">${c.video ? '<span class="tag">видео</span>' : c.media > 1 ? `<span class="tag">+${c.media - 1} фото</span>` : ""}</div>` : "";
   const bar = p.posts.map((_, k) => `<i class="${k < i ? "done" : k === i ? "on" : ""}"></i>`).join("");
@@ -943,7 +1046,7 @@ function showPack(dir) {
   watchFeedImages($("#sheet"));
   const btn = document.querySelector(`#packs [data-pack="${CSS.escape(p.key)}"]`);
   if (btn) {
-    btn.classList.toggle("new", packNew(p));
+    btn.classList.toggle("new", packRing(p));
     btn.setAttribute("aria-label", packLabel(p));   // экранный диктор не должен дальше говорить «есть новое»
   }
 }
@@ -968,8 +1071,23 @@ function packNav(step) {
   if (again) again.focus({ preventScroll: true });
 }
 
+// Прилипли ли фильтры ленты: булавка перед ними ушла под бегущую строку — у пилюль появляется линия снизу
+let pinObs = null;
+const marqueeH = () => ($(".marquee") || {}).offsetHeight || 0;
+function mountPin() {
+  if (pinObs) pinObs.disconnect();
+  const pin = $(".stream-pin");
+  const bar = $(".stream-pills");
+  if (!pin || !bar || !("IntersectionObserver" in window)) return;
+  pinObs = new IntersectionObserver(([e]) => {
+    bar.classList.toggle("stuck", !e.isIntersecting && e.boundingClientRect.top < e.rootBounds.top + 1);
+  }, { rootMargin: `-${marqueeH() + 1}px 0px 0px 0px` });
+  pinObs.observe(pin);
+}
+
 // Следующая порция — когда до конца ленты остаётся экран
 function mountStream() {
+  mountPin();
   if (streamObs) streamObs.disconnect();
   const more = $("#stream-more");
   if (!more || !("IntersectionObserver" in window)) return;
@@ -989,6 +1107,7 @@ function moreStream() {
   // порция проявляется на месте скелетона, как данные в карточке матча (DESIGN.md → «Загрузка без прыжков»)
   [...box.children].slice(had).forEach(fadeIn);
   watchFeedImages(box);
+  watchSeen(box);
   more.insertAdjacentHTML("afterend", streamEnd(all));
   more.remove();
   mountStream();
@@ -1008,7 +1127,7 @@ function feedChannelTitle(handle) {
   const pools = [((state.feed[state.fav] || {}).cards) || [], (state.stream && state.stream.items) || []];
   for (const list of pools) {
     const c = list.find((x) => x.channel === handle && x.ctitle);
-    if (c) return c.ctitle;
+    if (c) return c.cfull || c.ctitle;   // в шапке карточки короткое имя, здесь — полное
   }
   return feedHidden()[handle] || handle;
 }
@@ -1030,7 +1149,7 @@ function openPostMenu(handle, from) {
 const FEED_RULES = [
   "Показываем публичные каналы клубов РХЛ и канал лиги. Из общих каналов со взрослым клубом — только посты о молодёжке.",
   "Из поста — начало текста и одна картинка. Всё остальное — в самом канале: нажми на карточку.",
-  "Сначала твой клуб и соперник серии, потом клубы лиги по кругу. Сколько канал пишет, не важно: очередь одна для всех.",
+  "В листе дня — сначала твой клуб и соперник серии, потом клубы лиги по кругу, сколько бы канал ни писал. Ниже, в ленте лиги, — все посты за неделю по времени, от одного канала не больше двух подряд.",
   "Не показываем рекламу, букмекеров, дни рождения и возраст игроков.",
   "Клуб может попросить убрать картинки или весь канал — снимаем за сутки. Скрыть канал у себя — «⋯» на карточке.",
 ];
@@ -3372,6 +3491,7 @@ function render(dir = 0) {
   if (state.tab === "home") {
     countUp(screen);
     watchFeedImages(screen);
+    watchSeen(screen);
     mountStream();
   }
   if (state.tab === "zveno") zvMounted();
@@ -3395,7 +3515,11 @@ function haptic() {
 // когда анимация уже идёт на видеокарте и её не остановить занятым основным потоком
 let goToken = 0;
 function go(tab) {
-  if (tab === state.tab) return;
+  // нажатие на активную вкладку — наверх: лента лиги длинная
+  if (tab === state.tab) {
+    if (window.scrollY > 0) window.scrollTo({ top: 0, behavior: calm() ? "auto" : "smooth" });
+    return;
+  }
   const dir = tabDir(state.tab, tab);
   state.tab = tab;
   state.draft = null;
@@ -3487,8 +3611,10 @@ document.addEventListener("click", (e) => {
     state.streamFilter = el.dataset.streamFilter;
     haptic();
     const top = $("#stream-wrap").getBoundingClientRect().top;
+    const stuck = $(".stream-pills").classList.contains("stuck");
     refreshStream();
-    // лента меняется под пилюлями, а пилюли остаются под пальцем
+    // фильтры прилипли — к началу новой ленты под ними; иначе пилюли остаются под пальцем
+    if (stuck) return window.scrollBy(0, $(".stream-pin").getBoundingClientRect().top - marqueeH());
     const now = $("#stream-wrap").getBoundingClientRect().top;
     if (Math.abs(now - top) > 1) window.scrollBy(0, now - top);
     return;
@@ -3661,6 +3787,17 @@ document.addEventListener("keydown", (e) => {
     if ($("#tour") && state.meet) return closeCoach();
     if (t && !t.away) return t.greet ? tourEnd() : tourSkip();
     return sheetBack();
+  }
+  // ряд «Сегодня» — одна остановка Tab, по кружкам — стрелками, Home и End
+  const pk = e.target.closest && e.target.closest(".packs");
+  if (pk && ["ArrowRight", "ArrowLeft", "Home", "End"].includes(e.key)) {
+    e.preventDefault();
+    const list = [...pk.querySelectorAll(".pack")];
+    const i = list.indexOf(e.target);
+    const n = e.key === "Home" ? 0 : e.key === "End" ? list.length - 1 : Math.min(list.length - 1, Math.max(0, i + (e.key === "ArrowRight" ? 1 : -1)));
+    list.forEach((b, k) => b.setAttribute("tabindex", k === n ? "0" : "-1"));
+    list[n].focus();
+    return list[n].scrollIntoView({ block: "nearest", inline: "nearest", behavior: calm() ? "auto" : "smooth" });
   }
   // истории с клавиатуры (Telegram Desktop): стрелки — как касание справа и слева
   if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && state.pack && sheetOpen() && $("#sheet .pack-page")) {

@@ -1,0 +1,61 @@
+/* «Буллит» — аркада (ADR-017). Цвета, радиусы и движение — по DESIGN.md.
+   Игровой экран живёт по своим правилам движения: здесь оно суть, а не украшение.
+   prefers-reduced-motion убирает тряску и выезды, сама игра остаётся. */
+
+.bl { display: flex; flex-direction: column; gap: 10px; }
+
+.bl-head { display: flex; align-items: center; gap: 10px; }
+.bl-club {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
+  border: var(--line); border-radius: 9999px; padding: 6px 12px 6px 8px; background: var(--paper);
+}
+.bl-club::before {
+  content: ""; flex: none; width: 18px; height: 18px; border-radius: 50%;
+  border: var(--line); background: var(--club, var(--blue));
+}
+.bl-name { font: 700 14px/1.2 var(--ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bl-count { font: 800 15px/1 var(--display); font-variant-numeric: tabular-nums; flex: none; }
+
+.bl-dots { display: flex; gap: 6px; flex: none; }
+.bl-dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--edge-strong); }
+.bl-dot.is-now { border-color: var(--ember); border-style: solid; }
+.bl-dot.is-goal { background: var(--ink); border-color: var(--ink); }
+.bl-dot.is-save, .bl-dot.is-post { border-color: var(--ink); }
+
+.bl-road { display: flex; gap: 3px; }
+.bl-tick { flex: 1; height: 4px; border-radius: 2px; background: var(--mist); }
+.bl-tick.is-done { background: var(--ink); }
+.bl-tick.is-now { background: var(--ember); }
+
+.bl-play { position: relative; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
+.bl-play:focus-visible { outline: 3px solid var(--act); outline-offset: 4px; border-radius: 24px; }
+.bl-ice {
+  display: block; width: 100%; border: var(--line); border-radius: 24px; background: var(--paper);
+}
+.bl-play.is-intro .bl-ice { animation: bl-in .42s cubic-bezier(.2, .8, .2, 1); }
+@keyframes bl-in { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
+
+.bl-hint { min-height: 20px; text-align: center; font: 500 13px/1.4 var(--ui); color: var(--muted); }
+
+.bl-over {
+  position: absolute; inset: 0; display: grid; place-content: center; gap: 10px; text-align: center;
+  padding: 24px; border-radius: 24px; background: color-mix(in srgb, var(--paper) 92%, transparent);
+  backdrop-filter: blur(2px);
+}
+.bl-big { font: 800 56px/0.85 var(--display); font-variant-numeric: tabular-nums; }
+.bl-of { font: 700 13px/1.2 var(--ui); color: var(--muted); letter-spacing: .04em; text-transform: uppercase; }
+.bl-stop { font: 500 15px/1.4 var(--ui); margin-top: 2px; }
+.bl-rec { font: 500 13px/1.4 var(--ui); color: var(--muted); }
+.bl-over .btn { margin-top: 8px; min-width: 200px; }
+.bl-over .btn.ghost { margin-top: 0; }
+
+/* карточка входа на «Главной» */
+.bl-card { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; }
+.bl-card .bl-card-t { flex: 1; min-width: 0; }
+.bl-card b { display: block; font: 700 15px/1.25 var(--ui); }
+.bl-card span { display: block; font: 500 13px/1.35 var(--ui); color: var(--muted); margin-top: 2px; }
+.bl-card .bl-card-n { font: 800 26px/1 var(--display); font-variant-numeric: tabular-nums; flex: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bl-play.is-intro .bl-ice { animation: none; }
+}

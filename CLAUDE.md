@@ -35,6 +35,10 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `zveno/` | Движок фэнтези «Звено» (ADR-014), только stdlib: константы `rules.py`, туры и дедлайны `tours.py`, очки за матч `points.py`, стоимость `prices.py`, приоры 25/26 `prior.py` → `zveno/data/prior_2526.json`, конструктор названий `names.py`, правила менеджера для сервера `manager.py` |
 | `build_zveno.py` | Собирает `webapp/data/zveno/`: `tours.json`, `pool.json`, `matches.json`, `names.json`. В Pages-задании сразу после `build_data.py` |
 | `docs/zveno/contract.md` | Контракт частей «Звена»: опубликованные данные, функции движка, API сервера, бот |
+| `bullit.py` | Ворота 26 клубов для аркады «Буллит» (ADR-017): лестница по пропущенным за игру → `webapp/data/bullit.json`. Зовётся из `build_data.py` |
+| `webapp/bullit.js`, `webapp/bullit.css` | Сама игра: движок на канвасе (ничего не знает про мини-апп) и ниже черты — связь с приложением. Числа поведения вратаря — в `TUNE` |
+| `tools/bullit_balance.js` | Прогон движка без браузера: сколько забивает случайный тап и расчётливый игрок на каждых воротах. Запускать после правки `TUNE` |
+| `tools/bullit_prototype.py` | Собирает игру в одну страницу со стикерами внутри: открыть с телефона или опубликовать как Artifact |
 | `rhockey.py` | Календарь всей лиги с r-hockey.ru — временно, до открытия rhl.fhr.ru |
 | `channels.json` | Telegram-каналы клубов и лиги для листа «Главной» (ADR-015): `kind`, `scope`, `markers`, короткое имя `short`, отказ клуба `optout` (`images` — без картинок, `all` — не показываем), дата письма клубу `notified`. Правится руками |
 | `tg_channels.py` | Посты каналов из `t.me/s` → `channel_posts.json` (не в git): только превью, фильтры рекламы, букмекеров, дней рождения и возраста, постов не о молодёжке |
@@ -81,6 +85,8 @@ venv/bin/python history.py                       # прошлые сезоны �
 venv/bin/python history.py --protocols           # затем протоколы прошлых встреч, ~30 минут
 venv/bin/python tg_channels.py                   # посты каналов клубов в channel_posts.json (ADR-015)
 venv/bin/python build_data.py                    # собрать webapp/data/league.json, h2h.json и листы feed/
+node tools/bullit_balance.js --short             # сложность «Буллита»: сколько забивают на каждых воротах
+python3 tools/bullit_prototype.py --out /tmp/bullit.html   # игра одной страницей, без мини-аппа
 cd webapp && python3 -m http.server 8000         # мини-апп в браузере: localhost:8000
 ```
 

@@ -494,6 +494,8 @@ function renderHome() {
   // ряд «Сегодня» — под табло: на 320×568 над ним он вытеснял табло с первого экрана (ADR-015, 01.10)
   html += `<div id="packs">${packsHTML()}</div>`;
 
+  html += blCardHTML();   // «Буллит» (ADR-017): вход в игру под табло
+
   if (last) {
     html += `<div class="label">Последний результат</div>
       <div class="board-card tap" data-game="${esc(last.id)}" role="button" tabindex="0">
@@ -3529,6 +3531,7 @@ function showSheet(html, dir = 0) {
   }
   sheet.style.transform = back.style.opacity = "";
   sheet.style.pointerEvents = back.style.pointerEvents = "";
+  blClosed();   // прежний лист мог держать игру
   sheet.innerHTML = `<div class="sheet-page">${html}</div>`;
   sheet.classList.remove("pack-open");   // рамку историй ставит showPack, остальным листам она не нужна
   sheet.hidden = false;
@@ -3552,6 +3555,7 @@ function showSheet(html, dir = 0) {
 
 // Уход зеркален приходу: лист уезжает вниз с разгоном. fromY — откуда, если его уже тянут пальцем
 function closeMatch(fromY = 0) {
+  blClosed();   // канвас «Буллита» не крутится под закрытым листом
   sheetStack.length = 0;
   const sheet = $("#sheet");
   const back = $("#sheet-backdrop");
@@ -3756,7 +3760,7 @@ function confirmTeam(id = state.draft || state.fav) {
 }
 
 document.addEventListener("click", (e) => {
-  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],[data-pack],[data-pack-nav],#sheet-backdrop");
+  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],[data-pack],[data-pack-nav],[data-bullit],#sheet-backdrop");
   if (!el || el.disabled) return;
   if (el.dataset.guide) return guideHop(el);
   if (el.hasAttribute("data-meet-close") || (el.hasAttribute("data-coach-back") && state.meet)) return closeCoach();
@@ -3778,6 +3782,7 @@ document.addEventListener("click", (e) => {
     }
     return tourEnd();
   }
+  if (el.hasAttribute("data-bullit")) { haptic(); return blOpen(); }
   if (el.dataset.postMore) return openPostMenu(el.dataset.postMore, el);
   if (el.dataset.post) return openPost(el.dataset.post);
   if (el.dataset.feedHide) {
@@ -4207,6 +4212,7 @@ function boot(d, cached = false) {
 
 async function main() {
   dropOldKeys();
+  blReadBest();   // рекорд «Буллита» с устройства и из облака — до первой отрисовки «Главной»
   applyTheme();
   if (window.matchMedia) matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
   initTelegram();   // если скрипт Telegram уже успел загрузиться

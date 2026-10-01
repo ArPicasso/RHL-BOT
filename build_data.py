@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import bullit
 import feed
 import league
 import rhockey
@@ -683,6 +684,10 @@ def main() -> None:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     history, past_protocols = load_history(), load_history_protocols()
+    # ворота 26 клубов для «Буллита» (ADR-017): сложность — из пропущенных за игру
+    (args.out.parent / "bullit.json").write_text(
+        json.dumps(bullit.build(teams.all, data["games"], history, data["season"]),
+                   ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     h2h = head_to_head(data["games"], history, set(past_protocols))
     wanted = {m["id"] for pair in h2h.values() for m in pair["last"] if m.get("id", "").startswith("h")}
     # «В этот день» на «Главной»: прошлые матчи сегодняшнего числа с протоколом получают разбор

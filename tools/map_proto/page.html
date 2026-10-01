@@ -1,0 +1,602 @@
+<title>Карта лиги</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@500;700;800&family=Unbounded:wght@700;800&display=swap">
+<style>
+  /* Экран-игра: карта во весь экран, тонкая шапка сверху, заряд снизу, мини-карта в углу */
+  :root {
+    --ice: #eef4fb;        /* лёд: фон поля */
+    --land: #ffffff;       /* ничья клетка */
+    --edge: #0b1220;       /* контур */
+    --ink: #0b1220;
+    --muted: #5a6577;
+    --paper: #ffffff;
+    --bg: #dde6f2;
+    --sun: #ffd731;
+    --ember: #fb4903;
+    --mint: #55db9c;
+    --grid: rgba(11, 18, 32, .18);
+    --shadow: 0 8px 24px rgba(11, 18, 32, .14);
+    --display: "Unbounded", "Arial Black", system-ui, sans-serif;
+    --text: "Onest", system-ui, -apple-system, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ice: #0f1824; --land: #1b2534; --edge: #000000; --ink: #e6ecf5; --muted: #93a0b4;
+      --paper: #17202c; --bg: #0a111b; --grid: rgba(230, 236, 245, .14);
+      --shadow: 0 8px 24px rgba(0, 0, 0, .5); color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ice: #0f1824; --land: #1b2534; --edge: #000000; --ink: #e6ecf5; --muted: #93a0b4;
+    --paper: #17202c; --bg: #0a111b; --grid: rgba(230, 236, 245, .14);
+    --shadow: 0 8px 24px rgba(0, 0, 0, .5); color-scheme: dark;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--text); overflow: hidden; }
+  #app { position: fixed; inset: 0; display: grid; grid-template-rows: auto 1fr auto; }
+
+  /* ---------- шапка ---------- */
+  header { padding: 8px 12px calc(8px) 12px; padding-top: calc(8px + env(safe-area-inset-top, 0px));
+    display: grid; gap: 6px; background: var(--paper); border-bottom: 1px solid var(--grid); z-index: 5; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .crest { width: 30px; height: 30px; border-radius: 50%; background: #fff; border: 1.5px solid var(--edge);
+    display: grid; place-items: center; overflow: hidden; flex: none; }
+  .crest img { width: 86%; height: 86%; object-fit: contain; }
+  .chip { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; border: 1px solid var(--edge); }
+  .who { font: 800 14px/1.1 var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .who small { display: block; font: 500 11px/1.2 var(--text); color: var(--muted); }
+  .tourbox { text-align: right; font: 800 12px/1.1 var(--text); }
+  .tourbox b { display: block; font: 800 18px/1 var(--display); font-variant-numeric: tabular-nums; }
+  .tourbox span { font: 500 11px/1 var(--text); color: var(--muted); }
+  .ticker { font: 500 12px/1.3 var(--text); color: var(--ink); background: var(--ice); border-radius: 10px;
+    padding: 6px 10px; display: flex; gap: 6px; align-items: center; min-height: 30px; }
+  .ticker b { font-weight: 800; }
+  .ticker .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ember); flex: none; }
+
+  /* ---------- карта ---------- */
+  #stage { position: relative; overflow: hidden; background: var(--ice); touch-action: none; }
+  #map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .c { stroke: var(--grid); stroke-width: 1; fill: var(--land); cursor: pointer; transition: fill .18s ease; }
+  .c.own { stroke: rgba(255,255,255,.35); }
+  .c.hit { animation: pop .42s ease; }
+  @keyframes pop { 0% { transform: scale(.55); transform-origin: center; } 60% { transform: scale(1.12); } 100% { transform: none; } }
+  .ring { fill: none; stroke: var(--edge); stroke-width: 2.5; pointer-events: none; }
+  .can { fill: none; stroke: var(--ink); stroke-width: 2.4; stroke-dasharray: 5 4; pointer-events: none;
+    animation: blink 1.4s linear infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+  .cost { font: 800 11px/1 var(--display); fill: #fff; paint-order: stroke; stroke: rgba(0,0,0,.55); stroke-width: 3px;
+    pointer-events: none; text-anchor: middle; dominant-baseline: central; }
+  .mine-dot { fill: #fff; opacity: .9; pointer-events: none; }
+  .city { pointer-events: none; }
+  .city circle { fill: #fff; stroke: var(--edge); stroke-width: 2; }
+  .landing { fill: none; stroke: var(--ember); stroke-width: 3; animation: blink 1s linear infinite; pointer-events: none; }
+
+  /* ---------- мини-карта ---------- */
+  #mini { position: absolute; right: 10px; top: 10px; width: 118px; height: 74px; background: var(--paper);
+    border: 1.5px solid var(--edge); border-radius: 10px; padding: 3px; box-shadow: var(--shadow); }
+  #mini svg { width: 100%; height: 100%; display: block; }
+  #mini .vp { fill: none; stroke: var(--ember); stroke-width: 6; }
+  .zoom { position: absolute; right: 10px; bottom: 90px; display: grid; gap: 6px; }
+  .zoom button { width: 38px; height: 38px; border-radius: 50%; border: 1.5px solid var(--edge); background: var(--paper);
+    color: var(--ink); font: 800 18px/1 var(--display); cursor: pointer; box-shadow: var(--shadow); }
+
+  /* ---------- низ: заряд ---------- */
+  footer { background: var(--paper); border-top: 1px solid var(--grid); padding: 8px 12px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 6px; z-index: 5; }
+  .charge { display: flex; align-items: center; gap: 10px; }
+  .pucks { display: flex; gap: 3px; flex: 1; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+  .pk { width: 14px; height: 10px; border-radius: 4px; background: var(--ink); flex: none; }
+  .pk.off { background: none; border: 1.5px solid var(--grid); }
+  .charge b { font: 800 20px/1 var(--display); font-variant-numeric: tabular-nums; }
+  .hint { font: 500 12px/1.3 var(--text); color: var(--muted); min-height: 16px; }
+  .hint b { color: var(--ink); font-weight: 800; }
+  .btn { font: 800 13px/1 var(--text); background: var(--ink); color: var(--paper); border: 0; border-radius: 999px;
+    padding: 11px 18px; cursor: pointer; }
+  .btn.ghost { background: var(--paper); color: var(--ink); border: 1.5px solid var(--edge); }
+  .mini-btn { font: 700 11px/1 var(--text); background: var(--ice); color: var(--ink); border: 1px solid var(--grid);
+    border-radius: 999px; padding: 7px 10px; cursor: pointer; }
+
+  /* ---------- оверлеи ---------- */
+  .veil { position: fixed; inset: 0; background: rgba(8, 14, 24, .55); display: grid; place-items: center;
+    padding: 16px; z-index: 20; }
+  .card { background: var(--paper); border: 2px solid var(--edge); border-radius: 22px; box-shadow: var(--shadow);
+    padding: 18px; max-width: 420px; width: 100%; max-height: 86vh; overflow: auto; }
+  .card h1 { font: 800 22px/1.1 var(--display); margin: 0 0 6px; text-wrap: balance; }
+  .card h2 { font: 800 15px/1.2 var(--text); margin: 14px 0 4px; }
+  .card p { font: 500 14px/1.45 var(--text); margin: 0 0 10px; color: var(--ink); }
+  .card p.muted { color: var(--muted); font-size: 13px; }
+  .acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .teams { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 8px; margin-top: 10px; }
+  .tm { display: grid; justify-items: center; gap: 4px; background: var(--ice); border: 1.5px solid transparent;
+    border-radius: 14px; padding: 8px 4px; cursor: pointer; }
+  .tm.on { border-color: var(--edge); }
+  .tm img { width: 34px; height: 34px; object-fit: contain; }
+  .tm span { font: 700 9px/1.1 var(--text); text-align: center; }
+  .steps { display: flex; gap: 5px; margin-bottom: 10px; }
+  .steps i { height: 4px; flex: 1; background: var(--grid); border-radius: 2px; }
+  .steps i.on { background: var(--ink); }
+  table { width: 100%; border-collapse: collapse; font: 600 13px/1.2 var(--text); }
+  td { padding: 6px 4px; border-bottom: 1px solid var(--grid); }
+  td.n { font-variant-numeric: tabular-nums; text-align: right; font-weight: 800; }
+  td.em { width: 26px; }
+  td.em img { width: 22px; height: 22px; object-fit: contain; display: block; }
+  tr.me td { background: var(--ice); }
+  .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 112px; background: var(--ink); color: var(--paper);
+    font: 700 13px/1.3 var(--text); padding: 10px 14px; border-radius: 999px; z-index: 15; box-shadow: var(--shadow);
+    opacity: 0; transition: opacity .2s ease, transform .2s ease; max-width: 88vw; text-align: center; }
+  .toast.on { opacity: 1; transform: translateX(-50%) translateY(-6px); }
+  .coach { position: absolute; left: 12px; right: 12px; bottom: 12px; background: var(--paper); border: 2px solid var(--edge);
+    border-radius: 18px; padding: 12px 14px; box-shadow: var(--shadow); z-index: 12; }
+  .coach p { margin: 0; font: 600 14px/1.4 var(--text); }
+  .coach .acts { margin-top: 10px; }
+  @media (prefers-reduced-motion: reduce) {
+    .c, .toast { transition: none; }
+    .c.hit, .can, .landing { animation: none; }
+  }
+</style>
+
+<div id="app">
+  <header>
+    <div class="row">
+      <span class="crest" id="my-crest"></span>
+      <span class="who" id="my-name">Выбери клуб<small>и начинай с его города</small></span>
+      <span class="tourbox"><b id="clock">45</b><span id="tourlab">тур 1</span></span>
+    </div>
+    <div class="ticker"><i class="dot"></i><span id="ticker">Вся Россия — поле. Каждый клуб начинает с одной клетки.</span></div>
+  </header>
+
+  <div id="stage">
+    <svg id="map" aria-label="Карта лиги"></svg>
+    <div id="mini"><svg id="minisvg" aria-hidden="true"></svg></div>
+    <div class="zoom">
+      <button type="button" id="zin" aria-label="Приблизить">+</button>
+      <button type="button" id="zout" aria-label="Отдалить">−</button>
+    </div>
+    <div class="coach" id="coach" hidden><p id="coach-t"></p><div class="acts"><button class="btn" id="coach-b">Дальше</button></div></div>
+  </div>
+
+  <footer>
+    <div class="charge">
+      <b id="charge-n">0</b>
+      <span class="pucks" id="pucks"></span>
+      <button class="mini-btn" id="why">При чём тут хоккей?</button>
+    </div>
+    <div class="hint" id="hint">Выбери клуб — и поехали.</div>
+  </footer>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<div class="veil" id="veil" hidden><div class="card" id="card"></div></div>
+<script id="data" type="application/json">/*DATA*/</script>
+<script>
+(() => {
+  const D = JSON.parse(document.getElementById("data").textContent);
+  const CELLS = D.cells, ADJ = D.adj, CLUBS = D.clubs, N = CELLS.length;
+  const S = D.s, HW = Math.sqrt(3) * S / 2;
+  const owner = new Int16Array(N).fill(-1);
+  const mineCell = new Uint8Array(N);          // клетки, закрашенные лично
+  const byClub = CLUBS.map(() => 0);
+  const baseOf = new Int16Array(N).fill(-1);
+  CLUBS.forEach((c, i) => { baseOf[c.base] = i; });
+
+  const ST = {
+    me: -1, charge: 6, cap: 14, tour: 1, left: 45, started: false, step: 0,
+    painted: 0, landing: null, landingCells: new Set(), over: false,
+  };
+  const REGEN = 1300;
+  let lastLoss = 0;
+  const $ = (s) => document.querySelector(s);
+
+  // ---------- геометрия ----------
+  const hexPath = (x, y) => {
+    let d = "";
+    for (let k = 0; k < 6; k++) {
+      const a = Math.PI / 180 * (60 * k - 30);
+      d += (k ? "L" : "M") + (x + S * Math.cos(a)).toFixed(1) + " " + (y + S * Math.sin(a)).toFixed(1);
+    }
+    return d + "Z";
+  };
+
+  // ---------- отрисовка поля ----------
+  const map = $("#map");
+  const NS = "http://www.w3.org/2000/svg";
+  const gCells = document.createElementNS(NS, "g");
+  const gMarks = document.createElementNS(NS, "g");
+  const gCity = document.createElementNS(NS, "g");
+  const gCan = document.createElementNS(NS, "g");
+  map.append(gCells, gMarks, gCity, gCan);
+  const nodes = [], marks = [];
+  for (let i = 0; i < N; i++) {
+    const p = document.createElementNS(NS, "path");
+    p.setAttribute("d", hexPath(CELLS[i].x, CELLS[i].y));
+    p.setAttribute("class", "c");
+    p.dataset.i = i;
+    gCells.appendChild(p);
+    nodes.push(p);
+    const m = document.createElementNS(NS, "circle");
+    m.setAttribute("cx", CELLS[i].x); m.setAttribute("cy", CELLS[i].y); m.setAttribute("r", 0);
+    m.setAttribute("class", "mine-dot");
+    gMarks.appendChild(m);
+    marks.push(m);
+  }
+  CLUBS.forEach((c) => {
+    const g = document.createElementNS(NS, "g");
+    g.setAttribute("class", "city");
+    const cell = CELLS[c.base];
+    const circ = document.createElementNS(NS, "circle");
+    circ.setAttribute("cx", cell.x); circ.setAttribute("cy", cell.y); circ.setAttribute("r", S * .62);
+    const img = document.createElementNS(NS, "image");
+    img.setAttribute("href", c.logo); img.setAttribute("x", cell.x - S * .5); img.setAttribute("y", cell.y - S * .5);
+    img.setAttribute("width", S); img.setAttribute("height", S);
+    img.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    g.append(circ, img);
+    gCity.appendChild(g);
+  });
+
+  // мини-карта
+  const mini = $("#minisvg");
+  mini.setAttribute("viewBox", `0 0 ${D.w} ${D.h}`);
+  const miniNodes = [];
+  for (let i = 0; i < N; i++) {
+    const p = document.createElementNS(NS, "path");
+    p.setAttribute("d", hexPath(CELLS[i].x, CELLS[i].y));
+    p.setAttribute("fill", "var(--land)");
+    p.setAttribute("stroke", "none");
+    mini.appendChild(p);
+    miniNodes.push(p);
+  }
+  const vp = document.createElementNS(NS, "rect");
+  vp.setAttribute("class", "vp");
+  mini.appendChild(vp);
+
+  // ---------- камера ----------
+  const cam = { x: D.w / 2, y: D.h / 2, z: 1 };
+  const zAll = () => {
+    const r = $("#stage").getBoundingClientRect();
+    return Math.min(r.width / D.w, r.height / D.h) * .98;
+  };
+  const zNear = () => {
+    const r = $("#stage").getBoundingClientRect();
+    return r.width / (9 * Math.sqrt(3) * S);     // примерно девять клеток в ширину
+  };
+  function camTo(z, x, y, ms = 520) {
+    const z0 = cam.z, x0 = cam.x, y0 = cam.y, t0 = performance.now();
+    if (ms <= 0 || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      cam.z = z; cam.x = x; cam.y = y; return applyCam();
+    }
+    (function step(t) {
+      const k = Math.min(1, (t - t0) / ms), e = 1 - Math.pow(1 - k, 3);
+      cam.z = z0 + (z - z0) * e; cam.x = x0 + (x - x0) * e; cam.y = y0 + (y - y0) * e;
+      applyCam();
+      if (k < 1) requestAnimationFrame(step);
+    })(t0);
+  }
+  function fit() {
+    cam.z = zNear();
+    applyCam();
+  }
+  function applyCam() {
+    const r = $("#stage").getBoundingClientRect();
+    const w = r.width / cam.z, h = r.height / cam.z;
+    cam.x = Math.min(D.w - w / 2, Math.max(w / 2, cam.x));
+    cam.y = Math.min(D.h - h / 2, Math.max(h / 2, cam.y));
+    map.setAttribute("viewBox", `${cam.x - w / 2} ${cam.y - h / 2} ${w} ${h}`);
+    vp.setAttribute("x", cam.x - w / 2); vp.setAttribute("y", cam.y - h / 2);
+    vp.setAttribute("width", w); vp.setAttribute("height", h);
+  }
+  let drag = null;
+  $("#stage").addEventListener("pointerdown", (e) => {
+    if (e.target.closest("button") || e.target.closest(".coach") || e.target.closest("#mini")) return;
+    drag = { x: e.clientX, y: e.clientY, moved: 0, i: e.target.dataset && e.target.dataset.i };
+    $("#stage").setPointerCapture(e.pointerId);
+  });
+  $("#stage").addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    drag.moved += Math.abs(dx) + Math.abs(dy);
+    cam.x -= dx / cam.z; cam.y -= dy / cam.z;
+    drag.x = e.clientX; drag.y = e.clientY;
+    applyCam();
+  });
+  $("#stage").addEventListener("pointerup", (e) => {
+    if (drag && drag.moved < 8 && drag.i !== undefined) tryPaint(+drag.i);
+    drag = null;
+  });
+  const clampZ = () => { cam.z = Math.min(zNear() * 2, Math.max(zAll(), cam.z)); };
+  $("#zin").onclick = () => { cam.z *= 1.5; clampZ(); applyCam(); };
+  $("#zout").onclick = () => { cam.z /= 1.5; clampZ(); applyCam(); };
+  addEventListener("resize", applyCam);
+
+  // ---------- состояние клеток ----------
+  function paint(i, club, byMe) {
+    const prev = owner[i];
+    if (prev === club) return;
+    if (prev >= 0) byClub[prev]--;
+    owner[i] = club;
+    byClub[club]++;
+    if (byMe) { mineCell[i] = 1; ST.painted++; }
+    else if (mineCell[i] && club !== ST.me) mineCell[i] = 0;
+    marks[i].setAttribute("r", mineCell[i] ? S * .17 : 0);
+    const col = CLUBS[club].game;
+    nodes[i].style.fill = col;
+    nodes[i].classList.toggle("own", true);
+    miniNodes[i].setAttribute("fill", col);
+    nodes[i].classList.remove("hit");
+    void nodes[i].offsetWidth;
+    nodes[i].classList.add("hit");
+    if (prev >= 0 && prev !== club) cutOff(prev);
+  }
+  function neutral(i) {
+    if (owner[i] >= 0) byClub[owner[i]]--;
+    owner[i] = -1; mineCell[i] = 0;
+    nodes[i].style.fill = "";
+    nodes[i].classList.remove("own");
+    miniNodes[i].setAttribute("fill", "var(--land)");
+  }
+  // связный фронт: что не связано с городом — сереет
+  function cutOff(club) {
+    const base = CLUBS[club].base;
+    if (owner[base] !== club) return;
+    const seen = new Set([base]), st = [base];
+    while (st.length) {
+      for (const j of ADJ[st.pop()]) if (owner[j] === club && !seen.has(j)) { seen.add(j); st.push(j); }
+    }
+    let lost = 0;
+    for (let i = 0; i < N; i++) if (owner[i] === club && !seen.has(i)) { neutral(i); lost++; }
+    if (lost >= 3) toast(`Отрезали ${lost} ${plural(lost, "клетку", "клетки", "клеток")} у «${CLUBS[club].name}»`);
+    return lost;
+  }
+  const plural = (n, a, b, c) => {
+    const t = n % 100, o = n % 10;
+    return t > 10 && t < 20 ? c : o === 1 ? a : o >= 2 && o <= 4 ? b : c;
+  };
+
+  // ---------- цена и доступность ----------
+  function cost(i) {
+    if (baseOf[i] >= 0) return 99;                      // город не берётся
+    const o = owner[i];
+    if (o < 0) return 1;
+    const near = ADJ[i].some((j) => baseOf[j] === o);    // кольцо вокруг чужого города
+    return near ? 3 : 2;
+  }
+  function canPaint(i) {
+    if (ST.me < 0 || owner[i] === ST.me || baseOf[i] >= 0) return false;
+    if (ST.landingCells.has(i)) return true;
+    return ADJ[i].some((j) => owner[j] === ST.me);
+  }
+  function drawCan() {
+    gCan.textContent = "";
+    if (ST.me < 0 || ST.over) return;
+    let shown = 0;
+    for (let i = 0; i < N && shown < 90; i++) {
+      if (!canPaint(i) || cost(i) > ST.charge) continue;
+      const p = document.createElementNS(NS, "path");
+      p.setAttribute("d", hexPath(CELLS[i].x, CELLS[i].y));
+      p.setAttribute("class", ST.landingCells.has(i) ? "landing" : "can");
+      gCan.appendChild(p);
+      shown++;
+      if (owner[i] >= 0) {
+        const t = document.createElementNS(NS, "text");
+        t.setAttribute("x", CELLS[i].x); t.setAttribute("y", CELLS[i].y);
+        t.setAttribute("class", "cost");
+        t.textContent = cost(i);
+        gCan.appendChild(t);
+      }
+    }
+  }
+
+  function tryPaint(i) {
+    if (ST.me < 0 || ST.over || !canPaint(i)) {
+      if (ST.me >= 0 && !ST.over) hint(owner[i] === ST.me ? "Это уже твоя клетка." : "Красить можно только рядом со своими — или в десанте.");
+      return;
+    }
+    const c = cost(i);
+    if (c > ST.charge) { hint(`Не хватает заряда: нужно ${c}.`); return; }
+    ST.charge -= c;
+    paint(i, ST.me, true);
+    ST.landingCells.delete(i);
+    if (navigator.vibrate) navigator.vibrate(8);
+    refresh();
+    if (ST.step === 1) coachStep(2);
+    else if (ST.step === 2 && owner[i] === ST.me && c >= 2) coachStep(3);
+  }
+
+  // ---------- боты: болельщики остальных клубов ----------
+  function aiStep() {
+    if (ST.over || !ST.started) return;
+    const k = 2 + (byClub.reduce((a, b) => a + b, 0) < N * .5 ? 1 : 0);
+    for (let t = 0; t < k; t++) {
+      const club = Math.floor(Math.random() * CLUBS.length);
+      const mine = [];
+      for (let i = 0; i < N; i++) if (owner[i] === club) mine.push(i);
+      if (!mine.length) continue;
+      const from = mine[Math.floor(Math.random() * mine.length)];
+      const opts = ADJ[from].filter((j) => owner[j] !== club && baseOf[j] < 0);
+      if (!opts.length) continue;
+      const free = opts.filter((j) => owner[j] < 0);
+      const target = free.length ? free[Math.floor(Math.random() * free.length)] : opts[Math.floor(Math.random() * opts.length)];
+      if (owner[target] === ST.me && Math.random() < .82) continue;   // клуб игрока трогаем редко: иначе рост не виден
+      const wasMine = mineCell[target];
+      paint(target, club, false);
+      if (wasMine && performance.now() - lastLoss > 9000) {
+        lastLoss = performance.now();
+        toast(`«${CLUBS[club].name}» забрал твою клетку`);
+      }
+    }
+    refresh(true);
+  }
+
+  // ---------- туры и матчи ----------
+  let FIX = [];
+  function tourEnd() {
+    const f = FIX[(ST.tour - 1) % FIX.length];
+    if (!f) { ST.tour++; ST.left = 45; return; }
+    const a = CLUBS.findIndex((c) => c.id === f.h), b = CLUBS.findIndex((c) => c.id === f.a);
+    const meIn = ST.me === a || ST.me === b;
+    let homeWin = f.hw;
+    if (meIn) homeWin = (ST.me === a) ? true : false;       // в демо твои выигрывают: видно, как это влияет
+    const win = homeWin ? a : b, lose = homeWin ? b : a;
+    ST.charge = Math.min(ST.cap, ST.charge + 4);
+    if (homeWin) {
+      for (const j of ADJ[CLUBS[win].base]) if (owner[j] === win) nodes[j].classList.add("hit");
+      ticker(`<b>${CLUBS[a].name} ${f.s}</b> ${CLUBS[b].name} — победа дома, кольцо города укреплено`);
+    } else {
+      ST.landing = win;
+      if (win === ST.me) {
+        ST.landingCells = new Set(ADJ[CLUBS[lose].base].filter((j) => owner[j] !== ST.me && baseOf[j] < 0));
+        const t = CELLS[CLUBS[lose].base];
+        setTimeout(() => camTo(zNear(), t.x, t.y, 700), 2900);
+        toast(`Десант · ${CLUBS[lose].city}`);
+        hint(`<b>Десант</b>: клетки с оранжевой рамкой у города «${CLUBS[lose].name}» можно взять, не дотягиваясь фронтом.`);
+      }
+      ticker(`<b>${CLUBS[a].name} ${f.s}</b> ${CLUBS[b].name} — победа в гостях, открыт десант · ${CLUBS[lose].city}`);
+    }
+    ST.tour++;
+    ST.left = 45;
+    if (ST.tour > 3) return finish();
+    const back = { z: cam.z, x: cam.x, y: cam.y };
+    camTo(zAll(), D.w / 2, D.h / 2, 600);
+    setTimeout(() => camTo(back.z, back.x, back.y, 600), 2300);
+    $("#tourlab").textContent = "тур " + ST.tour;
+    refresh();
+  }
+
+  function finish() {
+    ST.over = true;
+    const order = CLUBS.map((c, i) => [i, byClub[i]]).sort((x, y) => y[1] - x[1]);
+    const rows = order.slice(0, 6).map(([i, n], k) => `<tr class="${i === ST.me ? "me" : ""}"><td class="em"><img src="${CLUBS[i].logo}" alt=""></td><td>${k + 1}. ${CLUBS[i].name}</td><td class="n">${n}</td></tr>`).join("");
+    const myPlace = order.findIndex(([i]) => i === ST.me) + 1;
+    show(`<h1>Круг закончен</h1>
+      <p>«${CLUBS[ST.me].name}» — ${myPlace}-е место, ${byClub[ST.me]} ${plural(byClub[ST.me], "клетка", "клетки", "клеток")}. Лично ты закрасил ${ST.painted}.</p>
+      <table>${rows}</table>
+      <h2>Что дальше в настоящей игре</h2>
+      <p class="muted">Карта обнуляется в январе: все снова с одного города. Очки за круг идут в личный зачёт и в ступени по 20 человек. Призов нет.</p>
+      <div class="acts"><button class="btn" id="again">Ещё круг</button><button class="btn ghost" id="why2">При чём тут хоккей?</button></div>`);
+    $("#again").onclick = reset;
+    $("#why2").onclick = why;
+  }
+
+  // ---------- интерфейс ----------
+  function refresh(light) {
+    $("#charge-n").textContent = ST.charge;
+    const p = $("#pucks");
+    if (p.children.length !== ST.cap) {
+      p.textContent = "";
+      for (let i = 0; i < ST.cap; i++) p.appendChild(Object.assign(document.createElement("i"), { className: "pk" }));
+    }
+    [...p.children].forEach((el, i) => el.className = "pk" + (i < ST.charge ? "" : " off"));
+    if (ST.me >= 0) {
+      $("#my-name").innerHTML = `<i class="chip" style="background:${CLUBS[ST.me].game}"></i>${CLUBS[ST.me].name}<small>у клуба ${byClub[ST.me]} · ты закрасил ${ST.painted}</small>`;
+      if (ST.step > 3 && !ST.over) {
+        const free = ST.charge, en = Math.floor(ST.charge / 2);
+        hint(`Заряд ${free}: хватит на ${free} ${plural(free, "пустую клетку", "пустые клетки", "пустых клеток")} или ${en} ${plural(en, "чужую", "чужие", "чужих")}.`);
+      }
+    }
+    if (!light) drawCan();
+  }
+  function hint(t) { $("#hint").innerHTML = t; }
+  function ticker(t) { $("#ticker").innerHTML = t; }
+  let toastT = null;
+  function toast(t) {
+    const el = $("#toast");
+    el.hidden = false; el.textContent = t;
+    requestAnimationFrame(() => el.classList.add("on"));
+    clearTimeout(toastT);
+    toastT = setTimeout(() => { el.classList.remove("on"); setTimeout(() => { el.hidden = true; }, 220); }, 2200);
+  }
+  function show(html) { $("#card").innerHTML = html; $("#veil").hidden = false; }
+  function hide() { $("#veil").hidden = true; }
+
+  const COACH = [
+    "",
+    "Мигающие клетки — куда можно красить сейчас. Жми по любой.",
+    "Это твоя клетка. Дальше — только рядом со своими: фронт идёт от города.",
+    "Цифра на чужой клетке — её цена. У чужого города дороже: там укрепление.",
+  ];
+  function coachStep(n) {
+    ST.step = n;
+    const c = $("#coach");
+    if (n === 0 || n >= COACH.length) { c.hidden = true; return; }
+    c.hidden = false;
+    $("#coach-t").textContent = COACH[n];
+    $("#coach-b").textContent = n === 3 ? "Понял" : "Дальше";
+    $("#coach-b").onclick = () => { if (n >= 3) { c.hidden = true; ST.step = 9; } else coachStep(n + 1); };
+    if (n === 1) $("#coach-b").hidden = true; else $("#coach-b").hidden = false;
+  }
+
+  function why() {
+    show(`<h1>При чём тут хоккей</h1>
+      <p><b>Заряд</b> копится сам, но настоящие матчи дают больше: победа твоего клуба в туре — сразу плюс всей фанбазе.</p>
+      <p><b>Победа дома</b> укрепляет кольцо вокруг своего города: чужим дороже его грызть.</p>
+      <p><b>Победа в гостях</b> открывает десант: неделю можно красить у города соперника, даже не дотянувшись туда фронтом.</p>
+      <p><b>Отрезали</b> — если чужая область теряет связь со своим городом, она сереет. Это и есть тактика: не грызть лоб в лоб, а перерезать коридор.</p>
+      <p class="muted">Город клуба забрать нельзя — он якорь. Карта обнуляется каждый круг, поэтому все снова начинают с одного.</p>
+      <div class="acts"><button class="btn" id="ok">Играть</button></div>`);
+    $("#ok").onclick = hide;
+  }
+  $("#why").onclick = why;
+  $("#mini").onclick = () => {
+    const order = CLUBS.map((c, i) => [i, byClub[i]]).sort((x, y) => y[1] - x[1]).filter(([, n]) => n > 0);
+    const rows = order.slice(0, 10).map(([i, n], k) => `<tr class="${i === ST.me ? "me" : ""}"><td class="em"><img src="${CLUBS[i].logo}" alt=""></td><td><i class="chip" style="background:${CLUBS[i].game}"></i>${k + 1}. ${CLUBS[i].name}</td><td class="n">${n}</td></tr>`).join("");
+    show(`<h1>Кто держит лигу</h1><p class="muted">Клеток на карте, тур ${ST.tour}.</p><table>${rows}</table>
+      <div class="acts"><button class="btn" id="cl">Назад на карту</button></div>`);
+    $("#cl").onclick = hide;
+  };
+
+  // ---------- старт ----------
+  function pickTeam() {
+    const list = CLUBS.map((c, i) => `<button class="tm" data-k="${i}"><img src="${c.logo}" alt=""><span>${c.name}</span></button>`).join("");
+    show(`<h1>Карта лиги</h1>
+      <p>Вся Россия — поле на 359 клеток. 26 клубов, каждый начинает с одной клетки — своего города. Ты жмёшь за своих.</p>
+      <p class="muted">Прототип: болельщики других клубов здесь — боты, матчи ускорены, тур идёт 45 секунд.</p>
+      <h2>За кого играешь</h2><div class="teams">${list}</div>`);
+    $("#card").querySelectorAll(".tm").forEach((b) => {
+      b.onclick = () => { start(+b.dataset.k); };
+    });
+  }
+  function start(k) {
+    ST.me = k;
+    FIX = D.fixtures[CLUBS[k].id] || [];
+    hide();
+    $("#my-crest").innerHTML = `<img src="${CLUBS[k].logo}" alt="">`;
+    const cell = CELLS[CLUBS[k].base];
+    cam.x = cell.x; cam.y = cell.y;
+    fit();
+    ST.started = true;
+    ticker(`Ты за «${CLUBS[k].name}». Город — ${CLUBS[k].city}. Остальные уже красят.`);
+    hint("Жми по мигающим клеткам. <b>Заряд</b> копится сам.");
+    coachStep(1);
+    refresh();
+  }
+  function reset() {
+    hide();
+    for (let i = 0; i < N; i++) if (owner[i] >= 0) neutral(i);
+    CLUBS.forEach((c, i) => paint(c.base, i, false));
+    ST.charge = 6; ST.tour = 1; ST.left = 45; ST.painted = 0; ST.over = false; ST.landingCells = new Set();
+    $("#tourlab").textContent = "тур 1";
+    refresh();
+  }
+
+  CLUBS.forEach((c, i) => paint(c.base, i, false));
+  fit();
+  refresh();
+  pickTeam();
+
+  // ---------- часы ----------
+  setInterval(() => {
+    if (!ST.started || ST.over) return;
+    ST.left--;
+    $("#clock").textContent = Math.max(0, ST.left);
+    if (ST.left <= 0) tourEnd();
+  }, 1000);
+  setInterval(() => {
+    if (!ST.started || ST.over) return;
+    if (ST.charge < ST.cap) { ST.charge++; refresh(); }
+  }, REGEN);
+  setInterval(aiStep, 320);
+  setInterval(() => { if (ST.started && !ST.over) drawCan(); }, 900);
+})();
+</script>

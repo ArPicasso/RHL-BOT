@@ -53,9 +53,10 @@ const state = {
   leaders: null,    // лидеры лиги: грузятся при первом открытии «Игроков»
   feed: {},         // лист дня «Главной» по клубу (ADR-015): null — не загрузился
   feedSeen: {},     // прошлый заход по клубу, мс: отметки «новое» до конца сессии
-  stream: undefined,    // лента лиги за неделю под листом: null — не загрузилась
+  stream: undefined,    // лента лиги за неделю, второй сегмент «Главной»: null — не загрузилась
   streamFilter: "all",  // «Все · Мой клуб · Соперник»
   streamShown: 0,       // сколько элементов ленты уже на экране: подгружаем порциями
+  homeView: "today",    // «Главная» (ADR-017): «Сегодня» или «Лента лиги». Запуск — всегда «Сегодня»
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -465,47 +466,94 @@ function longestChunk(name) {
   return Math.max(...name.split(/\s+/).flatMap((w) => w.split(/(?<=-)/)).map((x) => x.length));
 }
 
+// «Главная» делится переключателем (ADR-017): «Сегодня» — конечный экран про свой клуб, его можно
+// досмотреть и закрыть приложение; бесконечная лента лиги живёт за сегментом и ждёт, когда в неё зайдут
+function homeSeg() {
+  const stream = state.homeView === "stream";
+  return segBtn(!stream, 'data-home-view="today"', "<span>Сегодня</span>")
+    + segBtn(stream, 'data-home-view="stream"', "<span>Лента лиги</span>");
+}
+
 function renderHome() {
+  const t = team(state.fav);
+  return `<section class="band sky">${RIBBON}
+    <div class="hero"><button type="button" class="hero-em" data-switch-open aria-label="Сменить команду">${emblem(state.fav, "xl")}</button><div><h1 style="--w:${longestChunk(t.name)}">${esc(t.name)}</h1><div class="meta">${esc(t.city)} · ${CONF[t.conf] || ""}</div></div></div>
+    <div class="seg home-seg" role="group" aria-label="Что показать" data-run="home-view">${RUN}${homeSeg()}</div>
+  </section>
+  <div id="home-body">${homeBody()}</div>`;
+}
+
+const homeBody = () => (state.homeView === "stream" ? homeStream() : homeToday());
+
+// Смена сегмента: сначала отвечает переключатель, тяжёлая половина экрана — в следующем кадре,
+// как в «Таблице». Прокрутка — наверх: в ленту заходят с начала, из ленты возвращаются к табло
+function refreshHome() {
+  const seg = $(".home-seg");
+  if (!seg) return render();
+  const prev = runnerState(seg.parentNode);
+  seg.querySelectorAll("button").forEach((b) => b.remove());
+  seg.insertAdjacentHTML("beforeend", homeSeg());
+  placeRunners(seg.parentNode, prev);
+  window.scrollTo(0, 0);
+  nextFrame(() => {
+    const box = $("#home-body");
+    if (!box || state.tab !== "home") return;
+    box.innerHTML = homeBody();
+    countUp(box);
+    watchFeedImages(box);
+    watchSeen(box);
+    mountStream();
+    fadeIn(box);
+  });
+}
+
+// Бюджет «Сегодня» — семь блоков (ADR-017): шапка с переключателем, цифры сезона, следующий матч,
+// ряд историй, последний результат, лист дня и отметка «Ты в курсе за сутки» в его конце.
+// Новый блок не добавляется, а вытесняет старый. Секция — свой <section>: её заголовок прилипает,
+// пока она на экране, и уходит вместе с ней
+function homeToday() {
   const me = state.fav;
-  const t = team(me);
   const next = nextGame(me);
   const last = lastPlayed(me);
 
-  let html = `<section class="band sky">${RIBBON}
-    <div class="hero"><button type="button" class="hero-em" data-switch-open aria-label="Сменить команду">${emblem(me, "xl")}</button><div><h1 style="--w:${longestChunk(t.name)}">${esc(t.name)}</h1><div class="meta">${esc(t.city)} · ${CONF[t.conf] || ""}</div></div></div>
-  </section>`;
-
-  const stats = seasonStats(me, true);
-  if (stats) html += `<div class="stats">${stats}</div>`;
-
+  let html = "";
   if (next) {
     const today = daysFromToday(next.date) === 0;
-    html += `<div class="label">Следующий матч${next.n ? `<span class="aside">№ ${esc(next.n)}</span>` : ""}</div>
+    html += `<section class="part"><div class="label">Следующий матч${next.n ? `<span class="aside">№ ${esc(next.n)}</span>` : ""}</div>
       <div class="board-card tap" data-game="${esc(next.id)}" role="button" tabindex="0">
         <div class="board-top">
           <span class="tags">${whereTag(next, me)}${today ? '<span class="tag today">Сегодня</span>' : ""}${next.official ? "" : '<span class="tag soft">предварительно</span>'}</span>
           <span class="when">${esc(fmtLong(next.date))}</span>
         </div>
         ${board(next)}
-      </div>`;
+      </div></section>`;
   } else {
-    html += `<div class="label">Следующий матч</div><div class="empty">Матчей регулярного чемпионата больше нет</div>`;
+    html += `<section class="part"><div class="label">Следующий матч</div><div class="empty">Матчей регулярного чемпионата больше нет</div></section>`;
   }
   // ряд «Сегодня» — под табло: на 320×568 над ним он вытеснял табло с первого экрана (ADR-015, 01.10)
   html += `<div id="packs">${packsHTML()}</div>`;
 
   if (last) {
-    html += `<div class="label">Последний результат</div>
+    html += `<section class="part"><div class="label">Последний результат</div>
       <div class="board-card tap" data-game="${esc(last.id)}" role="button" tabindex="0">
         <div class="board-top"><span class="tags">${whereTag(last, me)}${resultPill(last)}</span><span class="when">${esc(fmtLong(last.date))}</span></div>
         ${board(last)}
         ${periodsLine(last)}
-      </div>`;
+      </div></section>`;
   }
 
-  html += `<div id="feed">${feedHTML(me)}</div><div id="stream-wrap">${streamHTML()}</div>`;
+  // цифры сезона — ниже табло: переключатель забрал у первого экрана полосу, и на 320×568 табло
+  // уезжало под меню. «Табло всегда на первом экране» (ADR-015) важнее справки о сезоне
+  const stats = seasonStats(me, true);
+  if (stats) html += `<div class="stats">${stats}</div>`;
+
+  // лист дня — на своей подложке: переход от «моего матча» к листу виден цветом (ADR-017)
+  html += `<div id="feed" class="part deck">${feedHTML(me)}</div>`;
   return html + footer();
 }
+
+// «Лента лиги» — вторая половина «Главной»: своего заголовка нет, его имя уже в переключателе
+const homeStream = () => `<div id="stream-wrap">${streamHTML()}</div>${footer()}`;
 
 // Три ближайшие игры после следующей: на «Главной» без листа дня — пока он не загрузился или его нет
 function upcomingBlock(me) {
@@ -589,15 +637,15 @@ function feedMatchLine(home, away, score, dec) {
   return `<div class="fc-match">${emblem(home)}${nm(home)}<span class="fc-dash">—</span>${nm(away)}${emblem(away)}<b class="num">${esc(scoreText(score, dec))}</b></div>`;
 }
 const feedStory = (text) => (text ? `<p class="fc-story">${STAR_SUN}<span>${esc(text)}</span></p>` : "");
-// Точка «новое» — картинка для экранного диктора, а не только цвет
-const NEW_DOT = '<i class="fc-new" role="img" aria-label="Новое" title="Новое"></i>';
-function feedTop(text, isNew) {
-  return `<div class="fc-top">${isNew ? NEW_DOT : ""}<span>${text}</span></div>`;
+// Метка карточки — ранг 3 (ADR-017): обычный регистр, --muted. Точки «новое» у карточек нет:
+// сколько пришло с прошлого захода, говорит заголовок листа, и говорит один раз вместо двенадцати
+function feedTop(text) {
+  return `<div class="fc-top"><span>${text}</span></div>`;
 }
 // Карточка листа нажимается целиком: attrs — куда ведёт. data-id — чтобы после перерисовки найти то же место
 const fcard = (cls, attrs, inner, id) => `<article class="fc ${cls}"${id ? ` data-id="${esc(id)}"` : ""}${attrs ? ` ${attrs} role="button" tabindex="0"` : ""}>${inner}</article>`;
 
-function feedCard(c, isNew) {
+function feedCard(c) {
   const me = state.fav;
   const card = (cls, attrs, inner) => fcard(cls, attrs, inner, c.id);
   switch (c.kind) {
@@ -608,21 +656,21 @@ function feedCard(c, isNew) {
       const h = { games: c.games, wins: { [a]: wm, [c.opp]: wo } };
       // названия не склоняем («матчей с «Белгород»»): в листе пара и так ясна по эмблемам, в ленте — именительный
       const pair = a === me ? "" : `${quoted(a)} — ${quoted(c.opp)} · `;
-      return card("fc-h2h", `data-game="${esc(c.game)}"`, `${feedTop(`Очные встречи${c.since ? ` · с ${esc(c.since)}` : ""}`, isNew)}
+      return card("fc-h2h", `data-game="${esc(c.game)}"`, `${feedTop(`Очные встречи${c.since ? ` · с ${esc(c.since)}` : ""}`)}
         <div class="fc-h2h-row">${emblem(a, "md")}<b class="num">${wm}</b><span>победы</span><b class="num">${wo}</b>${emblem(c.opp, "md")}</div>
         <div class="fc-sub">${pair}Шайбы ${gm}:${gt} · ${c.games} ${plural(c.games, "матч", "матча", "матчей")}</div>
         <div class="fc-verdict">${esc(h2hVerdict(h, a, c.opp))}</div>`);
     }
     case "meeting":
-      return card("", `data-game="${esc(c.match)}"`, `${feedTop(`Как сыграли в прошлый раз · ${esc(shortDate(c.date))}`, isNew)}
+      return card("", `data-game="${esc(c.match)}"`, `${feedTop(`Как сыграли в прошлый раз · ${esc(shortDate(c.date))}`)}
         ${feedMatchLine(c.home, c.away, c.score, c.decision)}${feedStory(c.story)}`);
     case "day":
-      return card("", c.match ? `data-game="${esc(c.match)}"` : "", `${feedTop(`В этот день · ${esc(parseISO(c.date).getUTCFullYear())}`, isNew)}
+      return card("", c.match ? `data-game="${esc(c.match)}"` : "", `${feedTop(`В этот день · ${esc(parseISO(c.date).getUTCFullYear())}`)}
         ${feedMatchLine(c.home, c.away, c.score, c.decision)}${feedStory(c.story)}`);
     case "story": {
       const g = findGame(c.match);
       const when = !c.date || daysFromToday(c.date) === -1 ? "вчера в лиге" : esc(dayMonth(c.date));
-      return card("", `data-game="${esc(c.match)}"`, `${feedTop(`Сюжет дня · ${when}`, isNew)}
+      return card("", `data-game="${esc(c.match)}"`, `${feedTop(`Сюжет дня · ${when}`)}
         ${feedStory(c.story)}${g && g.score ? feedMatchLine(g.home, g.away, [g.score.home, g.score.away], g.score.decision) : ""}`);
     }
     case "today": {
@@ -635,7 +683,7 @@ function feedCard(c, isNew) {
       // в ленте лиги — и ближайшие дни: «Завтра в лиге», «3 октября в лиге»
       const ahead = c.date ? daysFromToday(c.date) : 0;
       const day = ahead <= 0 ? "Сегодня" : ahead === 1 ? "Завтра" : esc(dayMonth(c.date));
-      return card("fc-today", "", `${feedTop(`${day} в лиге · ${c.n} ${plural(c.n, "матч", "матча", "матчей")}`, isNew)}
+      return card("fc-today", "", `${feedTop(`${day} в лиге · ${c.n} ${plural(c.n, "матч", "матча", "матчей")}`)}
         <div class="fc-games">${rows}</div>
         <button type="button" class="fc-link" data-feed-league>${more > 0 ? `Ещё ${more} ${plural(more, "матч", "матча", "матчей")} — в календаре` : "Весь день в календаре"}</button>`);
     }
@@ -645,30 +693,30 @@ function feedCard(c, isNew) {
         : c.up !== undefined ? (c.up ? `До ${c.place - 1}-го места — ${c.up} ${plural(c.up, "очко", "очка", "очков")}` : `По очкам вровень с ${c.place - 1}-м местом`)
         : c.lead !== undefined ? (c.lead ? `Отрыв от 2-го места — ${c.lead} ${plural(c.lead, "очко", "очка", "очков")}` : "По очкам вровень со 2-м местом")
         : "Первое место в конференции";
-      return card("fc-table", 'data-tab="table"', `${feedTop("Таблица", isNew)}
+      return card("fc-table", 'data-tab="table"', `${feedTop("Таблица")}
         <div class="fc-place"><b class="num">${c.place}</b><div><strong>${quoted(me)} — ${c.place}-е место ${conf}</strong><small>${esc(sub)}</small></div></div>`);
     }
     case "upcoming": {
       const list = c.games.map(findGame).filter(Boolean);
       if (!list.length) return "";
-      return card("fc-list", "", `${feedTop("Дальше", false)}
+      return card("fc-list", "", `${feedTop("Дальше")}
         <div class="list">${list.map((g) => gameRow(g, me, false)).join("")}</div>`);
     }
     case "leaders": {
       const rows = c.rows.map((r) => `<div class="fc-lead" data-feed-leaders role="button" tabindex="0"><b>${esc(r.name)}</b><span>${r.rank}-й ${esc(LEAD_BY[r.cat] || "")}</span></div>`).join("");
       // в ленте лиги — чужой клуб: его имя в метке
       const who = c.club && c.club !== me ? `${esc(team(c.club).name)} · в лидерах` : "В лидерах";
-      return card("fc-leaders", "", `${feedTop(`${who} · ${esc(c.league)} ${esc(c.season)}`, isNew)}${rows}`);
+      return card("fc-leaders", "", `${feedTop(`${who} · ${esc(c.league)} ${esc(c.season)}`)}${rows}`);
     }
     case "post":
-      return postCard(c, isNew);
+      return postCard(c);
     default:
       return "";
   }
 }
 
 // compact — в ленте лиги: картинка-квадрат справа, текст и пилюля слева, вдвое ниже (ADR-015, 01.10)
-function postCard(c, isNew, compact = false) {
+function postCard(c, compact = false) {
   const title = c.ctitle || c.channel;
   const em = c.club ? emblem(c.club, "") : '<span class="em ab" aria-hidden="true">РХЛ</span>';
   const rel = c.slot === "opp" || (c.slot === "stream" && c.club && c.club === feedOpp()) ? "соперник серии"
@@ -686,7 +734,7 @@ function postCard(c, isNew, compact = false) {
   // Карточка нажимается целиком (data-post), но это не кнопка: иначе экранный диктор читает только её
   // подпись, а «⋯» внутри кнопки недоступен. С клавиатуры и в VoiceOver пост открывает пилюля — настоящая кнопка
   return `<article class="fc fc-post${compact ? " compact" : ""}" data-post="${esc(c.url)}" data-id="${esc(c.id)}">
-    <div class="fc-head">${em}<div class="fc-who"><b>${isNew ? NEW_DOT : ""}${esc(title)}</b><small><span class="fc-kind">${esc(who)}</span><span class="fc-ago">&nbsp;· ${esc(ago(c.at))}</span></small></div>
+    <div class="fc-head">${em}<div class="fc-who"><b>${esc(title)}</b><small><span class="fc-kind">${esc(who)}</span><span class="fc-ago">&nbsp;· ${esc(ago(c.at))}</span></small></div>
       <button type="button" class="fc-more" data-post-more="${esc(c.channel)}" aria-label="Ещё о канале ${esc(title)}">${DOTS}</button></div>
     ${body}
   </article>`;
@@ -698,11 +746,13 @@ function feedEndSay(f) {
   const soon = g ? daysFromToday(g.date) : null;
   const st = soon === 0 ? "match" : soon === 1 ? "eve" : f.state;
   switch (st) {
-    case "match": return `Сегодня играем${g && g.time ? ` в ${g.time}` : ""} — до встречи на трибуне! Ниже — что пишут в лиге.`;
-    case "eve": return "Завтра играем — не пропусти! Ниже — что пишут в лиге.";
-    case "start": return g ? `Сезон стартует ${fmtLong(g.date).replace(/ (?=\S+$)/, "\u00a0")}. Пока ждём — что пишут в лиге.` : "Скоро сезон. Пока ждём — что пишут в лиге.";
-    case "over": return "Сезон окончен — спасибо, что болел! Ниже — что пишут в лиге.";
-    default: return "Ниже — что пишут в лиге за неделю.";
+    case "match": return `Сегодня играем${g && g.time ? ` в ${g.time}` : ""} — до встречи на трибуне!`;
+    case "eve": return "Завтра играем — не пропусти!";
+    case "start": return g ? `Сезон стартует ${fmtLong(g.date).replace(/ (?=\S+$)/, "\u00a0")}.` : "Скоро сезон.";
+    case "over": return "Сезон окончен — спасибо, что болел!";
+    case "after": return "Матч позади — разбор уже в карточке.";
+    case "pause": return "На этой неделе не играем.";
+    default: return "До следующего матча ещё есть время.";
   }
 }
 
@@ -731,8 +781,9 @@ function feedHTML(me) {
     : `<div class="label" role="heading" aria-level="2">Лист дня<span class="aside">${esc(fmtLong(todayISO()))}</span></div>`;
   // меньше трёх карточек — отметки нет: «Ты в курсе» после одной карточки звучит пусто
   const caught = cards.length >= 3
-    ? `<div class="fc-end fc-caught">${guideFig(me, "cheer")}<p><b>Ты в курсе за сутки.</b> ${esc(feedEndSay(f))}</p></div>` : "";
-  return `${label}${cards.map((c) => feedCard(c, isNew(c))).join("")}${caught}`;
+    ? `<div class="fc-end fc-caught">${guideFig(me, "cheer")}<p><b>Ты в курсе за сутки.</b> ${esc(feedEndSay(f))}</p>
+        <div class="pills"><button type="button" data-home-view="stream">Лента лиги ›</button></div></div>` : "";
+  return `${label}${cards.map((c) => feedCard(c)).join("")}${caught}`;
 }
 
 // Картинка из CDN Telegram не загрузилась — карточка остаётся без неё. Но без прыжка (DESIGN.md → «Загрузка
@@ -751,12 +802,15 @@ function watchFeedImages(root) {
   });
 }
 
+// Лист на экране только на «Сегодня», лента — только в «Ленте лиги»: обновляем то, что сейчас открыто
 function refreshFeed() {
+  if (state.tab !== "home") return;
   const box = $("#feed");
-  if (!box || state.tab !== "home") return;
-  box.innerHTML = feedHTML(state.fav);
-  watchFeedImages(box);
-  watchSeen(box);
+  if (box) {
+    box.innerHTML = feedHTML(state.fav);
+    watchFeedImages(box);
+    watchSeen(box);
+  }
   refreshStream(true);
 }
 
@@ -779,9 +833,9 @@ function keepPlace(place, skip) {
   if (f) f.focus({ preventScroll: true });
 }
 
-// ---------- лента лиги под листом (ADR-015, пересмотр 30.09) ----------
+// ---------- лента лиги, второй сегмент «Главной» (ADR-015, пересмотр 30.09; ADR-017) ----------
 // Одна на всех: data/feed/stream.json, посты всех каналов за неделю по времени и наши карточки через
-// каждые пять. Свой клуб и соперник уже в листе выше. Подгружается порциями, пока листаешь
+// каждые пять. Свой клуб и соперник уже в листе на «Сегодня». Подгружается порциями, пока листаешь
 
 const STREAM_PAGE = 20;
 let streamLoading = null;
@@ -824,7 +878,7 @@ function streamItems() {
   return out;
 }
 
-const streamItem = (c) => (c.kind === "post" ? postCard(c, false, true) : feedCard(c, false));
+const streamItem = (c) => (c.kind === "post" ? postCard(c, true) : feedCard(c));
 
 function streamEnd(all) {
   if (state.streamShown < all.length) return '<div id="stream-more" class="sk" style="height:132px"></div>';
@@ -838,15 +892,11 @@ function streamEnd(all) {
 // Без keep — новый фильтр или новый экран: первая порция
 function streamHTML(keep = false) {
   if (state.stream === undefined) {
-    loadStream().then(() => {
-      refreshStream();
-      fadeIn($("#stream-wrap"));
-      fadeIn($("#packs"));
-    });
-    // место под ленту занято сразу: подвал не мелькает под листом и не уезжает, когда она придёт
+    loadStream().then(streamReady);
+    // место под ленту занято сразу: подвал не мелькает и не уезжает, когда она придёт
     return '<div class="sk sk-label"></div><div class="sk" style="height:132px"></div>';
   }
-  if (!state.stream) return "";
+  if (!state.stream) return failBlock("Лента лиги", "stream");
   const opp = feedOpp();
   // у клуба без постов за неделю чипа нет — ни у своего, ни у соперника: пустой выбор разочаровывает
   const has = (club) => club && (state.stream.items || []).some((c) => c.kind === "post" && c.club === club);
@@ -854,12 +904,23 @@ function streamHTML(keep = false) {
   if (!chips.some(([k]) => k === state.streamFilter)) state.streamFilter = "all";
   const all = streamItems();
   state.streamShown = Math.min(keep ? Math.max(STREAM_PAGE, state.streamShown) : STREAM_PAGE, all.length);
-  // фильтры прилипают под бегущей строкой; метка-«булавка» перед ними говорит, когда они прилипли
-  return `<div class="label" role="heading" aria-level="2">Лента лиги<span class="aside">за неделю</span></div>
-    <i class="stream-pin" aria-hidden="true"></i>
-    <div class="pills stream-pills" role="group" aria-label="Чьи посты">${chips.map(([k, v]) =>
-      `<button type="button" class="${state.streamFilter === k ? "on" : ""}" data-stream-filter="${k}" aria-pressed="${state.streamFilter === k}">${v}</button>`).join("")}</div>
+  // Фильтры прилипают под бегущей строкой; метка-«булавка» перед ними говорит, когда они прилипли.
+  // Один чип — выбора нет: «Все» в одиночку только занимает место (у клубов нет постов за неделю)
+  const bar = chips.length > 1
+    ? `<div class="pills stream-pills" role="group" aria-label="Чьи посты">${chips.map(([k, v]) =>
+      `<button type="button" class="${state.streamFilter === k ? "on" : ""}" data-stream-filter="${k}" aria-pressed="${state.streamFilter === k}">${v}</button>`).join("")}</div>`
+    : "";
+  // своего заголовка у ленты нет: её имя — в переключателе «Главной» (ADR-017)
+  return `<i class="stream-pin" aria-hidden="true"></i>${bar}
     <div id="stream">${all.slice(0, state.streamShown).map(streamItem).join("")}</div>${streamEnd(all)}`;
+}
+
+// Лента пришла: обновляем и ряд историй, и саму ленту — какой из них есть на экране, зависит от сегмента
+function streamReady() {
+  if (state.tab !== "home") return;
+  refreshStream();
+  fadeIn($("#packs"));
+  fadeIn($("#stream-wrap"));
 }
 
 function refreshStream(keep = false) {
@@ -942,6 +1003,8 @@ const PACKS_ROW_KEY = "packs_row";
 
 function packsHTML() {
   if (state.stream === undefined) {
+    // на «Сегодня» ленты на экране нет, а ряд из неё собирается — качаем её отсюда (ADR-017)
+    loadStream().then(streamReady);
     return lsGet(PACKS_ROW_KEY) === "0" ? "" : `<div class="packs" aria-hidden="true">${'<span class="pack sk-pack"><i class="sk"></i></span>'.repeat(5)}</div>`;
   }
   const list = packs();
@@ -1896,22 +1959,19 @@ const STEP = {
     text: () => "Касание справа — следующий пост, слева — назад. Свайп вбок — другой клуб. Таймера нет.",
     press: () => packNav(1),
   },
-  // окно — лист дня вместе с лентой лиги, выше экрана: карточка встаёт внизу, лента листается под ней
+  // окно — лист дня, выше экрана: карточка встаёт внизу, лист листается под ней
   stream: {
     key: "stream", screen: "home", kind: "swipe", pose: "point", act: "Листать", gesture: "swipe",
     hold: 650, holdOnPress: true,
     prep: async () => {
       await leaveSheet();
+      const back = homeSeeToday();
       if (state.tab !== "home") go("home");
-      if (state.streamFilter !== "all") {
-        state.streamFilter = "all";
-        refreshStream();
-      }
+      else if (back) refreshHome();
     },
     aim: () => firstShown($("#screen"), ["#feed", "#stream-wrap"]),
-    extend: () => [$("#stream-wrap")],
     text: () => (streamHas()
-      ? "Ниже — лист дня о твоём клубе, под ним — лента лиги за неделю. Листай вниз, она подгрузится сама."
+      ? "Ниже — лист дня о твоём клубе. Листай: в конце — кнопка в ленту всей лиги."
       : "Ниже — лист дня о твоём клубе: матчи, очные встречи, посты каналов. Листай вниз."),
     press: () => window.scrollBy({ top: Math.round(innerHeight * 0.6), behavior: calm() ? "auto" : "smooth" }),
   },
@@ -1985,6 +2045,14 @@ const ICON_CH = {
   5: '<svg viewBox="0 0 24 24"><circle cx="7" cy="7" r="3.5"/><circle cx="17" cy="7" r="3.5"/><path d="M3.5 14h17M3.5 17.5h17M3.5 20.5h10"/></svg>',
 };
 
+// Ряд историй и лист дня живут на «Сегодня» (ADR-017): прежде чем на них целиться, возвращаем
+// «Главную» на этот сегмент. true — экран надо перерисовать
+function homeSeeToday() {
+  if (state.homeView === "today") return false;
+  state.homeView = "today";
+  return true;
+}
+
 // Лист, который открыл тур, закрывается перед сменой экрана
 function leaveSheet() {
   if ($("#sheet").hidden) return Promise.resolve();
@@ -1999,7 +2067,9 @@ const TOUR = [
     enter: async (ctx) => {
       syncRoute(ctx);   // очные встречи не ждём: первому шагу они не нужны
       await leaveSheet();
+      const back = homeSeeToday();
       if (state.tab !== "home") go("home");
+      else if (back) refreshHome();
       else window.scrollTo(0, 0);
     },
     steps: (ctx) => {
@@ -2042,7 +2112,9 @@ const TOUR = [
     id: 5, title: "Истории и лента", short: "Лента", hint: "Как листать истории клубов и ленту лиги",
     enter: async () => {
       await leaveSheet();
+      const back = homeSeeToday();
       if (state.tab !== "home") go("home");
+      else if (back) refreshHome();
       else window.scrollTo(0, 0);
       // ряд и лента обычно уже пришли вместе с «Главной»; нет — ждём не дольше, чем цель в листе
       await Promise.race([Promise.all([loadStream(), loadFeed(state.fav)]), wait(SHEET_WAIT_MS)]);
@@ -3756,7 +3828,7 @@ function confirmTeam(id = state.draft || state.fav) {
 }
 
 document.addEventListener("click", (e) => {
-  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],[data-pack],[data-pack-nav],#sheet-backdrop");
+  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-home-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],[data-pack],[data-pack-nav],#sheet-backdrop");
   if (!el || el.disabled) return;
   if (el.dataset.guide) return guideHop(el);
   if (el.hasAttribute("data-meet-close") || (el.hasAttribute("data-coach-back") && state.meet)) return closeCoach();
@@ -3842,6 +3914,12 @@ document.addEventListener("click", (e) => {
     return switchTheme(el.dataset.themePick, el);
   }
   if (el.id === "sheet-backdrop" || el.hasAttribute("data-close")) return closeMatch();
+  if (el.dataset.retry === "stream") {
+    haptic();
+    state.stream = undefined;
+    streamLoading = null;
+    return refreshStream();
+  }
   if (el.dataset.retry === "leaders") {
     haptic();
     leadersFailed = false;
@@ -3925,6 +4003,12 @@ document.addEventListener("click", (e) => {
     state.cal.side = el.dataset.calSide;
     haptic();
     return refreshCalendar(true);
+  }
+  if (el.dataset.homeView) {
+    if (el.dataset.homeView === state.homeView) return;
+    state.homeView = el.dataset.homeView;
+    haptic();
+    return refreshHome();
   }
   if (el.dataset.tableView) {
     if (el.dataset.tableView === state.tableView) return;

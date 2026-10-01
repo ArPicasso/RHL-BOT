@@ -86,6 +86,24 @@
   /* ---------- низ: заряд ---------- */
   footer { background: var(--paper); border-top: 1px solid var(--grid); padding: 8px 12px;
     padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 6px; z-index: 5; }
+  .bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .res { display: flex; align-items: baseline; gap: 7px; flex: 1; min-width: 0; }
+  .res b { font: 800 26px/1 var(--display); font-variant-numeric: tabular-nums; }
+  .res span { font: 500 12px/1.2 var(--text); color: var(--muted); }
+  .res i { display: block; font-style: normal; font-weight: 700; color: var(--ink); }
+  .tgt { flex: 1; min-width: 0; font: 700 13px/1.25 var(--text); }
+  .push { display: flex; align-items: center; gap: 6px; flex: none; }
+  .push button { width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--edge); background: var(--paper);
+    color: var(--ink); font: 800 16px/1 var(--display); cursor: pointer; }
+  .push button:disabled { opacity: .3; }
+  .push b { font: 800 18px/1 var(--display); min-width: 16px; text-align: center; }
+  td.why { font: 500 12px/1.3 var(--text); color: var(--muted); padding-top: 0; }
+  .tgt small { display: block; font: 500 12px/1.2 var(--text); color: var(--muted); }
+  .ord { stroke: var(--ink); stroke-width: 3.2; fill: none; stroke-linecap: round; }
+  .ord-head { fill: var(--ink); }
+  .ord-n { font: 800 11px/1 var(--display); fill: var(--paper); }
+  .ord-bg { fill: var(--ink); }
+  .sel { fill: none; stroke: var(--ink); stroke-width: 4; }
   .charge { display: flex; align-items: center; gap: 10px; }
   .pucks { display: flex; gap: 3px; flex: 1; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
   .pk { width: 14px; height: 10px; border-radius: 4px; background: var(--ink); flex: none; }
@@ -143,9 +161,9 @@
     <div class="row">
       <span class="crest" id="my-crest"></span>
       <span class="who" id="my-name">Выбери клуб<small>и начинай с его города</small></span>
-      <span class="tourbox"><b id="clock">45</b><span id="tourlab">тур 1</span></span>
+      <span class="tourbox"><b id="weekn">1</b><span>неделя</span></span>
     </div>
-    <div class="ticker"><i class="dot"></i><span id="ticker">Вся Россия — поле. Каждый клуб начинает с одной клетки.</span></div>
+    <div class="ticker"><i class="dot"></i><span id="ticker">Вся Россия — поле. Каждый клуб начинает с одной клетки — своего города.</span></div>
   </header>
 
   <div id="stage">
@@ -159,10 +177,16 @@
   </div>
 
   <footer>
-    <div class="charge">
-      <b id="charge-n">0</b>
-      <span class="pucks" id="pucks"></span>
-      <button class="mini-btn" id="why">При чём тут хоккей?</button>
+    <div class="bar" id="bar-plan">
+      <div class="res"><b id="res-n">0</b><span>резерв<i id="res-in"></i></span></div>
+      <button class="btn" id="go">Игровой вечер</button>
+      <button class="mini-btn" id="why">Правила</button>
+    </div>
+    <div class="bar" id="bar-target" hidden>
+      <div class="tgt" id="tgt-info"></div>
+      <div class="push"><button type="button" id="push-less" aria-label="Меньше">−</button><b id="push-n">1</b><button type="button" id="push-more" aria-label="Больше">+</button></div>
+      <button class="btn" id="send">Направить</button>
+      <button class="mini-btn" id="cancel">Отмена</button>
     </div>
     <div class="hint" id="hint">Выбери клуб — и поехали.</div>
   </footer>
@@ -175,22 +199,27 @@
 (() => {
   const D = JSON.parse(document.getElementById("data").textContent);
   const CELLS = D.cells, ADJ = D.adj, CLUBS = D.clubs, N = CELLS.length;
-  const S = D.s, HW = Math.sqrt(3) * S / 2;
+  const S = D.s;
   const owner = new Int16Array(N).fill(-1);
-  const mineCell = new Uint8Array(N);          // клетки, закрашенные лично
+  const mineCell = new Uint8Array(N);              // клетки, взятые по твоим приказам
   const byClub = CLUBS.map(() => 0);
   const baseOf = new Int16Array(N).fill(-1);
+  const level = CLUBS.map(() => 0);                // развитие города: оборона и доход
   CLUBS.forEach((c, i) => { baseOf[c.base] = i; });
 
   const ST = {
-    me: -1, charge: 6, cap: 14, tour: 1, left: 45, started: false, step: 0,
-    painted: 0, landing: null, landingCells: new Set(), over: false,
+    me: -1, res: 0, push: 1, report: [], week: 1, phase: "plan", orders: new Map(), sel: -1,
+    taken: 0, landing: new Set(), over: false, step: 0, lastScore: "",
   };
-  const REGEN = 1300;
-  let lastLoss = 0;
+  const WEEKS = 3;
   const $ = (s) => document.querySelector(s);
+  const plural = (n, a, b, c) => {
+    const t = n % 100, o = n % 10;
+    return t > 10 && t < 20 ? c : o === 1 ? a : o >= 2 && o <= 4 ? b : c;
+  };
 
-  // ---------- геометрия ----------
+  // ---------- поле ----------
+  const NS = "http://www.w3.org/2000/svg";
   const hexPath = (x, y) => {
     let d = "";
     for (let k = 0; k < 6; k++) {
@@ -199,16 +228,14 @@
     }
     return d + "Z";
   };
-
-  // ---------- отрисовка поля ----------
   const map = $("#map");
-  const NS = "http://www.w3.org/2000/svg";
   const gCells = document.createElementNS(NS, "g");
   const gMarks = document.createElementNS(NS, "g");
   const gCity = document.createElementNS(NS, "g");
   const gCan = document.createElementNS(NS, "g");
-  map.append(gCells, gMarks, gCity, gCan);
-  const nodes = [], marks = [];
+  const gOrd = document.createElementNS(NS, "g");
+  map.append(gCells, gMarks, gCity, gCan, gOrd);
+  const nodes = [], marks = [], cityNodes = [];
   for (let i = 0; i < N; i++) {
     const p = document.createElementNS(NS, "path");
     p.setAttribute("d", hexPath(CELLS[i].x, CELLS[i].y));
@@ -234,9 +261,9 @@
     img.setAttribute("preserveAspectRatio", "xMidYMid meet");
     g.append(circ, img);
     gCity.appendChild(g);
+    cityNodes.push(circ);
   });
 
-  // мини-карта
   const mini = $("#minisvg");
   mini.setAttribute("viewBox", `0 0 ${D.w} ${D.h}`);
   const miniNodes = [];
@@ -254,38 +281,28 @@
 
   // ---------- камера ----------
   const cam = { x: D.w / 2, y: D.h / 2, z: 1 };
-  const zAll = () => {
-    const r = $("#stage").getBoundingClientRect();
-    return Math.min(r.width / D.w, r.height / D.h) * .98;
-  };
-  const zNear = () => {
-    const r = $("#stage").getBoundingClientRect();
-    return r.width / (9 * Math.sqrt(3) * S);     // примерно девять клеток в ширину
-  };
-  function camTo(z, x, y, ms = 520) {
-    const z0 = cam.z, x0 = cam.x, y0 = cam.y, t0 = performance.now();
-    if (ms <= 0 || matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      cam.z = z; cam.x = x; cam.y = y; return applyCam();
-    }
-    (function step(t) {
-      const k = Math.min(1, (t - t0) / ms), e = 1 - Math.pow(1 - k, 3);
-      cam.z = z0 + (z - z0) * e; cam.x = x0 + (x - x0) * e; cam.y = y0 + (y - y0) * e;
-      applyCam();
-      if (k < 1) requestAnimationFrame(step);
-    })(t0);
-  }
-  function fit() {
-    cam.z = zNear();
-    applyCam();
-  }
+  const stage = () => $("#stage").getBoundingClientRect();
+  const zAll = () => { const r = stage(); return Math.min(r.width / D.w, r.height / D.h) * .98; };
+  const zNear = () => stage().width / (9 * Math.sqrt(3) * S);
   function applyCam() {
-    const r = $("#stage").getBoundingClientRect();
+    const r = stage();
     const w = r.width / cam.z, h = r.height / cam.z;
     cam.x = Math.min(D.w - w / 2, Math.max(w / 2, cam.x));
     cam.y = Math.min(D.h - h / 2, Math.max(h / 2, cam.y));
     map.setAttribute("viewBox", `${cam.x - w / 2} ${cam.y - h / 2} ${w} ${h}`);
     vp.setAttribute("x", cam.x - w / 2); vp.setAttribute("y", cam.y - h / 2);
     vp.setAttribute("width", w); vp.setAttribute("height", h);
+  }
+  const calm = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function camTo(z, x, y, ms = 520) {
+    const z0 = cam.z, x0 = cam.x, y0 = cam.y, t0 = performance.now();
+    if (ms <= 0 || calm()) { cam.z = z; cam.x = x; cam.y = y; return applyCam(); }
+    (function step(t) {
+      const k = Math.min(1, (t - t0) / ms), e = 1 - Math.pow(1 - k, 3);
+      cam.z = z0 + (z - z0) * e; cam.x = x0 + (x - x0) * e; cam.y = y0 + (y - y0) * e;
+      applyCam();
+      if (k < 1) requestAnimationFrame(step);
+    })(t0);
   }
   let drag = null;
   $("#stage").addEventListener("pointerdown", (e) => {
@@ -301,8 +318,8 @@
     drag.x = e.clientX; drag.y = e.clientY;
     applyCam();
   });
-  $("#stage").addEventListener("pointerup", (e) => {
-    if (drag && drag.moved < 8 && drag.i !== undefined) tryPaint(+drag.i);
+  $("#stage").addEventListener("pointerup", () => {
+    if (drag && drag.moved < 8 && drag.i !== undefined) pick(+drag.i);
     drag = null;
   });
   const clampZ = () => { cam.z = Math.min(zNear() * 2, Math.max(zAll(), cam.z)); };
@@ -310,74 +327,70 @@
   $("#zout").onclick = () => { cam.z /= 1.5; clampZ(); applyCam(); };
   addEventListener("resize", applyCam);
 
-  // ---------- состояние клеток ----------
+  // ---------- клетки ----------
   function paint(i, club, byMe) {
     const prev = owner[i];
     if (prev === club) return;
     if (prev >= 0) byClub[prev]--;
     owner[i] = club;
     byClub[club]++;
-    if (byMe) { mineCell[i] = 1; ST.painted++; }
-    else if (mineCell[i] && club !== ST.me) mineCell[i] = 0;
+    if (byMe) { mineCell[i] = 1; ST.taken++; } else if (club !== ST.me) mineCell[i] = 0;
     marks[i].setAttribute("r", mineCell[i] ? S * .17 : 0);
-    const col = CLUBS[club].game;
-    nodes[i].style.fill = col;
-    nodes[i].classList.toggle("own", true);
-    miniNodes[i].setAttribute("fill", col);
+    nodes[i].style.fill = CLUBS[club].game;
+    nodes[i].classList.add("own");
+    miniNodes[i].setAttribute("fill", CLUBS[club].game);
     nodes[i].classList.remove("hit");
-    void nodes[i].offsetWidth;
+    void nodes[i].getBBox;
     nodes[i].classList.add("hit");
     if (prev >= 0 && prev !== club) cutOff(prev);
   }
   function neutral(i) {
     if (owner[i] >= 0) byClub[owner[i]]--;
     owner[i] = -1; mineCell[i] = 0;
+    marks[i].setAttribute("r", 0);
     nodes[i].style.fill = "";
     nodes[i].classList.remove("own");
     miniNodes[i].setAttribute("fill", "var(--land)");
   }
-  // связный фронт: что не связано с городом — сереет
   function cutOff(club) {
     const base = CLUBS[club].base;
-    if (owner[base] !== club) return;
+    if (owner[base] !== club) return 0;
     const seen = new Set([base]), st = [base];
-    while (st.length) {
-      for (const j of ADJ[st.pop()]) if (owner[j] === club && !seen.has(j)) { seen.add(j); st.push(j); }
-    }
+    while (st.length) for (const j of ADJ[st.pop()]) if (owner[j] === club && !seen.has(j)) { seen.add(j); st.push(j); }
     let lost = 0;
     for (let i = 0; i < N; i++) if (owner[i] === club && !seen.has(i)) { neutral(i); lost++; }
-    if (lost >= 3) toast(`Отрезали ${lost} ${plural(lost, "клетку", "клетки", "клеток")} у «${CLUBS[club].name}»`);
+    if (lost >= 2) toast(`Отрезано ${lost} ${plural(lost, "клетка", "клетки", "клеток")} у «${CLUBS[club].name}»`);
     return lost;
   }
-  const plural = (n, a, b, c) => {
-    const t = n % 100, o = n % 10;
-    return t > 10 && t < 20 ? c : o === 1 ? a : o >= 2 && o <= 4 ? b : c;
-  };
 
-  // ---------- цена и доступность ----------
+  // ---------- цена и цели ----------
   function cost(i) {
-    if (baseOf[i] >= 0) return 99;                      // город не берётся
     const o = owner[i];
     if (o < 0) return 1;
-    const near = ADJ[i].some((j) => baseOf[j] === o);    // кольцо вокруг чужого города
-    return near ? 3 : 2;
+    if (baseOf[i] >= 0) return 99;
+    const near = ADJ[i].some((j) => baseOf[j] === o);
+    return 2 + (near ? 1 + level[o] : 0);
   }
-  function canPaint(i) {
+  const reach = (club) => {
+    const set = new Set();
+    for (let i = 0; i < N; i++) if (owner[i] === club) for (const j of ADJ[i]) if (owner[j] !== club) set.add(j);
+    return set;
+  };
+  function canOrder(i) {
     if (ST.me < 0 || owner[i] === ST.me || baseOf[i] >= 0) return false;
-    if (ST.landingCells.has(i)) return true;
-    return ADJ[i].some((j) => owner[j] === ST.me);
+    return ST.landing.has(i) || ADJ[i].some((j) => owner[j] === ST.me);
   }
-  function drawCan() {
+
+  // ---------- приказы ----------
+  function drawTargets() {
     gCan.textContent = "";
-    if (ST.me < 0 || ST.over) return;
-    let shown = 0;
-    for (let i = 0; i < N && shown < 90; i++) {
-      if (!canPaint(i) || cost(i) > ST.charge) continue;
+    if (ST.me < 0 || ST.phase !== "plan") return;
+    for (let i = 0; i < N; i++) {
+      if (!canOrder(i) || ST.orders.has(i)) continue;
       const p = document.createElementNS(NS, "path");
       p.setAttribute("d", hexPath(CELLS[i].x, CELLS[i].y));
-      p.setAttribute("class", ST.landingCells.has(i) ? "landing" : "can");
+      p.setAttribute("class", ST.landing.has(i) ? "landing" : "can");
       gCan.appendChild(p);
-      shown++;
       if (owner[i] >= 0) {
         const t = document.createElementNS(NS, "text");
         t.setAttribute("x", CELLS[i].x); t.setAttribute("y", CELLS[i].y);
@@ -386,163 +399,290 @@
         gCan.appendChild(t);
       }
     }
+    if (ST.sel >= 0) {
+      const p = document.createElementNS(NS, "path");
+      p.setAttribute("d", hexPath(CELLS[ST.sel].x, CELLS[ST.sel].y));
+      p.setAttribute("class", "sel");
+      gCan.appendChild(p);
+    }
+  }
+  function drawOrders() {
+    gOrd.textContent = "";
+    for (const [i, n] of ST.orders) {
+      const from = nearestOwn(i);
+      if (from < 0) continue;
+      const tint = document.createElementNS(NS, "path");
+      tint.setAttribute("d", hexPath(CELLS[i].x, CELLS[i].y));
+      tint.setAttribute("fill", CLUBS[ST.me].game);
+      tint.setAttribute("opacity", ".45");
+      tint.setAttribute("stroke", CLUBS[ST.me].game);
+      tint.setAttribute("stroke-width", "3");
+      gOrd.appendChild(tint);
+      const a = CELLS[from], b = CELLS[i];
+      const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1;
+      const sx = a.x + dx / L * S * .5, sy = a.y + dy / L * S * .5;
+      const ex = b.x - dx / L * S * .62, ey = b.y - dy / L * S * .62;
+      const line = document.createElementNS(NS, "path");
+      line.setAttribute("d", `M${sx} ${sy}L${ex} ${ey}`);
+      line.setAttribute("class", "ord");
+      const ang = Math.atan2(dy, dx);
+      const head = document.createElementNS(NS, "path");
+      head.setAttribute("d", `M${ex} ${ey}L${ex - 11 * Math.cos(ang - .4)} ${ey - 11 * Math.sin(ang - .4)}L${ex - 11 * Math.cos(ang + .4)} ${ey - 11 * Math.sin(ang + .4)}Z`);
+      head.setAttribute("class", "ord-head");
+      const bg = document.createElementNS(NS, "circle");
+      bg.setAttribute("cx", ex); bg.setAttribute("cy", ey); bg.setAttribute("r", 9);
+      bg.setAttribute("class", "ord-bg");
+      const tx = document.createElementNS(NS, "text");
+      tx.setAttribute("x", ex); tx.setAttribute("y", ey);
+      tx.setAttribute("class", "ord-n"); tx.setAttribute("text-anchor", "middle");
+      tx.setAttribute("dominant-baseline", "central");
+      tx.textContent = n;
+      gOrd.append(line, head, bg, tx);
+    }
+  }
+  function nearestOwn(i) {
+    let best = -1, bd = 1e9;
+    for (const j of ADJ[i]) if (owner[j] === ST.me) return j;
+    for (let k = 0; k < N; k++) {
+      if (owner[k] !== ST.me) continue;
+      const d = (CELLS[k].x - CELLS[i].x) ** 2 + (CELLS[k].y - CELLS[i].y) ** 2;
+      if (d < bd) { bd = d; best = k; }
+    }
+    return best;
   }
 
-  function tryPaint(i) {
-    if (ST.me < 0 || ST.over || !canPaint(i)) {
-      if (ST.me >= 0 && !ST.over) hint(owner[i] === ST.me ? "Это уже твоя клетка." : "Красить можно только рядом со своими — или в десанте.");
+  function pick(i) {
+    if (ST.me < 0 || ST.phase !== "plan") return;
+    if (ST.orders.has(i)) {                       // отменить приказ
+      ST.res += ST.orders.get(i);
+      ST.orders.delete(i);
+      ST.sel = -1;
+      return refresh();
+    }
+    if (!canOrder(i)) {
+      hint(owner[i] === ST.me ? "Это уже твоя клетка." : "Направлять можно только на клетки рядом со своими — или в десант.");
       return;
     }
-    const c = cost(i);
-    if (c > ST.charge) { hint(`Не хватает заряда: нужно ${c}.`); return; }
-    ST.charge -= c;
-    paint(i, ST.me, true);
-    ST.landingCells.delete(i);
-    if (navigator.vibrate) navigator.vibrate(8);
-    refresh();
-    if (ST.step === 1) coachStep(2);
-    else if (ST.step === 2 && owner[i] === ST.me && c >= 2) coachStep(3);
+    ST.sel = i;
+    ST.push = cost(i);
+    showTarget();
   }
-
-  // ---------- боты: болельщики остальных клубов ----------
-  function aiStep() {
-    if (ST.over || !ST.started) return;
-    const k = 2 + (byClub.reduce((a, b) => a + b, 0) < N * .5 ? 1 : 0);
-    for (let t = 0; t < k; t++) {
-      const club = Math.floor(Math.random() * CLUBS.length);
-      const mine = [];
-      for (let i = 0; i < N; i++) if (owner[i] === club) mine.push(i);
-      if (!mine.length) continue;
-      const from = mine[Math.floor(Math.random() * mine.length)];
-      const opts = ADJ[from].filter((j) => owner[j] !== club && baseOf[j] < 0);
-      if (!opts.length) continue;
-      const free = opts.filter((j) => owner[j] < 0);
-      const target = free.length ? free[Math.floor(Math.random() * free.length)] : opts[Math.floor(Math.random() * opts.length)];
-      if (owner[target] === ST.me && Math.random() < .82) continue;   // клуб игрока трогаем редко: иначе рост не виден
-      const wasMine = mineCell[target];
-      paint(target, club, false);
-      if (wasMine && performance.now() - lastLoss > 9000) {
-        lastLoss = performance.now();
-        toast(`«${CLUBS[club].name}» забрал твою клетку`);
-      }
-    }
+  function showTarget() {
+    const i = ST.sel, c = cost(i);
+    const who = owner[i] < 0 ? "ничья земля" : `земля «${CLUBS[owner[i]].name}»`;
+    $("#tgt-info").innerHTML = `${ST.landing.has(i) ? "Десант · " : ""}${who}
+      <small>цена ${c} · у тебя ${ST.res} резерва. Сильнее — выигрываешь, если туда идёт кто-то ещё</small>`;
+    $("#push-n").textContent = ST.push;
+    $("#push-less").disabled = ST.push <= c;
+    $("#push-more").disabled = ST.push >= ST.res;
+    $("#send").disabled = c > ST.res;
+    $("#bar-plan").hidden = true;
+    $("#bar-target").hidden = false;
     refresh(true);
   }
-
-  // ---------- туры и матчи ----------
-  let FIX = [];
-  function tourEnd() {
-    const f = FIX[(ST.tour - 1) % FIX.length];
-    if (!f) { ST.tour++; ST.left = 45; return; }
-    const a = CLUBS.findIndex((c) => c.id === f.h), b = CLUBS.findIndex((c) => c.id === f.a);
-    const meIn = ST.me === a || ST.me === b;
-    let homeWin = f.hw;
-    if (meIn) homeWin = (ST.me === a) ? true : false;       // в демо твои выигрывают: видно, как это влияет
-    const win = homeWin ? a : b, lose = homeWin ? b : a;
-    ST.charge = Math.min(ST.cap, ST.charge + 4);
-    if (homeWin) {
-      for (const j of ADJ[CLUBS[win].base]) if (owner[j] === win) nodes[j].classList.add("hit");
-      ticker(`<b>${CLUBS[a].name} ${f.s}</b> ${CLUBS[b].name} — победа дома, кольцо города укреплено`);
-    } else {
-      ST.landing = win;
-      if (win === ST.me) {
-        ST.landingCells = new Set(ADJ[CLUBS[lose].base].filter((j) => owner[j] !== ST.me && baseOf[j] < 0));
-        const t = CELLS[CLUBS[lose].base];
-        setTimeout(() => camTo(zNear(), t.x, t.y, 700), 2900);
-        toast(`Десант · ${CLUBS[lose].city}`);
-        hint(`<b>Десант</b>: клетки с оранжевой рамкой у города «${CLUBS[lose].name}» можно взять, не дотягиваясь фронтом.`);
-      }
-      ticker(`<b>${CLUBS[a].name} ${f.s}</b> ${CLUBS[b].name} — победа в гостях, открыт десант · ${CLUBS[lose].city}`);
-    }
-    ST.tour++;
-    ST.left = 45;
-    if (ST.tour > 3) return finish();
-    const back = { z: cam.z, x: cam.x, y: cam.y };
-    camTo(zAll(), D.w / 2, D.h / 2, 600);
-    setTimeout(() => camTo(back.z, back.x, back.y, 600), 2300);
-    $("#tourlab").textContent = "тур " + ST.tour;
+  $("#push-less").onclick = () => { ST.push = Math.max(cost(ST.sel), ST.push - 1); showTarget(); };
+  $("#push-more").onclick = () => { ST.push = Math.min(ST.res, ST.push + 1); showTarget(); };
+  $("#send").onclick = () => {
+    const i = ST.sel;
+    if (i < 0) return;
+    const n = Math.max(cost(i), Math.min(ST.res, ST.push));
+    if (n > ST.res) return;
+    ST.res -= n;
+    ST.orders.set(i, n);
+    ST.sel = -1;
+    closeTarget();
+    if (ST.step === 1) coachStep(2);
     refresh();
+  };
+  $("#cancel").onclick = () => { ST.sel = -1; closeTarget(); refresh(); };
+  function closeTarget() {
+    $("#bar-target").hidden = true;
+    $("#bar-plan").hidden = false;
   }
 
-  function finish() {
-    ST.over = true;
-    const order = CLUBS.map((c, i) => [i, byClub[i]]).sort((x, y) => y[1] - x[1]);
-    const rows = order.slice(0, 6).map(([i, n], k) => `<tr class="${i === ST.me ? "me" : ""}"><td class="em"><img src="${CLUBS[i].logo}" alt=""></td><td>${k + 1}. ${CLUBS[i].name}</td><td class="n">${n}</td></tr>`).join("");
-    const myPlace = order.findIndex(([i]) => i === ST.me) + 1;
-    show(`<h1>Круг закончен</h1>
-      <p>«${CLUBS[ST.me].name}» — ${myPlace}-е место, ${byClub[ST.me]} ${plural(byClub[ST.me], "клетка", "клетки", "клеток")}. Лично ты закрасил ${ST.painted}.</p>
-      <table>${rows}</table>
-      <h2>Что дальше в настоящей игре</h2>
-      <p class="muted">Карта обнуляется в январе: все снова с одного города. Очки за круг идут в личный зачёт и в ступени по 20 человек. Призов нет.</p>
-      <div class="acts"><button class="btn" id="again">Ещё круг</button><button class="btn ghost" id="why2">При чём тут хоккей?</button></div>`);
-    $("#again").onclick = reset;
-    $("#why2").onclick = why;
+  // ---------- боты: штабы остальных клубов ----------
+  function aiOrders() {
+    const all = [];
+    CLUBS.forEach((c, k) => {
+      if (k === ST.me) return;
+      let budget = income(k);
+      const targets = [...reach(k)].filter((i) => baseOf[i] < 0
+        && !(ST.week === 1 && ADJ[i].some((j) => baseOf[j] === ST.me) && Math.random() < .6));
+      targets.sort((a, b) => (owner[a] < 0 ? 0 : 1) - (owner[b] < 0 ? 0 : 1) + Math.random() - .5);
+      for (const i of targets) {
+        const c = cost(i);
+        if (c > budget) continue;
+        budget -= c;
+        all.push({ cell: i, club: k, push: c });
+        if (budget <= 0) break;
+      }
+    });
+    return all;
   }
+  const income = (k) => 3 + Math.floor(byClub[k] / 3) + level[k];
+
+  // ---------- игровой вечер ----------
+  const FIX = () => (D.fixtures[CLUBS[ST.me].id] || []);
+  function night() {
+    if (ST.phase !== "plan") return;
+    ST.phase = "night";
+    $("#go").disabled = true;
+    const f = FIX()[(ST.week - 1) % Math.max(1, FIX().length)];
+    const a = f ? CLUBS.findIndex((c) => c.id === f.h) : -1;
+    const b = f ? CLUBS.findIndex((c) => c.id === f.a) : -1;
+    // сценарий демо: дома выиграли, в гостях выиграли, третью проиграли — видны все три эффекта
+    const script = [true, true, false][(ST.week - 1) % 3];
+    const home = a === ST.me;
+    const win = script;
+    const score = home ? (win ? "3:2" : "1:4") : (win ? "1:4" : "4:1");
+    ST.lastScore = f ? `${CLUBS[a].name} ${score} ${CLUBS[b].name}` : "";
+    const other = home ? b : a;
+    ticker(`<b>${ST.lastScore}</b> — ${win ? (home ? "победа дома" : "победа в гостях") : "поражение"}`);
+    const power = win ? 1 : .5;
+    const ai = aiOrders();
+    const mine = [...ST.orders].map(([cell, push]) => ({ cell, club: ST.me, push: Math.round(push * power), my: true }));
+    resolve(mine.concat(ai), () => {
+      // эффекты реального матча
+      ST.landing = new Set();
+      if (win && !home && other >= 0) {
+        ST.landing = new Set(ADJ[CLUBS[other].base].filter((j) => owner[j] !== ST.me && baseOf[j] < 0));
+        const t = CELLS[CLUBS[other].base];
+        setTimeout(() => camTo(zNear(), t.x, t.y, 700), 400);
+      }
+      if (win && home) level[ST.me] = Math.min(3, level[ST.me] + 1);
+      weekResult(win, home, other);
+    });
+  }
+
+  function resolve(list, done) {
+    // на одну клетку могут давить несколько штабов. Берёт тот, кто сильнее.
+    // Равная сила — клетка остаётся за хозяином: случайности в игре нет
+    const by = new Map();
+    for (const o of list) {
+      if (!by.has(o.cell)) by.set(o.cell, []);
+      by.get(o.cell).push(o);
+    }
+    const steps = [];
+    ST.report = [];
+    for (const [cell, os] of by) {
+      os.sort((a, b) => b.push - a.push);
+      const top = os[0], second = os[1];
+      const tie = second && second.push === top.push;
+      const win = !tie && top.push >= cost(cell) ? top : null;
+      if (win) steps.push(win);
+      const my = os.find((o) => o.my);
+      const what = owner[cell] < 0 ? "ничья земля" : `земля «${CLUBS[owner[cell]].name}»`;
+      if (my) {
+        if (win && win.my) ST.report.push({ cell, what, ok: true, push: my.push });
+        else if (tie && os.some((o) => o.my && o.push === top.push)) ST.report.push({ cell, what, ok: false, why: "туда шёл ещё один штаб с такой же силой — клетка осталась за хозяином" });
+        else if (win) ST.report.push({ cell, what, ok: false, why: `перебил «${CLUBS[win.club].name}»: ${win.push} против ${my.push}` });
+        else ST.report.push({ cell, what, ok: false, why: `силы не хватило: ${my.push} при цене ${cost(cell)}` });
+      }
+    }
+    let k = 0;
+    const tick = () => {
+      if (k >= steps.length) { ST.orders.clear(); gOrd.textContent = ""; return done(); }
+      const o = steps[k++];
+      paint(o.cell, o.club, !!o.my);
+      setTimeout(tick, calm() ? 0 : 55);
+    };
+    setTimeout(tick, 700);
+  }
+
+  function weekResult(win, home, other) {
+    const inc = income(ST.me) + (win ? 2 : 0);
+    ST.res += inc;
+    refresh();
+    const rep = (ST.report || []).map((r) => {
+      return `<tr><td>${r.ok ? "Взято" : "Не прошло"} · ${r.what}</td><td class="n">${r.ok ? "+1" : "—"}</td></tr>`
+        + (r.ok ? "" : `<tr><td colspan="2" class="why">${r.why}</td></tr>`);
+    }).join("");
+    const lines = (rep || "") + [
+      `<tr><td>Клеток у клуба</td><td class="n">${byClub[ST.me]}</td></tr>`,
+      `<tr><td>Взято тобой за круг</td><td class="n">${ST.taken}</td></tr>`,
+      `<tr><td>Резерв на неделю</td><td class="n">+${inc}</td></tr>`,
+    ].join("");
+    const extra = win
+      ? (home ? `<p><b>Победа дома.</b> Кольцо вокруг своего города укреплено: чужим дороже его грызть.</p>`
+              : `<p><b>Победа в гостях.</b> Открыт десант у города «${CLUBS[other].name}» — туда можно направить резерв, не дотягиваясь фронтом.</p>`)
+      : `<p><b>Поражение.</b> Приказы исполнились наполовину: соперники продвинулись сильнее.</p>`;
+    ST.week++;
+    const last = ST.week > WEEKS;
+    show(`<h1>Неделя ${ST.week - 1}</h1><p class="muted">${ST.lastScore}</p>${extra}
+      <table>${lines}</table>
+      ${last ? standingsHtml() : ""}
+      <div class="acts"><button class="btn" id="next">${last ? "Ещё круг" : "К карте"}</button>
+      ${last ? "" : '<button class="btn ghost" id="why3">Правила</button>'}</div>`);
+    $("#next").onclick = last ? reset : () => { hide(); ST.phase = "plan"; $("#go").disabled = false; $("#weekn").textContent = ST.week; refresh(); };
+    if (!last) $("#why3").onclick = why;
+    if (last) ST.over = true;
+  }
+
+  function standingsHtml() {
+    const order = CLUBS.map((c, i) => [i, byClub[i]]).sort((x, y) => y[1] - x[1]).slice(0, 6);
+    return `<h2>Кто держит лигу</h2><table>${order.map(([i, n], k) => `<tr class="${i === ST.me ? "me" : ""}">
+      <td class="em"><img src="${CLUBS[i].logo}" alt=""></td><td>${k + 1}. ${CLUBS[i].name}</td><td class="n">${n}</td></tr>`).join("")}</table>
+      <p class="muted">В январе карта обнуляется: все снова начинают с одного города.</p>`;
+  }
+
+  $("#go").onclick = night;
 
   // ---------- интерфейс ----------
   function refresh(light) {
-    $("#charge-n").textContent = ST.charge;
-    const p = $("#pucks");
-    if (p.children.length !== ST.cap) {
-      p.textContent = "";
-      for (let i = 0; i < ST.cap; i++) p.appendChild(Object.assign(document.createElement("i"), { className: "pk" }));
-    }
-    [...p.children].forEach((el, i) => el.className = "pk" + (i < ST.charge ? "" : " off"));
+    $("#res-n").textContent = ST.res;
+    $("#res-in").textContent = ST.orders.size ? `${ST.orders.size} ${plural(ST.orders.size, "приказ", "приказа", "приказов")}` : `+${income(ST.me < 0 ? 0 : ST.me)} в неделю`;
     if (ST.me >= 0) {
-      $("#my-name").innerHTML = `<i class="chip" style="background:${CLUBS[ST.me].game}"></i>${CLUBS[ST.me].name}<small>у клуба ${byClub[ST.me]} · ты закрасил ${ST.painted}</small>`;
-      if (ST.step > 3 && !ST.over) {
-        const free = ST.charge, en = Math.floor(ST.charge / 2);
-        hint(`Заряд ${free}: хватит на ${free} ${plural(free, "пустую клетку", "пустые клетки", "пустых клеток")} или ${en} ${plural(en, "чужую", "чужие", "чужих")}.`);
+      $("#my-name").innerHTML = `<i class="chip" style="background:${CLUBS[ST.me].game}"></i>${CLUBS[ST.me].name}<small>у клуба ${byClub[ST.me]} ${plural(byClub[ST.me], "клетка", "клетки", "клеток")} · твоих ${ST.taken}</small>`;
+      if (ST.step > 2 && ST.phase === "plan" && !ST.over) {
+        hint(ST.orders.size ? "Готов — жми «Игровой вечер»: приказы исполнятся по результату матча." : "Выбери клетку на фронте и направь туда резерв.");
       }
     }
-    if (!light) drawCan();
+    if (!light) { drawTargets(); drawOrders(); }
   }
-  function hint(t) { $("#hint").innerHTML = t; }
-  function ticker(t) { $("#ticker").innerHTML = t; }
+  const hint = (t) => { $("#hint").innerHTML = t; };
+  const ticker = (t) => { $("#ticker").innerHTML = t; };
   let toastT = null;
   function toast(t) {
     const el = $("#toast");
     el.hidden = false; el.textContent = t;
     requestAnimationFrame(() => el.classList.add("on"));
     clearTimeout(toastT);
-    toastT = setTimeout(() => { el.classList.remove("on"); setTimeout(() => { el.hidden = true; }, 220); }, 2200);
+    toastT = setTimeout(() => { el.classList.remove("on"); setTimeout(() => { el.hidden = true; }, 220); }, 2400);
   }
-  function show(html) { $("#card").innerHTML = html; $("#veil").hidden = false; }
-  function hide() { $("#veil").hidden = true; }
+  const show = (html) => { $("#card").innerHTML = html; $("#veil").hidden = false; };
+  const hide = () => { $("#veil").hidden = true; };
 
-  const COACH = [
-    "",
-    "Мигающие клетки — куда можно красить сейчас. Жми по любой.",
-    "Это твоя клетка. Дальше — только рядом со своими: фронт идёт от города.",
-    "Цифра на чужой клетке — её цена. У чужого города дороже: там укрепление.",
+  const COACH = ["",
+    "Пунктир — куда можно направить резерв: только рядом со своими клетками. Нажми на любую.",
+    "Приказ поставлен. Если на эту клетку пойдёт ещё кто-то, возьмёт тот, кто сильнее: кнопкой + можно добавить резерва. Дальше — «Игровой вечер».",
   ];
   function coachStep(n) {
     ST.step = n;
     const c = $("#coach");
-    if (n === 0 || n >= COACH.length) { c.hidden = true; return; }
+    if (!COACH[n]) { c.hidden = true; return; }
     c.hidden = false;
     $("#coach-t").textContent = COACH[n];
-    $("#coach-b").textContent = n === 3 ? "Понял" : "Дальше";
-    $("#coach-b").onclick = () => { if (n >= 3) { c.hidden = true; ST.step = 9; } else coachStep(n + 1); };
-    if (n === 1) $("#coach-b").hidden = true; else $("#coach-b").hidden = false;
+    $("#coach-b").hidden = n === 1;
+    $("#coach-b").textContent = "Понял";
+    $("#coach-b").onclick = () => { c.hidden = true; ST.step = 3; refresh(); };
   }
 
   function why() {
-    show(`<h1>При чём тут хоккей</h1>
-      <p><b>Заряд</b> копится сам, но настоящие матчи дают больше: победа твоего клуба в туре — сразу плюс всей фанбазе.</p>
-      <p><b>Победа дома</b> укрепляет кольцо вокруг своего города: чужим дороже его грызть.</p>
-      <p><b>Победа в гостях</b> открывает десант: неделю можно красить у города соперника, даже не дотянувшись туда фронтом.</p>
-      <p><b>Отрезали</b> — если чужая область теряет связь со своим городом, она сереет. Это и есть тактика: не грызть лоб в лоб, а перерезать коридор.</p>
-      <p class="muted">Город клуба забрать нельзя — он якорь. Карта обнуляется каждый круг, поэтому все снова начинают с одного.</p>
-      <div class="acts"><button class="btn" id="ok">Играть</button></div>`);
+    show(`<h1>Правила</h1>
+      <p><b>Поле.</b> Вся Россия — 359 клеток. Каждый клуб начинает с одной: своего города. Город забрать нельзя, он якорь.</p>
+      <p><b>Резерв</b> копится сам: база плюс по единице за каждые три клетки. Тапать его не надо — он приходит за территорию и за победы.</p>
+      <p><b>Приказ.</b> До игрового вечера ты направляешь резерв на клетки, соседние с твоими. Пустая стоит 1, чужая 2, у чужого города дороже.</p>
+      <p><b>Игровой вечер.</b> Приказы исполняются по результату настоящего матча: победа — на полную, поражение — наполовину. На одну клетку могут давить двое: берёт тот, кто сильнее.</p>
+      <p><b>Победа дома</b> укрепляет кольцо вокруг своего города. <b>Победа в гостях</b> открывает десант: можно бить у города соперника, не дотягиваясь фронтом.</p>
+      <p><b>Отрезание.</b> Чужая область, потерявшая связь со своим городом, становится ничьей. Это сильнее лобовой атаки.</p>
+      <p class="muted">Денег, призов и случайности в игре нет. Круг заканчивается — карта обнуляется, все снова с одного города.</p>
+      <div class="acts"><button class="btn" id="ok">К карте</button></div>`);
     $("#ok").onclick = hide;
   }
   $("#why").onclick = why;
   $("#mini").onclick = () => {
-    const order = CLUBS.map((c, i) => [i, byClub[i]]).sort((x, y) => y[1] - x[1]).filter(([, n]) => n > 0);
-    const rows = order.slice(0, 10).map(([i, n], k) => `<tr class="${i === ST.me ? "me" : ""}"><td class="em"><img src="${CLUBS[i].logo}" alt=""></td><td><i class="chip" style="background:${CLUBS[i].game}"></i>${k + 1}. ${CLUBS[i].name}</td><td class="n">${n}</td></tr>`).join("");
-    show(`<h1>Кто держит лигу</h1><p class="muted">Клеток на карте, тур ${ST.tour}.</p><table>${rows}</table>
-      <div class="acts"><button class="btn" id="cl">Назад на карту</button></div>`);
+    show(`<h1>Кто держит лигу</h1><p class="muted">Клеток на карте, неделя ${ST.week}.</p>${standingsHtml()}
+      <div class="acts"><button class="btn" id="cl">К карте</button></div>`);
     $("#cl").onclick = hide;
   };
 
@@ -550,53 +690,39 @@
   function pickTeam() {
     const list = CLUBS.map((c, i) => `<button class="tm" data-k="${i}"><img src="${c.logo}" alt=""><span>${c.name}</span></button>`).join("");
     show(`<h1>Карта лиги</h1>
-      <p>Вся Россия — поле на 359 клеток. 26 клубов, каждый начинает с одной клетки — своего города. Ты жмёшь за своих.</p>
-      <p class="muted">Прототип: болельщики других клубов здесь — боты, матчи ускорены, тур идёт 45 секунд.</p>
+      <p>Вся Россия — поле на 359 клеток. 26 клубов, у каждого один город на старте. Ты — штаб своего клуба: раз в неделю решаешь, куда направить резерв, а исполняются приказы по результатам настоящих матчей.</p>
+      <p class="muted">Прототип: остальные клубы ведут боты, неделя проходит по кнопке, три недели — круг.</p>
       <h2>За кого играешь</h2><div class="teams">${list}</div>`);
-    $("#card").querySelectorAll(".tm").forEach((b) => {
-      b.onclick = () => { start(+b.dataset.k); };
-    });
+    $("#card").querySelectorAll(".tm").forEach((b) => { b.onclick = () => start(+b.dataset.k); });
   }
   function start(k) {
     ST.me = k;
-    FIX = D.fixtures[CLUBS[k].id] || [];
     hide();
     $("#my-crest").innerHTML = `<img src="${CLUBS[k].logo}" alt="">`;
     const cell = CELLS[CLUBS[k].base];
-    cam.x = cell.x; cam.y = cell.y;
-    fit();
-    ST.started = true;
-    ticker(`Ты за «${CLUBS[k].name}». Город — ${CLUBS[k].city}. Остальные уже красят.`);
-    hint("Жми по мигающим клеткам. <b>Заряд</b> копится сам.");
+    cam.x = cell.x; cam.y = cell.y; cam.z = zNear();
+    applyCam();
+    ST.res = 10;
+    ticker(`Ты за «${CLUBS[k].name}». Город — ${CLUBS[k].city}. Резерв копится сам.`);
+    hint("Нажми клетку с пунктиром — туда пойдёт резерв.");
     coachStep(1);
     refresh();
   }
   function reset() {
     hide();
     for (let i = 0; i < N; i++) if (owner[i] >= 0) neutral(i);
-    CLUBS.forEach((c, i) => paint(c.base, i, false));
-    ST.charge = 6; ST.tour = 1; ST.left = 45; ST.painted = 0; ST.over = false; ST.landingCells = new Set();
-    $("#tourlab").textContent = "тур 1";
+    CLUBS.forEach((c, i) => { paint(c.base, i, false); level[i] = 0; });
+    ST.res = 10; ST.week = 1; ST.taken = 0; ST.over = false; ST.phase = "plan";
+    ST.orders.clear(); ST.landing = new Set();
+    $("#go").disabled = false;
+    $("#weekn").textContent = 1;
     refresh();
   }
 
   CLUBS.forEach((c, i) => paint(c.base, i, false));
-  fit();
+  cam.z = zAll();
+  applyCam();
   refresh();
   pickTeam();
-
-  // ---------- часы ----------
-  setInterval(() => {
-    if (!ST.started || ST.over) return;
-    ST.left--;
-    $("#clock").textContent = Math.max(0, ST.left);
-    if (ST.left <= 0) tourEnd();
-  }, 1000);
-  setInterval(() => {
-    if (!ST.started || ST.over) return;
-    if (ST.charge < ST.cap) { ST.charge++; refresh(); }
-  }, REGEN);
-  setInterval(aiStep, 320);
-  setInterval(() => { if (ST.started && !ST.over) drawCan(); }, 900);
 })();
 </script>

@@ -7,3 +7,7 @@ results.json
 results.tmp
 webapp/data/
 channel_posts.json
+
+# Прототип «Карты» собирается из page.html, в git не нужен
+tools/map_proto/index.html
+tools/map_proto/board.json

@@ -1,0 +1,746 @@
+<title>Турне РХЛ</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@800&family=Onest:wght@500;700&display=swap">
+<style>
+/* Лист наклеек: один экран, крупное табло, рука карт внизу под большим пальцем. Токены — DESIGN.md */
+:root{
+  --canvas:#ffffff; --paper:#ffffff; --ink:#000000; --muted:#555555;
+  --edge:#000000; --edge-strong:#000000; --mist:#e9e9e9;
+  --act:#000000; --on-act:#ffffff; --sel:#dceeff; --band:#dceeff;
+  --sticker:#ffffff; --on-sticker:#000000;
+  --blue:#4da2ff; --mint:#55db9c; --lavender:#e9ccff; --ember:#fb4903; --sun:#ffd731; --violet:#5c4ade;
+  --shadow:2px 2px 0 var(--edge);
+  --display:"Unbounded","Arial Black",system-ui,sans-serif;
+  --body:"Onest",system-ui,-apple-system,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --canvas:#131922; --paper:#1a212c; --ink:#e4e8ee; --muted:#8e98a8;
+  --edge:#2c3645; --edge-strong:#4a5567; --mist:#252e3a;
+  --act:#4da2ff; --on-act:#08121f; --sel:#1f2c3f; --band:#182538;
+  --shadow:2px 2px 0 #0b1017; color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --canvas:#131922; --paper:#1a212c; --ink:#e4e8ee; --muted:#8e98a8;
+  --edge:#2c3645; --edge-strong:#4a5567; --mist:#252e3a;
+  --act:#4da2ff; --on-act:#08121f; --sel:#1f2c3f; --band:#182538;
+  --shadow:2px 2px 0 #0b1017; color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--canvas);color:var(--ink);font:500 15px/1.4 var(--body);
+  -webkit-text-size-adjust:100%}
+.wrap{max-width:560px;margin:0 auto;padding:0 16px;padding-block:14px 28px}
+h1,h2,h3{font-family:var(--display);font-weight:800;margin:0;line-height:.95;text-wrap:balance}
+h1{font-size:26px}
+h2{font-size:20px}
+.lbl{font:700 12px/1.3 var(--body);letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.mut{color:var(--muted)}
+.num{font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+.btn{background:var(--act);color:var(--on-act);border:1px solid var(--edge);border-radius:12px;
+  padding:12px 16px;font-weight:700;letter-spacing:.03em;width:100%;box-shadow:var(--shadow)}
+.btn:active{transform:translate(1px,1px);box-shadow:1px 1px 0 var(--edge)}
+.btn.ghost{background:var(--paper);color:var(--ink)}
+.btn:disabled{opacity:.45;box-shadow:none;cursor:default}
+.card{background:var(--paper);border:1px solid var(--edge);border-radius:14px;padding:12px;box-shadow:var(--shadow)}
+.row{display:flex;gap:8px;align-items:center}
+.col{display:flex;flex-direction:column;gap:10px}
+.grid{display:grid;gap:8px}
+.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--edge);border-radius:999px;
+  padding:3px 9px;font:700 12px/1 var(--body);background:var(--paper)}
+.pill.hot{background:var(--ember);color:#000;border-color:#000}
+.pill.mint{background:var(--mint);color:var(--on-sticker);border-color:#000}
+.pill.lav{background:var(--lavender);color:var(--on-sticker);border-color:#000}
+.emb{width:34px;height:34px;border-radius:999px;background:var(--sticker);border:1px solid var(--edge);
+  object-fit:contain;padding:2px;flex:0 0 auto}
+.emb.lg{width:52px;height:52px}
+.abbr{display:grid;place-items:center;background:var(--violet);color:#fff;font:700 11px/1 var(--body)}
+/* старт */
+.clubs{grid-template-columns:repeat(auto-fill,minmax(64px,1fr))}
+.club{display:flex;flex-direction:column;align-items:center;gap:4px;background:none;border:0;padding:4px}
+.club span{font:700 10px/1.1 var(--body);text-align:center;color:var(--muted)}
+.club[aria-pressed="true"] .emb{outline:3px solid var(--ember);outline-offset:1px}
+/* звено */
+.arch{display:grid;grid-template-columns:40px 1fr auto;gap:10px;align-items:center;text-align:left;
+  background:var(--paper);border:1px solid var(--edge);border-radius:12px;padding:8px;width:100%}
+.arch[aria-pressed="true"]{background:var(--sel);box-shadow:var(--shadow)}
+.sk{width:40px;height:40px;object-fit:contain}
+.stats{display:flex;gap:6px;font:700 11px/1 var(--body);color:var(--muted);margin-top:3px}
+.stats b{color:var(--ink)}
+/* карта забега */
+.step{display:grid;grid-template-columns:22px 1fr;gap:8px;align-items:start}
+.dot{width:14px;height:14px;border-radius:999px;border:1px solid var(--edge-strong);margin-top:12px}
+.dot.done{background:var(--ink);border-color:var(--ink)}
+.dot.now{background:var(--ember);border-color:#000}
+.node{text-align:left;width:100%}
+.node .lbl{color:var(--ink)}
+.node:disabled{opacity:.5}
+/* матч */
+.board{background:var(--band);border:1px solid var(--edge);border-radius:14px;padding:10px;
+  display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;box-shadow:var(--shadow)}
+.score{font-family:var(--display);font-size:34px;line-height:.85;text-align:center;color:#000}
+.board .side{display:flex;flex-direction:column;align-items:center;gap:4px}
+.board .side span{font:700 11px/1.1 var(--body);text-align:center;color:#000}
+.line{display:flex;gap:6px;justify-content:space-between}
+.pl{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:0}
+.pl img{width:100%;max-width:46px;object-fit:contain}
+.pl.sat{opacity:.35}
+.pl em{font:700 10px/1.1 var(--body);font-style:normal;color:var(--muted);text-align:center}
+.bars{display:flex;gap:2px}
+.bars i{width:5px;height:5px;border-radius:999px;background:var(--mist);border:1px solid var(--edge-strong)}
+.bars i.on{background:var(--mint)}
+.hand{display:grid;gap:8px}
+.pc{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;text-align:left;
+  background:var(--paper);border:1px solid var(--edge);border-radius:12px;padding:10px;box-shadow:var(--shadow)}
+.pc b{font:700 14px/1.2 var(--body)}
+.pc .mut{font:500 12px/1.3 var(--body);display:block;margin-top:2px}
+.pc .pow{font-family:var(--display);font-size:20px}
+.ticker{background:#000;color:#fff;border-radius:10px;padding:8px 10px;font:500 13px/1.45 var(--body);
+  max-height:104px;overflow-y:auto}
+.ticker b{color:var(--sun)}
+.goal{animation:pop .5s}
+@keyframes pop{0%{transform:scale(.7)}60%{transform:scale(1.15)}100%{transform:scale(1)}}
+@media (prefers-reduced-motion:reduce){.goal{animation:none}.btn:active{transform:none}}
+.relics{display:flex;flex-wrap:wrap;gap:6px}
+.sep{height:1px;background:var(--mist);margin:2px 0}
+.fin{font-family:var(--display);font-size:46px;line-height:.85}
+.note{font:500 12px/1.4 var(--body);color:var(--muted)}
+.tabs{display:flex;gap:6px;flex-wrap:wrap}
+.tabs .pill{cursor:pointer}
+.tabs .pill[aria-pressed="true"]{background:var(--ink);color:var(--canvas)}
+</style>
+
+<div class="wrap" id="app"></div>
+
+<script>
+// --- engine start -----------------------------------------------------------
+// Движок прототипа «Турне» (ADR-017). Чистая логика: ни одного обращения к DOM.
+// Случайность — только через rng(state), поэтому забег восстанавливается из сида и журнала ходов.
+
+var CLUBS=[
+{id:"arktika",n:"Арктика",a:"АРК",c:"#1c2f5e",conf:"west",m:"Белый"},
+{id:"akhmat-granit",n:"Ахмат-Гранит",a:"АХМ",c:"#1f6b45",conf:"west",m:"Тур"},
+{id:"vityaz-podolsk",n:"Витязь-Подольск",a:"ВИТ",c:"#d42a1f",conf:"west",m:"Святогор"},
+{id:"dinamo-576",n:"Динамо-576",a:"576",c:"#1c2f5e",conf:"west",m:"Динамозавр"},
+{id:"kaluga",n:"Калужские Ракеты",a:"КЛР",c:"#1c2f5e",conf:"west",m:"Рокет"},
+{id:"krasnaya-mashina",n:"Красная машина",a:"КМА",c:"#e3161b",conf:"west",m:"Крамси"},
+{id:"leningradets",n:"Ленинградец",a:"ЛЕН",c:"#1c2f5e",conf:"west",m:"Нерпа"},
+{id:"metallurg",n:"Металлург",a:"МЕТ",c:"#f5c400",conf:"west",m:"Сева"},
+{id:"dinamo-kareliya",n:"Динамо-Карелия",a:"ДКР",c:"#2453a6",conf:"west",m:"Лайка"},
+{id:"polet",n:"Полёт",a:"ПОЛ",c:"#2a5bb8",conf:"west",m:"Стерлядь"},
+{id:"tverichi",n:"Тверичи-СШОР",a:"ТВЕ",c:"#2453a6",conf:"west",m:"Сова"},
+{id:"fakel-yamal",n:"Факел Ямал",a:"ФАК",c:"#e3161b",conf:"west",m:"Умка"},
+{id:"bryansk",n:"Брянск",a:"БРЯ",c:"#d42a1f",conf:"west",m:"Лось"},
+{id:"dizelist",n:"Дизелист",a:"ДИЗ",c:"#16213f",conf:"east",m:"Ласточка"},
+{id:"ermak",n:"Ермак",a:"ЕРМ",c:"#1f8a43",conf:"east",m:"Тимофеевич"},
+{id:"belgorod",n:"Белгород",a:"БЕЛ",c:"#2453a6",conf:"east",m:"Лев"},
+{id:"kristall",n:"Кристалл",a:"КРИ",c:"#e3161b",conf:"east",m:"Ёж"},
+{id:"ryazan-vdv",n:"Рязань-ВДВ",a:"РЯЗ",c:"#1c2f5e",conf:"east",m:"Мишка"},
+{id:"tambov",n:"Тамбов",a:"ТАМ",c:"#1b1b1b",conf:"east",m:"Волк"},
+{id:"progress",n:"Прогресс",a:"ПРГ",c:"#e3161b",conf:"east",m:"Рысь"},
+{id:"proton",n:"Протон",a:"ПРТ",c:"#2453a6",conf:"east",m:"Протон"},
+{id:"rostov",n:"Ростов",a:"РОС",c:"#d42a1f",conf:"east",m:"Кондор"},
+{id:"sokol",n:"Сокол",a:"СОК",c:"#e3161b",conf:"east",m:"Сокол"},
+{id:"krasnodar",n:"Краснодар",a:"КДР",c:"#1d5a3a",conf:"east",m:"Зубр"},
+{id:"samara",n:"Самара",a:"САМ",c:"#16213f",conf:"east",m:"Стриж"},
+{id:"ekoniva-bobrov",n:"ЭкоНива-Бобров",a:"БОБ",c:"#2e7d3a",conf:"east",m:"Бобёр"}];
+var LOGO={bryansk:"jpg",dizelist:"jpg",tverichi:"jpg"};
+var byId={}; CLUBS.forEach(function(c){byId[c.id]=c});
+
+// Архетипы: бросок, пас, отбор, выносливость (ADR-017, раздел 2). Каждый приносит в колоду свою карту.
+var ARCH=[
+{id:"sniper",n:"Снайпер",shot:5,pass:2,steal:1,stam:3,
+ card:{n:"Щёлкнуть с кистей",base:7,stat:"shot",note:"Чистый бросок в касание"}},
+{id:"dispatcher",n:"Диспетчер",shot:2,pass:5,steal:2,stam:3,
+ card:{n:"Отдать на пятак",base:6,stat:"pass",note:"Удался — следующий эпизод +3, а не +2",fx:"bigmoment"}},
+{id:"taran",n:"Таран",shot:3,pass:1,steal:5,stam:4,
+ card:{n:"Прижать к борту",base:6,stat:"steal",note:"Удался — оборона соперника −2 до конца периода",fx:"grind"}},
+{id:"rabotyaga",n:"Работяга",shot:3,pass:3,steal:3,stam:5,
+ card:{n:"Добить на пятаке",base:5,stat:"shot",note:"После момента считается с ещё +3",fx:"rebound"}},
+{id:"skala",n:"Скала",shot:1,pass:2,steal:5,stam:4,
+ card:{n:"Лечь под бросок",base:4,stat:"steal",note:"Провал — контратаки не будет",fx:"safe"}},
+{id:"razgon",n:"Разгоняющий",shot:4,pass:4,steal:2,stam:2,
+ card:{n:"Выйти из зоны",base:7,stat:"pass",note:"Стоит двух сил",fx:"costly"}},
+{id:"kusachiy",n:"Кусачий",shot:3,pass:2,steal:4,stam:3,
+ card:{n:"Поддеть у борта",base:5,stat:"steal",note:"Провал — половина шансов, что удалят соперника",fx:"provoke"}},
+{id:"veteran",n:"Ветеран",shot:4,pass:4,steal:3,stam:3,
+ card:{n:"Поймать момент",base:6,stat:"best",note:"Считается по сильной стороне. Буллиты — его",fx:"veteran"}}];
+var archById={}; ARCH.forEach(function(a){archById[a.id]=a});
+var FALLBACK={n:"Отбиться",base:3,stat:"steal",note:"Когда играть некем",fx:"safe"};
+
+var RELICS=[
+{id:"pas",n:"Игра в пас",cost:40,t:"+1 к пасу всем"},
+{id:"pyatak",n:"Пятак",cost:45,t:"Голевой порог ниже на 1"},
+{id:"tafguy",n:"Тафгай",cost:35,t:"Силовой удался — соперник ещё −1"},
+{id:"fizika",n:"Физика",cost:50,t:"+1 выносливости всем"},
+{id:"brigada",n:"Спецбригада",cost:40,t:"В большинстве +3 к силе"},
+{id:"steny",n:"Домашние стены",cost:30,t:"Первый период +2 к силе"},
+{id:"sukhar",n:"Сухарь",cost:45,t:"+2 вратарю, пока не пропустили"},
+{id:"zuby",n:"Зубы",cost:35,t:"+2 к броску, но −1 выносливости всем"},
+{id:"terpenie",n:"Терпение",cost:40,t:"В перерыве возвращается 3 силы, а не 2"},
+{id:"shchelchok",n:"Щелчок от синей",cost:55,t:"+1 к броску и +1 к пасу"},
+{id:"avtobus",n:"Автобус",cost:25,t:"Лазарет и лечение бесплатны"},
+{id:"svistok",n:"Свисток",cost:30,t:"Первое удаление за матч не считается"}];
+var relicById={}; RELICS.forEach(function(r){relicById[r.id]=r});
+
+var EVENTS=[
+{id:"bus",n:"Автобус встал под Воронежем",t:"Два часа на обочине. Ехать дальше или ночевать?",
+ opts:[{t:"Гнать всю ночь",d:"−2 силы всем, +15 шайб",fx:{stam:-2,coin:15}},
+       {t:"Ночевать в автобусе",d:"Просто теряем время",fx:{}}]},
+{id:"fans",n:"Автобус болельщиков",t:"За вами едут сто человек с баннером.",
+ opts:[{t:"Выйти к ним",d:"+1 силы всем",fx:{stam:1}},
+       {t:"Беречь ноги",d:"+20 шайб",fx:{coin:20}}]},
+{id:"judge",n:"Судья из этого города",t:"Бригада местная, свисток тоже.",
+ opts:[{t:"Поговорить до игры",d:"Следующий матч: удаления не считаются",fx:{shield:1}},
+       {t:"Молчать и играть",d:"+10 шайб",fx:{coin:10}}]},
+{id:"frost",n:"Минус тридцать",t:"Лёд как камень, борта звенят.",
+ opts:[{t:"Разминаться дольше",d:"−1 силы всем, оборона соперника в следующем матче −2",fx:{stam:-1,soft:2}},
+       {t:"Выйти как есть",d:"Ничего",fx:{}}]},
+{id:"school",n:"Мальчишки со школы",t:"Просят провести тренировку.",
+ opts:[{t:"Провести",d:"−1 силы всем, +1 к стату одному",fx:{stam:-1,boost:1}},
+       {t:"Отказать",d:"+25 шайб",fx:{coin:25}}]},
+{id:"veteranvisit",n:"Ветеран клуба на трибуне",t:"Пришёл посмотреть на молодых.",
+ opts:[{t:"Слушать его разбор",d:"Приём в подарок",fx:{relic:1}},
+       {t:"Играть по-своему",d:"+15 шайб",fx:{coin:15}}]},
+{id:"ice",n:"Заливка сорвалась",t:"Лёд в стружке, шайба прыгает.",
+ opts:[{t:"Играть просто",d:"Следующий матч: базы карт −1, но и оборона соперника −3",fx:{rough:1}},
+       {t:"Ждать заливку",d:"−1 силы всем",fx:{stam:-1}}]},
+{id:"sticks",n:"Клюшки не доехали",t:"Багаж застрял в Москве.",
+ opts:[{t:"Купить на месте",d:"−30 шайб",fx:{coin:-30}},
+       {t:"Играть чужими",d:"−1 к броску всем на следующий матч",fx:{dullshot:1}}]}];
+
+var BOSSMODS=[
+{id:"press",n:"Прессинг",t:"Первый эпизод каждого периода — порог выше на 2"},
+{id:"wall",n:"Автобус у синей",t:"Оборона выше на 2, зато контратак нет"},
+{id:"goalie",n:"Стенка в воротах",t:"Голевой порог выше на 2"},
+{id:"fast",n:"Первое звено",t:"Каждая их контратака сильнее на 2"},
+{id:"dirty",n:"Грязная игра",t:"Наши удаления длятся два эпизода"},
+{id:"home",n:"Полный дворец",t:"В первом периоде порог выше на 3"}];
+
+function hash32(s){var h=0x811c9dc5;for(var i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,0x01000193)>>>0}return h>>>0}
+function rng(st){st.r=(st.r+0x6D2B79F5)>>>0;var t=st.r;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return ((t^(t>>>14))>>>0)/4294967296}
+function ri(st,n){return Math.floor(rng(st)*n)}
+function shuffled(st,arr){var a=arr.slice();for(var i=a.length-1;i>0;i--){var j=ri(st,i+1);var t=a[i];a[i]=a[j];a[j]=t}return a}
+
+// Неделя. Структура и сложность — от сида, одни у всей лиги. Клубы различаются только соперниками.
+function makeWeek(seed){
+  var st={r:hash32(seed)};
+  var table=shuffled(st,CLUBS.map(function(c){return c.id}));   // место в таблице
+  var place={}; table.forEach(function(id,i){place[id]=i+1});
+  var plan=[];
+  function pair(a,b){plan.push([a,b])}
+  pair(ri(st,2)?"event":"training", ri(st,2)?"match":"event");
+  pair("match","derby");
+  pair("training", ri(st,2)?"event":"match");
+  pair("shop", ri(st,2)?"match":"event");
+  pair("derby","match");
+  pair("infirmary","training");
+  var mod=BOSSMODS[ri(st,BOSSMODS.length)];
+  var evs=shuffled(st,EVENTS.map(function(e){return e.id}));
+  var shop=shuffled(st,RELICS.map(function(r){return r.id}));
+  return {seed:seed,table:table,place:place,plan:plan,boss:{mod:mod},events:evs,shop:shop,
+          draft:shuffled(st,ARCH.map(function(a){return a.id})),numbers:shuffled(st,[7,9,11,13,17,19,21,23,27,33,44,55,61,72,77,88,91,98])};
+}
+function weekFor(week,clubId){
+  var w={seed:week.seed,plan:week.plan,place:week.place,events:week.events,shop:week.shop,
+         draft:week.draft,numbers:week.numbers,boss:{}};
+  var rivals=week.table.filter(function(id){return id!==clubId});
+  w.boss.club=rivals[0]; w.boss.mod=week.boss.mod;
+  w.opponents=rivals.slice(1,9);
+  return w;
+}
+function oppOf(w,id,kind){
+  var pl=w.place[id];
+  var def=9+Math.floor((27-pl)/5);
+  if(kind==="derby")def+=1;
+  if(kind==="boss")def=12+Math.floor((27-pl)/9);
+  return {club:id,place:pl,def:def,atk:6+Math.floor((27-pl)/5),gk:11,kind:kind};
+}
+
+function newRun(seed,clubId,archIds){
+  var w=weekFor(makeWeek(seed),clubId);
+  var st={r:hash32(seed+":"+clubId)};
+  var line=archIds.map(function(id,i){
+    var a=archById[id];
+    return {arch:id,num:w.numbers[i],shot:a.shot,pass:a.pass,steal:a.steal,
+            stamMax:a.stam+1,stam:a.stam+1,sat:false};
+  });
+  return {v:1,seed:seed,club:clubId,w:w,rngState:st,line:line,relics:[],coin:0,lives:2,
+          step:0,nodes:0,goals:0,conceded:0,bossBeaten:false,over:false,
+          mods:{},log:[],match:null,pending:null,screen:"map",story:[]};
+}
+function has(s,id){return s.relics.indexOf(id)>=0}
+function statOf(s,p,which){
+  var v;
+  if(which==="best")v=Math.max(p.shot,p.pass,p.steal);
+  else v=p[which];
+  if(which==="pass"&&has(s,"pas"))v+=1;
+  if(which==="pass"&&has(s,"shchelchok"))v+=1;
+  if(which==="shot"&&has(s,"shchelchok"))v+=1;
+  if(which==="shot"&&has(s,"zuby"))v+=2;
+  if(which==="shot"&&s.mods.dullshot)v-=1;
+  return v;
+}
+function nodeOptions(s){
+  if(s.step>=6)return [{kind:"boss",club:s.w.boss.club}];
+  var p=s.w.plan[s.step],out=[],mi=0;
+  for(var i=0;i<2;i++){
+    var k=p[i],o={kind:k};
+    if(k==="match"||k==="derby"){o.club=s.w.opponents[(s.step*2+mi)%s.w.opponents.length];mi++}
+    out.push(o);
+  }
+  return out;
+}
+
+// ---- матч ----
+function startMatch(s,node){
+  var kind=node.kind==="boss"?"boss":node.kind;
+  var opp=oppOf(s.w,node.club,kind);
+  if(s.mods.soft)opp.def-=s.mods.soft;
+  if(s.mods.rough)opp.def-=3;
+  if(kind==="boss"&&(s.w.boss.mod.id==="wall"||s.w.boss.mod.id==="goalie"))opp.def+=s.w.boss.mod.id==="wall"?2:0;
+  s.match={opp:opp,kind:kind,period:1,ep:1,us:0,them:0,bonus:0,penUs:0,penThem:0,grind:0,
+           deck:[],hand:[],disc:[],ticker:[],firstPen:true,done:false,won:null};
+  s.line.forEach(function(p){p.sat=false});
+  buildDeck(s);
+  draw(s);
+  s.screen="match";
+  say(s,"Матч с «"+byId[opp.club].n+"». "+(kind==="boss"?"Босс недели: "+s.w.boss.mod.n+". ":"")+"Порог "+opp.def+".");
+  return s;
+}
+function buildDeck(s){
+  var m=s.match,cards=[];
+  s.line.forEach(function(p,i){
+    if(p.sat||p.stam<=0)return;
+    cards.push({o:i},{o:i});
+  });
+  m.deck=shuffled(s.rngState,cards); m.disc=[];
+}
+function draw(s){
+  var m=s.match;
+  while(m.hand.length<3){
+    if(!m.deck.length){
+      if(!m.disc.length)break;
+      m.deck=shuffled(s.rngState,m.disc.filter(function(c){return !s.line[c.o].sat})); m.disc=[];
+      if(!m.deck.length)break;
+    }
+    var c=m.deck.pop();
+    if(s.line[c.o].sat){continue}
+    m.hand.push(c);
+  }
+}
+function cardOf(s,c){return c.o<0?FALLBACK:archById[s.line[c.o].arch].card}
+function powerOf(s,c){
+  var m=s.match,p=c.o<0?{shot:0,pass:0,steal:0}:s.line[c.o],card=cardOf(s,c),v=card.base;
+  v+=statOf(s,p,card.stat);
+  if(m.period===1&&has(s,"steny"))v+=2;
+  if(m.penThem>0)v+=has(s,"brigada")?3:1;
+  if(s.mods.rough)v-=1;
+  v+=m.bonus;
+  if(card.fx==="rebound"&&m.bonus>0)v+=3;
+  return v;
+}
+function thresholdOf(s){
+  var m=s.match,t=m.opp.def-m.grind;
+  if(m.penUs>0)t+=3;
+  if(m.kind==="boss"){
+    var id=s.w.boss.mod.id;
+    if(id==="press"&&m.ep===1)t+=2;
+    if(id==="home"&&m.period===1)t+=3;
+  }
+  return t;
+}
+function say(s,t){s.match&&s.match.ticker.unshift(t)}
+
+function playCard(s,handIdx){
+  var m=s.match;
+  if(!m||m.done)return s;
+  var c=m.hand[handIdx]; if(!c)return s;
+  var card=cardOf(s,c),p=c.o<0?null:s.line[c.o];
+  var power=powerOf(s,c),thr=thresholdOf(s);
+  var roll=ri(s.rngState,4);
+  var total=power+roll;
+  var goalGap=2+(has(s,"pyatak")?-1:0)+(m.kind==="boss"&&s.w.boss.mod.id==="goalie"?1:0);
+  var name=(p?"№"+p.num+" ":"")+card.n;
+  m.hand.splice(handIdx,1); m.disc.push(c);
+  if(p){p.stam-=(card.fx==="costly"?2:1); if(p.stam<=0){p.stam=0;p.sat=true;
+    m.hand=m.hand.filter(function(h){return h.o!==c.o});
+    say(s,"№"+p.num+" сел: силы кончились.");}}
+  m.bonus=0; var wasPenThem=m.penThem;
+  if(m.penUs>0)m.penUs--; if(m.penThem>0)m.penThem--;
+
+  if(total>=thr+goalGap){
+    m.us++; s.goals++;
+    say(s,"<b>ГОЛ!</b> "+name+" — "+total+" против "+thr+".");
+  }else if(total>=thr){
+    m.bonus=card.fx==="bigmoment"?3:2;
+    if(card.fx==="grind"){m.grind+=2+(has(s,"tafguy")?1:0);say(s,name+": прижали. Оборона просела до "+(m.opp.def-m.grind)+".")}
+    else say(s,name+": момент, "+total+" против "+thr+". Следующий эпизод сильнее.");
+  }else{
+    var deep=total<thr-4;
+    if(deep&&card.fx!=="safe"){
+      var shielded=s.mods.shield||(has(s,"svistok")&&m.firstPen);
+      if(shielded){m.firstPen=false;s.mods.shield=0;say(s,name+": обрез, но свисток промолчал.")}
+      else{m.penUs=(m.kind==="boss"&&s.w.boss.mod.id==="dirty")?2:1;say(s,name+": обрез и удаление. Меньшинство.")}
+    }else if(card.fx==="provoke"&&ri(s.rngState,2)===0){
+      m.penThem=1;say(s,name+": поддел — удалили соперника. Большинство.");
+    }else if(card.fx==="safe"||(m.kind==="boss"&&s.w.boss.mod.id==="wall")){
+      say(s,name+": не вышло, "+total+" против "+thr+". Но и контратаки нет.");
+    }else{
+      // контратака только на провале с разрывом от 2: иначе соперник забивает чаще нас
+      var gk=11+(has(s,"sukhar")&&m.them===0?2:0);
+      var chance=ri(s.rngState,6)+Math.floor((27-m.opp.place)/9)
+        +(m.kind==="boss"&&s.w.boss.mod.id==="fast"?1:0)-(gk>11?1:0)-(wasPenThem>0?1:0);
+      if(total<=thr-2&&chance>=4){m.them++;s.conceded++;say(s,name+": потеря — и нам забили в ответ.")}
+      else say(s,name+": потеря, но вратарь выручил.");
+    }
+  }
+  m.ep++;
+  if(m.ep>3){
+    m.ep=1; m.period++;
+    if(m.period<=3){
+      var back=has(s,"terpenie")?3:2;
+      s.line.forEach(function(x){if(!x.sat)x.stam=Math.min(x.stamMax,x.stam+back)});
+      m.grind=0;
+      say(s,"Перерыв. "+m.period+"-й период, счёт "+m.us+":"+m.them+".");
+    }
+  }
+  if(m.period>3)finishMatch(s); else draw(s);
+  if(!m.done&&!m.hand.length){m.hand.push({o:-1})}
+  return s;
+}
+function finishMatch(s){
+  var m=s.match; m.done=true;
+  if(m.us===m.them){
+    var vet=s.line.some(function(p){return p.arch==="veteran"});
+    var best=Math.max.apply(null,s.line.map(function(p){return p.shot}));
+    var a=0,b=0;
+    for(var i=0;i<5;i++){
+      if(ri(s.rngState,7)+Math.floor(best/2)+(vet?2:0)>=7)a++;
+      if(ri(s.rngState,7)+Math.floor(m.opp.atk/2)>=7)b++;
+      if(i>=2&&a!==b)break;
+    }
+    if(a===b)a++;
+    m.us+=a>b?1:0; m.them+=b>a?1:0;
+    say(s,"Буллиты: "+a+"—"+b+".");
+  }
+  m.won=m.us>m.them;
+  if(m.won){
+    var pay=m.kind==="boss"?25:(m.kind==="derby"?15:10);
+    s.coin+=pay; s.nodes++;
+    if(m.kind==="boss"){s.bossBeaten=true;s.over=true}
+    s.story.push("Победа над «"+byId[m.opp.club].n+"» "+m.us+":"+m.them);
+    say(s,"Победа "+m.us+":"+m.them+". +"+pay+" шайб.");
+  }else{
+    s.lives--;
+    s.story.push("Поражение от «"+byId[m.opp.club].n+"» "+m.us+":"+m.them);
+    say(s,"Поражение "+m.us+":"+m.them+". Жизней осталось "+s.lives+".");
+    if(s.lives<=0)s.over=true;
+  }
+  s.mods={};
+  s.screen="matchEnd";
+}
+// после матча силы возвращаются до половины максимума — иначе лазарет и «Физика» ничего не решают
+function afterNode(s){
+  s.line.forEach(function(p){p.sat=false;p.stam=Math.max(p.stam,Math.ceil(p.stamMax/2))});
+  s.step++;
+  s.match=null;
+  s.screen=s.over?"end":"map";
+  return s;
+}
+function doTraining(s,which){
+  if(which==="stat"){
+    var i=ri(s.rngState,5),p=s.line[i],k=["shot","pass","steal"][ri(s.rngState,3)];
+    p[k]+=1;
+    s.story.push("Тренировка: №"+p.num+" прибавил");
+  }else{
+    s.line.forEach(function(p){p.stamMax+=1;p.stam+=1});
+    s.story.push("Тренировка на выносливость");
+  }
+  s.nodes++; return afterNode(s);
+}
+function doInfirmary(s){
+  s.line.forEach(function(p){p.stam=p.stamMax});
+  s.nodes++; s.story.push("Лазарет: звено свежее");
+  return afterNode(s);
+}
+function shopOffers(s){
+  var out=[],i=0;
+  while(out.length<3&&i<s.w.shop.length){
+    var id=s.w.shop[(s.step+i)%s.w.shop.length];
+    if(!has(s,id)&&out.indexOf(id)<0)out.push(id);
+    i++;
+  }
+  return out;
+}
+function buy(s,id){
+  var r=relicById[id];
+  if(!r||s.coin<r.cost||has(s,id))return s;
+  s.coin-=r.cost; s.relics.push(id);
+  if(id==="fizika")s.line.forEach(function(p){p.stamMax+=1;p.stam+=1});
+  if(id==="zuby")s.line.forEach(function(p){p.stamMax=Math.max(1,p.stamMax-1);p.stam=Math.min(p.stam,p.stamMax)});
+  s.story.push("Взяли приём «"+r.n+"»");
+  return s;
+}
+function heal(s){
+  var cost=has(s,"avtobus")?0:20;
+  if(s.coin<cost)return s;
+  s.coin-=cost; s.line.forEach(function(p){p.stam=Math.min(p.stamMax,p.stam+2)});
+  return s;
+}
+function eventOf(s){return EVENTS.filter(function(e){return e.id===s.w.events[s.step%s.w.events.length]})[0]}
+function chooseEvent(s,i){
+  var e=eventOf(s),o=e.opts[i],f=o.fx||{};
+  if(f.stam)s.line.forEach(function(p){p.stam=Math.max(0,Math.min(p.stamMax,p.stam+f.stam))});
+  if(f.coin)s.coin=Math.max(0,s.coin+f.coin);
+  if(f.shield)s.mods.shield=1;
+  if(f.soft)s.mods.soft=f.soft;
+  if(f.rough)s.mods.rough=1;
+  if(f.dullshot)s.mods.dullshot=1;
+  if(f.boost){var p=s.line[ri(s.rngState,5)];p.shot+=1}
+  if(f.relic){var free=RELICS.filter(function(r){return !has(s,r.id)});if(free.length)buyFree(s,free[ri(s.rngState,free.length)].id)}
+  s.nodes++; s.story.push(e.n+" → "+o.t);
+  return afterNode(s);
+}
+function buyFree(s,id){var c=s.coin;s.coin=99999;buy(s,id);s.coin=c}
+function finalScore(s){
+  var left=s.line.reduce(function(a,p){return a+p.stam},0);
+  return s.nodes*10+s.goals*5-s.conceded*2+(s.bossBeaten?50:0)+left;
+}
+// --- engine end -------------------------------------------------------------
+
+// ---- экраны ----
+var S=null,WEEKSEED="turne:3",PICK={club:null,arch:[]},BEST=null;
+try{var raw=localStorage.getItem("turne");if(raw){var j=JSON.parse(raw);PICK.club=j.club||null;BEST=j.best||null}}catch(e){}
+function save(){try{localStorage.setItem("turne",JSON.stringify({club:PICK.club,best:BEST}))}catch(e){}}
+var app=document.getElementById("app");
+function esc(t){return String(t==null?"":t).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
+function logo(id,cls){
+  var c=byId[id];
+  if(!c)return "";
+  var ext=LOGO[id]||"png";
+  return '<img class="emb '+(cls||"")+'" src="logos/'+id+'.'+ext+'" alt="'+esc(c.n)+'" loading="lazy">';
+}
+function skater(id){return '<img class="sk" src="players/clubs/'+id+'-skater.webp" alt="" loading="lazy">'}
+function bars(p){
+  var out="";
+  for(var i=0;i<p.stamMax;i++)out+='<i class="'+(i<p.stam?"on":"")+'"></i>';
+  return '<div class="bars">'+out+'</div>';
+}
+
+function render(){
+  var html="";
+  if(!S)html=PICK.club?screenDraft():screenClub();
+  else if(S.screen==="map")html=screenMap();
+  else if(S.screen==="match")html=screenMatch();
+  else if(S.screen==="matchEnd")html=screenMatchEnd();
+  else if(S.screen==="shop")html=screenShop();
+  else if(S.screen==="event")html=screenEvent();
+  else if(S.screen==="training")html=screenTraining();
+  else if(S.screen==="end")html=screenEnd();
+  app.innerHTML=html;
+}
+function head(sub){
+  var c=byId[PICK.club];
+  return '<div class="row" style="justify-content:space-between;margin-bottom:12px">'
+    +'<div class="row">'+(c?logo(c.id):"")+'<div><h1>Турне</h1><div class="note">'+esc(sub||"")+'</div></div></div>'
+    +'<span class="pill num">'+esc(WEEKSEED)+'</span></div>';
+}
+function screenClub(){
+  return head("Прототип. Выберите клуб — за него едете по лиге")
+    +'<div class="grid clubs">'+CLUBS.map(function(c){
+      return '<button class="club" data-club="'+c.id+'" aria-pressed="false">'+logo(c.id)+'<span>'+esc(c.a)+'</span></button>';
+    }).join("")+'</div>';
+}
+function screenDraft(){
+  var w=weekFor(makeWeek(WEEKSEED),PICK.club),boss=byId[w.boss.club];
+  var picked=PICK.arch;
+  return head("Неделя готова. Соберите звено: пять из восьми")
+    +'<div class="card col" style="margin-bottom:12px">'
+      +'<div class="lbl">Босс недели</div>'
+      +'<div class="row">'+logo(boss.id,"lg")+'<div><b>'+esc(boss.n)+'</b><div class="note">'
+      +esc(w.boss.mod.n)+' — '+esc(w.boss.mod.t)+'</div></div></div>'
+      +'<div class="sep"></div><div class="lbl">Соперники в пути</div>'
+      +'<div class="row" style="flex-wrap:wrap">'+w.opponents.slice(0,6).map(function(id){return logo(id)}).join("")+'</div>'
+    +'</div>'
+    +'<div class="col">'+w.draft.map(function(id){
+      var a=archById[id],on=picked.indexOf(id)>=0;
+      return '<button class="arch" data-arch="'+id+'" aria-pressed="'+on+'">'
+        +skater(PICK.club)
+        +'<div><b>'+esc(a.n)+'</b><div class="note">'+esc(a.card.n)+' · база '+a.card.base+'</div>'
+        +'<div class="stats">бр <b>'+a.shot+'</b> пас <b>'+a.pass+'</b> отб <b>'+a.steal+'</b> сил <b>'+(a.stam+1)+'</b></div></div>'
+        +'<span class="pill '+(on?"hot":"")+'">'+(on?"в звене":"взять")+'</span></button>';
+    }).join("")+'</div>'
+    +'<div style="margin-top:14px"><button class="btn" id="go" '+(picked.length===5?"":"disabled")+'>'
+    +(picked.length===5?"Поехали":"Выбрано "+picked.length+" из 5")+'</button></div>'
+    +'<div class="note" style="margin-top:8px">Сид недели один на всю лигу: карта, предложения и сложность у всех одинаковые.</div>';
+}
+function mapRows(){
+  var names={match:"Матч",derby:"Дерби",training:"Тренировка",shop:"Раздевалка",event:"Событие",
+             infirmary:"Лазарет",boss:"Босс недели"};
+  var out="";
+  for(var i=0;i<7;i++){
+    var state=i<S.step?"done":(i===S.step?"now":"");
+    var opts=i<S.step?null:(i===S.step?nodeOptions(S):null);
+    var body;
+    if(i<S.step)body='<div class="note">'+esc(S.story[i]||"пройдено")+'</div>';
+    else if(i===S.step)body='<div class="col">'+opts.map(function(o,k){
+        var cl=o.club?byId[o.club]:null;
+        var sub=o.kind==="derby"?"Сложнее, +15 шайб":(o.kind==="boss"?S.w.boss.mod.n:(names[o.kind]||""));
+        return '<button class="card node" data-node="'+k+'"><div class="row">'
+          +(cl?logo(cl.id):'<span class="emb abbr">'+esc(names[o.kind].slice(0,3))+'</span>')
+          +'<div><div class="lbl">'+esc(names[o.kind])+'</div><b>'+esc(cl?cl.n:names[o.kind])+'</b>'
+          +'<div class="note">'+esc(cl?(sub+" · "+cl.place+"-е место, порог "+oppOf(S.w,cl.id,o.kind==="derby"?"derby":(o.kind==="boss"?"boss":"match")).def):nodeHint(o.kind))+'</div></div></div></button>';
+      }).join("")+'</div>';
+    else body='<div class="note">'+(i===6?"Босс":"Два пути")+'</div>';
+    out+='<div class="step"><div class="dot '+state+'"></div><div>'+body+'</div></div>';
+  }
+  return out;
+}
+function nodeHint(k){
+  return {training:"+1 к стату или +1 выносливости всем",shop:"Приёмы и лечение за шайбы",
+          event:"Выбор на развилке",infirmary:"Силы до максимума"}[k]||"";
+}
+function screenMap(){
+  var c=byId[S.club];
+  return head("Узел "+(S.step+1)+" из 7")
+    +'<div class="card row" style="justify-content:space-between;margin-bottom:12px">'
+      +'<span class="pill num">🏒 '+S.coin+'</span>'
+      +'<span class="pill num">Жизни '+S.lives+'/2</span>'
+      +'<span class="pill num">Голы '+S.goals+'</span>'
+      +'<span class="pill num">Очки '+finalScore(S)+'</span></div>'
+    +(S.relics.length?'<div class="relics" style="margin-bottom:12px">'+S.relics.map(function(id){
+        return '<span class="pill mint">'+esc(relicById[id].n)+'</span>'}).join("")+'</div>':"")
+    +'<div class="line card" style="margin-bottom:12px">'+S.line.map(function(p){
+      return '<div class="pl'+(p.sat?" sat":"")+'">'+skater(S.club)+'<em>№'+p.num+'</em>'+bars(p)+'</div>'}).join("")+'</div>'
+    +'<div class="col">'+mapRows()+'</div>';
+}
+function screenMatch(){
+  var m=S.match,us=byId[S.club],them=byId[m.opp.club],thr=thresholdOf(S);
+  return head("")
+    +'<div class="board" style="margin-bottom:10px">'
+      +'<div class="side">'+logo(us.id,"lg")+'<span>'+esc(us.a)+'</span></div>'
+      +'<div><div class="score'+(m.bonus?" goal":"")+'">'+m.us+':'+m.them+'</div>'
+        +'<div style="text-align:center;font:700 11px/1.2 var(--body);color:#000">'
+        +m.period+'-й период · эпизод '+m.ep+'</div></div>'
+      +'<div class="side">'+logo(them.id,"lg")+'<span>'+esc(them.a)+'</span></div></div>'
+    +'<div class="row" style="justify-content:space-between;margin-bottom:10px;flex-wrap:wrap">'
+      +'<span class="pill num">Порог '+thr+'</span>'
+      +(m.bonus?'<span class="pill hot">Момент +'+m.bonus+'</span>':"")
+      +(m.penUs?'<span class="pill lav">Меньшинство</span>':"")
+      +(m.penThem?'<span class="pill mint">Большинство</span>':"")
+      +'<span class="pill num">🏒 '+S.coin+'</span></div>'
+    +'<div class="line card" style="margin-bottom:10px">'+S.line.map(function(p){
+      return '<div class="pl'+(p.sat?" sat":"")+'">'+skater(S.club)+'<em>№'+p.num+'</em>'+bars(p)+'</div>'}).join("")+'</div>'
+    +'<div class="hand" style="margin-bottom:10px">'+m.hand.map(function(c,i){
+      var card=cardOf(S,c),p=c.o<0?null:S.line[c.o],pw=powerOf(S,c);
+      return '<button class="pc" data-card="'+i+'"><div><b>'+esc(card.n)+'</b>'
+        +'<span class="mut">'+(p?"№"+p.num+" · ":"")+esc(card.note)+'</span></div>'
+        +'<span class="pow num">'+pw+'<span style="font:500 11px/1 var(--body)">+к</span></span></button>';
+    }).join("")+'</div>'
+    +'<div class="ticker">'+m.ticker.slice(0,6).map(function(t){return '<div>'+t+'</div>'}).join("")+'</div>';
+}
+function screenMatchEnd(){
+  var m=S.match;
+  return head("")
+    +'<div class="card col"><div class="lbl">'+(m.won?"Победа":"Поражение")+'</div>'
+    +'<div class="fin">'+m.us+':'+m.them+'</div>'
+    +'<div class="note">'+esc(byId[S.club].n+" — "+byId[m.opp.club].n)+'</div>'
+    +'<div class="sep"></div><div class="ticker">'+m.ticker.slice(0,8).map(function(t){return '<div>'+t+'</div>'}).join("")+'</div></div>'
+    +'<div style="margin-top:12px"><button class="btn" id="next">'+(S.over?"Итог забега":"Дальше по карте")+'</button></div>';
+}
+function screenShop(){
+  var offers=shopOffers(S),healCost=has(S,"avtobus")?0:20;
+  return head("Раздевалка")
+    +'<div class="card row" style="justify-content:space-between;margin-bottom:12px">'
+      +'<span class="pill num">🏒 '+S.coin+'</span><span class="note">Приёмы остаются до конца забега</span></div>'
+    +'<div class="col">'+offers.map(function(id){
+      var r=relicById[id],can=S.coin>=r.cost;
+      return '<button class="card node" data-buy="'+id+'" '+(can?"":"disabled")+'><div class="row" style="justify-content:space-between">'
+        +'<div><b>'+esc(r.n)+'</b><div class="note">'+esc(r.t)+'</div></div>'
+        +'<span class="pill '+(can?"hot":"")+'">'+r.cost+'</span></div></button>'}).join("")
+      +'<button class="card node" data-heal="1" '+(S.coin>=healCost?"":"disabled")+'>'
+      +'<div class="row" style="justify-content:space-between"><div><b>Лечение</b>'
+      +'<div class="note">+2 силы всем</div></div><span class="pill">'+healCost+'</span></div></button>'
+    +'</div>'
+    +'<div style="margin-top:12px"><button class="btn ghost" id="next">Дальше</button></div>';
+}
+function screenEvent(){
+  var e=eventOf(S);
+  return head("Событие")
+    +'<div class="card col"><h2>'+esc(e.n)+'</h2><div>'+esc(e.t)+'</div></div>'
+    +'<div class="col" style="margin-top:12px">'+e.opts.map(function(o,i){
+      return '<button class="card node" data-opt="'+i+'"><b>'+esc(o.t)+'</b>'
+        +'<div class="note">'+esc(o.d)+'</div></button>'}).join("")+'</div>';
+}
+function screenTraining(){
+  return head("Тренировка")
+    +'<div class="col">'
+      +'<button class="card node" data-train="stat"><b>Работа над броском</b>'
+      +'<div class="note">+1 к случайному стату одного игрока</div></button>'
+      +'<button class="card node" data-train="stam"><b>Кросс</b>'
+      +'<div class="note">+1 выносливости всему звену</div></button></div>';
+}
+function screenEnd(){
+  var pts=finalScore(S),rec=BEST&&BEST.points>pts?BEST:{points:pts,club:S.club};
+  if(!BEST||pts>BEST.points){BEST={points:pts,club:S.club};save()}
+  var share="Турне "+WEEKSEED+": "+S.nodes+" узлов, "+pts+" очков"+(S.bossBeaten?", босс пройден":"");
+  return head(S.bossBeaten?"Босс пройден":"Забег окончен")
+    +'<div class="card col"><div class="lbl">Очки недели</div><div class="fin">'+pts+'</div>'
+    +'<div class="note">'+S.nodes+' узлов · '+S.goals+' голов · '+S.conceded+' пропущено'
+    +(S.bossBeaten?' · +50 за босса':'')+'</div><div class="sep"></div>'
+    +'<div class="lbl">Как прошло</div>'+S.story.map(function(t){return '<div class="note">— '+esc(t)+'</div>'}).join("")
+    +'</div>'
+    +'<div class="card col" style="margin-top:12px"><div class="lbl">Личный рекорд</div>'
+    +'<div class="row">'+logo(rec.club)+'<b class="num">'+rec.points+'</b></div>'
+    +'<div class="note" id="sh">'+esc(share)+'</div>'
+    +'<button class="btn ghost" id="copy">Скопировать результат</button></div>'
+    +'<div class="col" style="margin-top:12px"><button class="btn" id="again">Ещё забег на этой неделе</button>'
+    +'<button class="btn ghost" id="nextweek">Другая неделя (тест)</button></div>';
+}
+
+// ---- ввод ----
+app.addEventListener("click",function(ev){
+  var t=ev.target.closest("[data-club],[data-arch],#go,[data-node],[data-card],#next,[data-buy],[data-heal],[data-opt],[data-train],#again,#nextweek,#copy");
+  if(!t)return;
+  if(t.dataset.club){PICK.club=t.dataset.club;PICK.arch=[];save();return render()}
+  if(t.dataset.arch){
+    var id=t.dataset.arch,i=PICK.arch.indexOf(id);
+    if(i>=0)PICK.arch.splice(i,1); else if(PICK.arch.length<5)PICK.arch.push(id);
+    return render();
+  }
+  if(t.id==="go"){S=newRun(WEEKSEED,PICK.club,PICK.arch);return render()}
+  if(t.dataset.node!==undefined){
+    var o=nodeOptions(S)[+t.dataset.node];
+    if(o.kind==="match"||o.kind==="derby"||o.kind==="boss")startMatch(S,o);
+    else if(o.kind==="shop")S.screen="shop";
+    else if(o.kind==="event")S.screen="event";
+    else if(o.kind==="training")S.screen="training";
+    else if(o.kind==="infirmary")doInfirmary(S);
+    return render();
+  }
+  if(t.dataset.card!==undefined){playCard(S,+t.dataset.card);return render()}
+  if(t.id==="next"){
+    if(S.screen==="shop"){S.nodes++;S.story.push("Раздевалка: "+(S.relics.length?"взяли приёмы":"ничего не взяли"));afterNode(S)}
+    else afterNode(S);
+    return render();
+  }
+  if(t.dataset.buy){buy(S,t.dataset.buy);return render()}
+  if(t.dataset.heal){heal(S);return render()}
+  if(t.dataset.opt!==undefined){chooseEvent(S,+t.dataset.opt);return render()}
+  if(t.dataset.train){doTraining(S,t.dataset.train);return render()}
+  if(t.id==="again"){S=null;PICK.arch=[];return render()}
+  if(t.id==="nextweek"){
+    WEEKSEED="turne:"+(1+Math.floor(Math.random()*24));S=null;PICK.arch=[];return render();
+  }
+  if(t.id==="copy"){
+    var txt=document.getElementById("sh").textContent;
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(txt).then(function(){t.textContent="Скопировано"},function(){sel()});
+    }else sel();
+    function sel(){var r=document.createRange();r.selectNode(document.getElementById("sh"));
+      var s=getSelection();s.removeAllRanges();s.addRange(r);t.textContent="Выделено — скопируйте"}
+    return;
+  }
+});
+render();
+</script>

@@ -32,7 +32,7 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `leaders.json` | Лидеры лиги по шести показателям, по 30 игроков (ADR-009). В git: сейчас НМХЛ 2025/26, после первого тура РХЛ его заменяет задание мини-аппа |
 | `past_clubs.json` | Клубы прошлых сезонов, которых нет в РХЛ: написания и эмблема из `webapp/logos/past/` (ADR-009) |
 | `teams.json` | 26 команд лиги: конференция, город, id на r-hockey, варианты написания, прежние названия (`former`), цвета формы (`colors`), проводник онбординга (`mascot`: имя и фразы, ADR-011) |
-| `zveno/` | Движок фэнтези «Звено» (ADR-014), только stdlib: константы `rules.py`, туры и дедлайны `tours.py`, очки за матч `points.py`, стоимость `prices.py`, приоры 25/26 `prior.py` → `zveno/data/prior_2526.json`, конструктор названий `names.py`, правила менеджера для сервера `manager.py` |
+| `zveno/` | Движок фэнтези «Звено» (ADR-014), **паркуется** вместе с `build_zveno.py` (из задания Pages убран); туры и конструктор названий переезжают в «Наш лёд». Только stdlib: константы `rules.py`, туры и дедлайны `tours.py`, очки за матч `points.py`, стоимость `prices.py`, приоры 25/26 `prior.py` → `zveno/data/prior_2526.json`, конструктор названий `names.py`, правила менеджера для сервера `manager.py` |
 | `build_zveno.py` | Собирает `webapp/data/zveno/`: `tours.json`, `pool.json`, `matches.json`, `names.json`. В Pages-задании сразу после `build_data.py` |
 | `docs/zveno/contract.md` | Контракт частей «Звена»: опубликованные данные, функции движка, API сервера, бот |
 | `rhockey.py` | Календарь всей лиги с r-hockey.ru — временно, до открытия rhl.fhr.ru |
@@ -44,7 +44,8 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `history.json` | Прошлые сезоны, команды уже в id из `teams.json`. В git, пересобирается руками раз в сезон |
 | `history_protocols.json` | Протоколы прошлых матчей из «Последних встреч» для их разбора (ADR-008). В git, докачивается `history.py --protocols` |
 | `webapp/` | Мини-апп: `index.html`, `style.css`, `app.js`, без сборки. Публикуется на GitHub Pages |
-| `webapp/zveno.js`, `webapp/zveno.css` | Вкладка «Звено» (ADR-014): Пролог по опубликованным `data/zveno/*.json` без сервера, экраны сезона поверх API из `window.ZVENO_API` (переменная Pages `ZVENO_API`) |
+| `webapp/led.js`, `webapp/led.css` | Вкладка «Лёд» — игра «Наш лёд» (ADR-017): карта зон, расстановка сил на тур, поддержка, свой клуб. Пролог считает всё на устройстве; сервер подставляется переменной Pages `LED_API` |
+| `webapp/zveno.js`, `webapp/zveno.css` | Вкладка «Звено» (ADR-014) — **паркуется**: в мини-апп не подключена, лежит до возможного возврата фэнтези |
 | `webapp/data/zveno/mock/` | Мок-сервер `api.js` и выдуманные данные «Звена» для разработки без сервера: `?zveno_mock=1`, `=team`, `=open`, `=prolog`, `=start`, `=none`. В git через `add -f`: `webapp/data/` в `.gitignore` |
 | `webapp/brand/` | Иконка для экрана загрузки Telegram и фавиконки (`icon.svg`, `icon-512.png`) |
 | `webapp/logos/` | Эмблемы всех 26 клубов, 200×200 PNG с прозрачным фоном, путь — поле `logo` в `teams.json` |

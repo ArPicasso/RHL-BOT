@@ -64,29 +64,23 @@ jobs:
           APP_LINK: ${{ vars.APP_LINK }}
         run: python build_data.py
 
-      # «Звено» (ADR-014): туры, пул наклеек и матчи в webapp/data/zveno/ из тех же протоколов.
-      # Упадёт — мини-апп всё равно публикуется, «Звено» остаётся без данных до следующего часа
-      - name: Собрать данные «Звена»
-        continue-on-error: true
-        run: python build_zveno.py
-
       # Pages отдаёт файлы с кэшем на 10 минут, а Telegram держит их ещё дольше. Метка версии в адресе
       # заставляет взять свежие app.js и style.css вместе с новым index.html, иначе они расходятся
-      # Тот же шаг подставляет базу API «Звена» (ADR-014): Settings → Variables → ZVENO_API=https://…/api/zveno.
-      # Пусто — мини-апп показывает только Пролог
+      # Тот же шаг подставляет базу API «Нашего льда» (ADR-017): Settings → Variables → LED_API=https://…/api/led.
+      # Пусто — мини-апп показывает только Пролог, он считает всё на устройстве
       - name: Метка версии для кэша
         env:
-          ZVENO_API: ${{ vars.ZVENO_API }}
+          LED_API: ${{ vars.LED_API }}
         run: |
           v="${GITHUB_SHA::8}"
           sed -i "s#href=\"style.css\"#href=\"style.css?v=$v\"#; s#src=\"app.js\"#src=\"app.js?v=$v\"#" webapp/index.html
-          sed -i "s#href=\"zveno.css\"#href=\"zveno.css?v=$v\"#; s#src=\"zveno.js\"#src=\"zveno.js?v=$v\"#" webapp/index.html
+          sed -i "s#href=\"led.css\"#href=\"led.css?v=$v\"#; s#src=\"led.js\"#src=\"led.js?v=$v\"#" webapp/index.html
           grep -q "app.js?v=$v" webapp/index.html && grep -q "style.css?v=$v" webapp/index.html
-          grep -q "zveno.js?v=$v" webapp/index.html && grep -q "zveno.css?v=$v" webapp/index.html
-          if [ -n "$ZVENO_API" ]; then
-            [[ "$ZVENO_API" =~ ^https://[A-Za-z0-9./_:-]+$ ]] || { echo "ZVENO_API — только https://адрес без пробелов и кавычек"; exit 1; }
-            sed -i "s#window.ZVENO_API = \"\";#window.ZVENO_API = \"$ZVENO_API\";#" webapp/index.html
-            grep -q "window.ZVENO_API = \"https://" webapp/index.html
+          grep -q "led.js?v=$v" webapp/index.html && grep -q "led.css?v=$v" webapp/index.html
+          if [ -n "$LED_API" ]; then
+            [[ "$LED_API" =~ ^https://[A-Za-z0-9./_:-]+$ ]] || { echo "LED_API — только https://адрес без пробелов и кавычек"; exit 1; }
+            sed -i "s#window.LED_API = \"\";#window.LED_API = \"$LED_API\";#" webapp/index.html
+            grep -q "window.LED_API = \"https://" webapp/index.html
           fi
 
       - uses: actions/upload-pages-artifact@v3

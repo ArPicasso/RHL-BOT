@@ -664,6 +664,39 @@ h1, .display {
   transform: rotate(45deg);
 }
 .coach-card.up .coach-tail { top: auto; bottom: -9px; border: 0; border-right: var(--line); border-bottom: var(--line); }
+/* Шаг «листай» (ADR-016): затемнение пропускает прокрутку страницы, нажатия по-прежнему ловит */
+.coach.scroll { touch-action: pan-y; overscroll-behavior: auto; }
+/* Жест в окне: метки над зонами касания историй или точка, которая ведёт след вверх. Нажатия — насквозь */
+.gest { position: absolute; pointer-events: none; }
+.gest.tight, .gest.off { display: none; }
+.gest b { display: block; padding: 5px 12px; border: 1px solid var(--ink); border-radius: 9999px; background: var(--paper); color: var(--ink); font: 700 13px/1.2 var(--ui); white-space: nowrap; }
+.gest-dot { position: relative; display: block; width: 22px; height: 22px; border: 2px solid var(--ink); border-radius: 50%; background: var(--paper); }
+.gest-dot.ghost { visibility: hidden; }
+.gest-tap .gest-l, .gest-tap .gest-r { position: absolute; top: 50%; display: grid; justify-items: center; gap: 10px; transform: translate(-50%, -50%); }
+.gest-tap .gest-l { left: 15%; }   /* середина зоны «назад» — левые 30% */
+.gest-tap .gest-r { left: 65%; }   /* середина зоны «дальше» — правые 70% */
+.gest-tap .gest-dot { animation: gest-press 1.2s ease-out infinite; }
+.gest-tap .gest-dot::after { content: ""; position: absolute; inset: -2px; border-radius: 50%; box-shadow: 0 0 0 2px var(--sun); animation: gest-ripple 1.2s ease-out infinite; }
+@keyframes gest-press { 0%, 30%, 100% { transform: none; } 12% { transform: scale(.82); } }
+@keyframes gest-ripple { 0%, 12% { transform: scale(1); opacity: 1; } 100% { transform: scale(2.4); opacity: 0; } }
+.gest-swipe .gest-dot, .gest-swipe .gest-trail { position: absolute; left: 50%; top: 72%; }
+.gest-swipe .gest-dot { margin: -11px 0 0 -11px; animation: gest-swipe 1.6s cubic-bezier(.4, 0, .2, 1) infinite; }
+.gest-swipe .gest-trail { width: 6px; height: var(--travel, 120px); margin: calc(-1 * var(--travel, 120px)) 0 0 -3px; border-radius: 9999px; background: var(--sun); transform-origin: 50% 100%; animation: gest-trail 1.6s cubic-bezier(.4, 0, .2, 1) infinite; }
+@keyframes gest-swipe {
+  0% { transform: scale(.6); opacity: 0; }
+  15% { transform: none; opacity: 1; }
+  65% { transform: translateY(calc(-1 * var(--travel, 120px))); opacity: 1; }
+  85%, 100% { transform: translateY(calc(-1 * var(--travel, 120px))); opacity: 0; }
+}
+@keyframes gest-trail {
+  0%, 15% { transform: scaleY(0); opacity: 1; }
+  65% { transform: none; opacity: 1; }
+  85%, 100% { transform: none; opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gest-tap .gest-dot, .gest-tap .gest-dot::after, .gest-swipe .gest-dot, .gest-swipe .gest-trail { animation: none; }
+  .gest-swipe .gest-dot { transform: translateY(calc(-1 * var(--travel, 120px))); }
+}
 /* Вкладка, о которой говорит тур, — над притемнением и с пульсирующей обводкой. Есть цель — пульсирует она.
    Меню в туре не нажимается: нажатие проходит на затемнение и считается промахом */
 .tabs.coach-on { z-index: 12; pointer-events: none; }
@@ -1234,6 +1267,7 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 .pack-zone.prev { left: 0; width: 30%; }
 .pack-zone.next { right: 0; width: 70%; }
 .pack-foot { margin: 12px 0 4px; text-align: center; font-size: 12px; color: var(--muted); }
+.pack-how { display: block; text-wrap: balance; }   /* не оставлять «клуб» одно на строке */
 
 /* prefers-reduced-motion: нажатие на карточку, пилюлю и кружок — без перехода, сразу конечное состояние */
 @media (prefers-reduced-motion: reduce) {

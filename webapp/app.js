@@ -875,7 +875,7 @@ function refreshStream(keep = false) {
 // ---------- ряд «Сегодня» (ADR-015, шаг 6) ----------
 // Кружки клубов со свежими постами, как истории: свой клуб, соперник, лига, дальше — у кого новее.
 // Кольцо --ember — есть посты новее прошлого просмотра. Нажатие — посты клуба листом, листаются
-// касанием: справа — дальше, слева — назад. Таймера автоперехода нет
+// касанием: справа — дальше, слева — назад; свайп вбок — соседний клуб (ADR-016). Таймера автоперехода нет
 
 const PACKS_KEY = "packs_seen";   // { клуб или "league": ISO последнего просмотренного поста }
 const PACK_HOURS = 48;
@@ -1040,7 +1040,7 @@ function showPack(dir) {
       <button type="button" class="pack-zone prev" data-pack-nav="-1" aria-label="Предыдущий пост"></button>
       <button type="button" class="pack-zone next" data-pack-nav="1" aria-label="Следующий пост"></button></div>
     <div class="pack-cta"><button type="button" class="btn" data-post="${esc(c.url)}">${c.media ? "Смотреть в канале" : "Читать в канале"}</button>
-    <p class="pack-foot">${esc(packName(p.key))} · ${ki + 1} из ${list.length}. Касание справа — дальше, слева — назад</p></div>`, dir);
+    <p class="pack-foot">${esc(packName(p.key))} · ${ki + 1} из ${list.length}<span class="pack-how">Справа — дальше, слева — назад, свайп — другой клуб</span></p></div>`, dir);
   // рамка одной высоты: отрезки и крестик не прыгают от поста к посту, кнопка в канал всегда на экране
   $("#sheet").classList.add("pack-open");
   watchFeedImages($("#sheet"));
@@ -1069,6 +1069,23 @@ function packNav(step) {
   showPack(step);
   const again = zone && $(`#sheet [data-pack-nav="${zone}"]`);
   if (again) again.focus({ preventScroll: true });
+}
+
+// Свайп вбок — соседний клуб (ADR-016): влево — следующий, вправо — предыдущий, с первого непросмотренного
+// поста. Вправо с первого клуба — на месте; влево с последнего — истории кончились, лист закрывается
+function packClub(step) {
+  const s = state.pack;
+  if (!s || !sheetOpen()) return;
+  const ki = s.ki + step;
+  if (ki < 0) return;
+  haptic();
+  if (ki >= s.list.length) {
+    state.pack = null;
+    return closeMatch();
+  }
+  s.ki = ki;
+  s.i = Math.max(0, s.list[ki].posts.findIndex((c) => !postSeen(c)));
+  showPack(step);
 }
 
 // Прилипли ли фильтры ленты: булавка перед ними ушла под бегущую строку — у пилюль появляется линия снизу
@@ -1547,12 +1564,16 @@ function renderOnboarding() {
 // имя и фразы — teams.json → mascot. Позы: hello — появление и знакомство, point — подсказки тура,
 // cheer — финал и отклик на нажатие, shrug — «нет данных» и «Не удалось загрузить». Нет талисмана —
 // карточка без картинки. Знакомство, вступление и финал тура — карточка по центру экрана
-const TOUR_KEY = "tour";         // "1" — пройден старый тур из трёх подсказок, "2" — тур по главам пройден или пропущен
-const TOUR_CH_KEY = "tour_ch";   // номера пройденных глав: «124» — для листа «Подсказки»
+// "1" — пройден старый тур из трёх подсказок, "2" — тур из четырёх глав, "3" — тур с главой «Лента»
+// пройден или пропущен (ADR-016). Значение только растёт: прошлым уровням — один раз карточка «Новое»
+const TOUR_KEY = "tour";
+const TOUR_CH_KEY = "tour_ch";   // номера пройденных глав по возрастанию: «1245» — для листа «Подсказки»
 const TOUR_AT_KEY = "tour_at";   // глава, на которой тур прервали (закрыли Telegram); только на устройстве
 const GUIDE_KEY = "guide";       // с чьим проводником болельщик уже знаком: id клуба
-const tourDone = () => lsGet(TOUR_KEY) === "2";
-const tourSeen = () => tourDone() || lsGet(TOUR_KEY) === "1";
+const TOUR_LEVEL = 3;
+const tourLevel = (v = lsGet(TOUR_KEY)) => (/^[1-3]$/.test(v || "") ? Number(v) : 0);
+const tourDone = () => tourLevel() >= TOUR_LEVEL;
+const tourSeen = () => tourLevel() > 0;
 const guideOf = (club) => (club && state.teams[club] && state.teams[club].mascot) || null;
 const guideSrc = (club, pose) => `mascots/${club}-${pose}.webp`;
 
@@ -1859,6 +1880,42 @@ const STEP = {
     text: () => "Разборов пока нет: они появятся, когда лига выложит протоколы первых матчей.",
   },
 
+  // «Лента» (ADR-016): истории — по-настоящему, ленту болельщик листает сам. Жест нарисован в окне
+  packs: {
+    key: "packs", screen: "home", kind: "pass", pose: "point", act: "Открыть истории", hit: "[data-pack]",
+    aim: onScreen('#packs .packs[role="group"]'),
+    text: () => "Это истории — свежие посты клубов из их каналов. Кольцо — есть новое. Нажми на кружок.",
+    press: () => { const p = packs()[0]; if (p) openPack(p.key); },
+  },
+  // окно — картинка поста (нет её — текст): тогда карточка встаёт под ней, а не закрывает историю
+  flip: {
+    key: "flip", screen: "story", kind: "pass", sheet: true, pose: "point", act: "Следующий пост", hit: "[data-pack-nav]",
+    gesture: "tap", hold: 700, holdOnPress: true,   // новый пост виден на месте, потом лист закрывается
+    aim: () => (state.pack ? inSheet("#sheet .pack-page") : null),
+    extend: (el) => [el.querySelector(".pack-img") || el.querySelector(".pack-text") || el], only: true,
+    text: () => "Касание справа — следующий пост, слева — назад. Свайп вбок — другой клуб. Таймера нет.",
+    press: () => packNav(1),
+  },
+  // окно — лист дня вместе с лентой лиги, выше экрана: карточка встаёт внизу, лента листается под ней
+  stream: {
+    key: "stream", screen: "home", kind: "swipe", pose: "point", act: "Листать", gesture: "swipe",
+    hold: 650, holdOnPress: true,
+    prep: async () => {
+      await leaveSheet();
+      if (state.tab !== "home") go("home");
+      if (state.streamFilter !== "all") {
+        state.streamFilter = "all";
+        refreshStream();
+      }
+    },
+    aim: () => firstShown($("#screen"), ["#feed", "#stream-wrap"]),
+    extend: () => [$("#stream-wrap")],
+    text: () => (streamHas()
+      ? "Ниже — лист дня о твоём клубе, под ним — лента лиги за неделю. Листай вниз, она подгрузится сама."
+      : "Ниже — лист дня о твоём клубе: матчи, очные встречи, посты каналов. Листай вниз."),
+    press: () => window.scrollBy({ top: Math.round(innerHeight * 0.6), behavior: calm() ? "auto" : "smooth" }),
+  },
+
   // III. Календарь и таблица
   filters: {
     key: "filters", screen: "calendar", kind: "look", pose: "point", aim: onScreen(".filterbar"),
@@ -1925,6 +1982,7 @@ const ICON_CH = {
   2: '<svg viewBox="0 0 24 24"><path d="M3.5 15.5h4v-5h4v3h4v-6h5"/><path d="M3.5 20h17"/></svg>',
   3: '<svg viewBox="0 0 24 24"><path d="M5 20V11M12 20V4M19 20v-6"/></svg>',
   4: '<svg viewBox="0 0 24 24"><rect x="4.5" y="3.5" width="15" height="17" rx="3"/><circle cx="12" cy="10" r="2.8"/><path d="M8 16.5c.8-1.6 2.2-2.4 4-2.4s3.2.8 4 2.4"/></svg>',
+  5: '<svg viewBox="0 0 24 24"><circle cx="7" cy="7" r="3.5"/><circle cx="17" cy="7" r="3.5"/><path d="M3.5 14h17M3.5 17.5h17M3.5 20.5h10"/></svg>',
 };
 
 // Лист, который открыл тур, закрывается перед сменой экрана
@@ -1979,6 +2037,18 @@ const TOUR = [
       return list;
     },
   },
+  // id глав хранятся в tour_ch и tour_at, поэтому «Лента» — пятая по номеру, но третья в очереди (ADR-016)
+  {
+    id: 5, title: "Истории и лента", short: "Лента", hint: "Как листать истории клубов и ленту лиги",
+    enter: async () => {
+      await leaveSheet();
+      if (state.tab !== "home") go("home");
+      else window.scrollTo(0, 0);
+      // ряд и лента обычно уже пришли вместе с «Главной»; нет — ждём не дольше, чем цель в листе
+      await Promise.race([Promise.all([loadStream(), loadFeed(state.fav)]), wait(SHEET_WAIT_MS)]);
+    },
+    steps: feedSteps,
+  },
   {
     id: 3, title: "Календарь и таблица", short: "Календарь", hint: "Фильтры календаря, лидеры лиги",
     enter: async () => {
@@ -1996,7 +2066,7 @@ const TOUR = [
     },
   },
   {
-    id: 4, title: "Паспорт болельщика", short: "Паспорт", hint: "Паспорт, истории, приглашение друга, настройки",
+    id: 4, title: "Паспорт болельщика", short: "Паспорт", hint: "Паспорт, история в Telegram, приглашение друга, настройки",
     enter: async () => {
       await leaveSheet();
       if (state.tab !== "me") go("me");
@@ -2007,14 +2077,26 @@ const TOUR = [
 ];
 const CHAPTER = Object.fromEntries(TOUR.map((ch) => [ch.id, ch]));
 const FULL = TOUR.map((ch) => ch.id);
+const FEED = 5;
+const MAIN = [1, 2, FEED];   // главное: до контрольной точки
+const ord = (id) => FULL.indexOf(id);   // место главы в очереди — не её номер
+
+// Шаги «Ленты» по данным: ряд «Сегодня» пуст — только лента; нет ни листа, ни ленты — глава пустая
+const streamHas = () => !!(state.stream && (state.stream.items || []).length);
+function feedSteps() {
+  const list = packs().length ? [STEP.packs, STEP.flip] : [];
+  const f = state.feed[state.fav];
+  if (streamHas() || (f && feedCards(f).length)) list.push(STEP.stream);
+  return list;
+}
 
 // Тур: chapters — очередь глав, seg — отрезки прогресса (продолжение показывает и пройденные),
-// final — финальная карточка (полная очередь), save — помнить главу и очередь на случай, если Telegram
-// закроют посреди тура
+// final — финальная карточка (полная очередь, в том числе прерванная очередь из четырёх глав), save —
+// помнить главу и очередь на случай, если Telegram закроют посреди тура
 function newTour({ chapters = FULL, seg = chapters, save = false } = {}) {
-  const t = { chapters, seg, final: seg.length === FULL.length, save, ci: -1, key: null, ctx: { route: null, single: chapters.length === 1 },
+  const t = { chapters, seg, final: [1, 2, 3, 4].every((c) => seg.includes(c)), save, ci: -1, key: null, ctx: { route: null, single: chapters.length === 1 },
     token: 0, screen: null, poses: {}, lastPose: "", misses: 0, cheer: false, away: false, sheet: false, busy: false,
-    primary: null, prog: null, saw2: false, checked: false };
+    primary: null, prog: null, sawMain: false, checked: false };
   // позы качаем заранее: shrug нужен и в ветках без данных
   for (const p of ["point", "cheer", "shrug"]) guideReady(state.fav, p).then((ok) => { t.poses[p] = ok; });
   syncRoute(t.ctx);
@@ -2025,16 +2107,23 @@ function newTour({ chapters = FULL, seg = chapters, save = false } = {}) {
 function startTour(fresh) {
   const t = state.tour = newTour({ save: true });
   const g = guideOf(state.fav);
-  const say = "Покажу главное: разбор матча, таблицу и твой паспорт. Минута-полторы, выйти можно в любой момент.";
+  const say = "Покажу главное: разбор матча, истории и ленту, таблицу и твой паспорт. Минуты две, выйти можно в любой момент.";
   t.primary = () => tourChapter(0);
   tourCard(t, fresh ? "cheer" : "hello", fresh || !g ? say : `Привет! Я ${esc(g.name)}. ${say}`, "Поехали", "Сам разберусь", segsHTML(t, 0));
 }
 
-// Прошли старый тур из трёх подсказок — один раз рассказываем о разборе матча
-function tourNews() {
-  const t = state.tour = newTour({ chapters: [1, 2], save: true });
+// Прошли тур раньше — один раз рассказываем, чему проводник научился: после старого тура из трёх
+// подсказок — разбор матча, истории и лента, после тура из четырёх глав — истории и лента (ADR-016).
+// Глава «Лента» без ряда и ленты пуста — тогда «Новое» ждёт следующего запуска
+async function tourNews() {
+  const old = tourLevel() === 1;
+  await Promise.race([Promise.all([loadStream(), loadFeed(state.fav)]), wait(SHEET_WAIT_MS)]);
+  if (state.tour || !state.fav || tourDone() || !$("#sheet").hidden) return;
+  if (!old && !feedSteps().length) return;
+  const t = state.tour = newTour({ chapters: old ? [1, 2, FEED] : [FEED], save: true });
   t.primary = () => tourChapter(0);
-  tourCard(t, "hello", "Я научился показывать разбор матча: голы, победную шайбу, статистику и составы. Показать?", "Покажи", "Не надо");
+  tourCard(t, "hello", old ? "Я научился показывать разбор матча, истории клубов и ленту. Показать?"
+    : "Я научился показывать истории клубов и ленту — как их листать. Показать?", "Покажи", "Не надо");
 }
 
 // Прерванный тур в tour_at: «глава:очередь» — «2:1234» или «1:12» («Новое»); старый формат — только глава
@@ -2071,6 +2160,7 @@ async function tourChapter(ci) {
   if (!t) return;
   const ch = CHAPTER[t.chapters[ci]];
   if (!ch) return tourFinish();
+  if (checkpointDue(t, ch.id)) return tourCheckpoint(ci);
   t.ci = ci;
   t.key = null;
   t.screen = null;
@@ -2085,16 +2175,18 @@ async function tourChapter(ci) {
   tourShow(list[0]);
 }
 
-// Контрольная точка после «Разбора матча»: главное показано — можно закончить через финал
-const checkpointDue = (t) => t.final && !t.checked && t.chapters[t.ci] === 2 && t.ci + 1 < t.chapters.length;
-async function tourCheckpoint() {
+// Контрольная точка — перед первой главой не из главного, если «Разбор» или «Ленту» досмотрели: главное
+// показано, можно закончить через финал. ci — глава, к которой она ведёт
+const checkpointDue = (t, id) => t.final && !t.checked && t.sawMain && !MAIN.includes(id);
+async function tourCheckpoint(ci) {
   const t = state.tour;
   if (!t) return;
-  const rest = t.chapters.slice(t.ci + 1);
+  const rest = t.chapters.slice(ci);
   t.checked = true;
   t.key = "checkpoint";
   t.screen = null;
   t.busy = true;
+  t.cheer = false;   // прыжок за «листай» уже не к чему: дальше карточка по центру
   saveAt(t, rest[0]);
   const token = ++t.token;
   coachDim("");
@@ -2102,9 +2194,9 @@ async function tourCheckpoint() {
   if (state.tour !== t || t.token !== token) return;
   const names = { 3: "таблица", 4: "твой паспорт" };
   const more = rest.length > 1 ? `Ещё две короткие главы — ${rest.map((c) => names[c]).join(" и ")}.` : `Ещё одна короткая глава — ${names[rest[0]]}.`;
-  t.primary = () => tourChapter(t.ci + 1);
+  t.primary = () => tourChapter(ci);
   t.busy = false;
-  tourCard(t, "point", `Это было главное. ${more} Показать?`, "Покажи", "Хватит", segsHTML(t, t.seg.indexOf(2) + 1), "final");
+  tourCard(t, "point", `Это было главное. ${more} Показать?`, "Покажи", "Хватит", segsHTML(t, Math.max(0, t.seg.indexOf(rest[0]))), "final");
 }
 
 const tabOf = (screen) => (TAB_ORDER.includes(screen) ? screen : "");
@@ -2114,15 +2206,17 @@ const stepOf = (t) => {
 };
 
 // Следующая глава в очереди — её короткое имя на кнопке последнего шага. Дальше контрольная точка
-// или финал — просто «Дальше»; «Готово» — только в конце одиночной главы
+// или финал — просто «Дальше»; «Готово» — только в конце одиночной главы. after — глава, после которой
+// ищем (по месту в очереди, не по номеру); без него — после текущей
 function nextChapter(t, after) {
   const r = t.ctx.route;
-  const empty = (c) => c === 2 && !t.ctx.single && r && r.kind !== "nodata" && !r.id;   // разбора нет — глава пропустится
-  return t.chapters.find((c, i) => (after == null ? i > t.ci : c > after) && !empty(c)) || null;
+  // разбора нет или ни ряда, ни ленты — глава пропустится
+  const empty = (c) => !t.ctx.single && ((c === 2 && r && r.kind !== "nodata" && !r.id) || (c === FEED && state.stream !== undefined && !feedSteps().length));
+  return t.chapters.find((c, i) => (after == null ? i > t.ci : ord(c) > ord(after)) && !empty(c)) || null;
 }
 function nextTitle(t, after) {
-  if (after == null && checkpointDue(t) && t.saw2) return "Дальше";
   const id = nextChapter(t, after);
+  if (id && checkpointDue(t, id)) return "Дальше";
   return id ? `Дальше: ${CHAPTER[id].short}` : t.final ? "Дальше" : "Готово";
 }
 
@@ -2155,11 +2249,12 @@ async function tourShow(s) {
   const last = i === list.length - 1;
   if (last && !s.noMark) {
     markChapter(ch.id);
-    if (ch.id === 2) t.saw2 = true;
+    if (ch.id === 2 || ch.id === FEED) t.sawMain = true;
   }
   const kind = val(s.kind, ctx);
-  // одиночная глава кончается шагом «пройди» — кнопка называет действие: после него тур закончится
-  const label = !last ? val(s.act, ctx) || "Дальше"
+  // одиночная глава кончается шагом «пройди» — кнопка называет действие: после него тур закончится.
+  // «Листай» — всегда действие: кнопка листает сама
+  const label = !last || kind === "swipe" ? val(s.act, ctx) || "Дальше"
     : kind === "pass" && s.act && !t.final && !nextChapter(t) ? val(s.act, ctx) : nextTitle(t);
   const pose = tourPose(t, val(s.pose, ctx, el));
   const text = val(s.text, ctx, el);
@@ -2168,10 +2263,12 @@ async function tourShow(s) {
     <div class="coach-row"><button type="button" class="coach-skip" data-tour="skip">Выйти</button>${progressHTML(t, ch, i, list.length)}</div>`;
   const cheer = t.cheer && !s.noCheer && pose && t.poses.cheer !== false;
   t.cheer = false;
-  if (el) coachAt(el, { pose, text, buttons, tab: tabOf(screen), same, cheer, find: () => s.aim(ctx), extend: s.extend, only: s.only, radius: s.radius });
+  if (el) coachAt(el, { pose, text, buttons, tab: tabOf(screen), same, cheer, find: () => s.aim(ctx), extend: s.extend, only: s.only, radius: s.radius,
+    gesture: s.gesture, scroll: kind === "swipe" });
   else coach(state.fav, pose, text, buttons, "Подсказки");   // цель не появилась — карточка по центру
   animateProgress(t, ch, i, list.length);
   t.busy = false;
+  if (el && kind === "swipe") watchSwipe(t, s);
   if (el && s.shown) s.shown(ctx, el);
 }
 
@@ -2199,7 +2296,7 @@ async function tourFail(t, s) {
 
 // Главная кнопка шага: «пройди» — то же, что нажатие по цели; «смотри» — дальше (и действие шага)
 function tourPrimary(t, s, kind, last) {
-  if (kind === "pass") return tourPass(t, s, null);
+  if (kind === "pass" || kind === "swipe") return tourPass(t, s, null);
   if (!last && s.after) s.after(t.ctx);
   tourNext(t);
 }
@@ -2229,16 +2326,15 @@ function tourNext(t = state.tour) {
   const list = ch.steps(t.ctx);
   const i = list.findIndex((x) => x.key === t.key);
   if (i >= 0 && i + 1 < list.length) return tourShow(list[i + 1]);
-  if (checkpointDue(t) && t.saw2) return tourCheckpoint();
   if (t.ci + 1 < t.chapters.length) return tourChapter(t.ci + 1);
   tourFinish();
 }
 
-// К первой главе очереди после этой; дальше нет — тур закончен
+// К первой главе очереди после этой (по месту в очереди); дальше нет — тур закончен
 function tourAfter(id) {
   const t = state.tour;
   if (!t) return;
-  const ci = t.chapters.findIndex((c) => c > id);
+  const ci = t.chapters.findIndex((c) => ord(c) > ord(id));
   if (ci >= 0) return tourChapter(ci);
   tourFinish();
 }
@@ -2249,7 +2345,7 @@ async function tourFinish() {
   const t = state.tour;
   if (!t) return;
   if (!t.final) return tourEnd();
-  saveTourDone();   // главное показано: закрыли Telegram на финале — тур всё равно пройден
+  saveTourDone(t);   // главное показано: закрыли Telegram на финале — тур всё равно пройден
   t.ci = -1;
   t.key = "final";
   t.busy = true;
@@ -2273,17 +2369,20 @@ async function tourFinish() {
   }
 }
 
-function saveTourDone() {
-  lsSet(TOUR_KEY, "2");
+// Уровень только растёт. Тур без «Ленты» (прерванная очередь из четырёх глав, одна глава из
+// «Подсказок») ставит не выше 2: о ленте ещё расскажет «Новое»
+function saveTourDone(t) {
+  const v = String(Math.max(tourLevel(), t && !t.seg.includes(FEED) ? 2 : TOUR_LEVEL));
+  lsSet(TOUR_KEY, v);
   try { localStorage.removeItem(TOUR_AT_KEY); } catch (e) { /* приватный режим */ }
   if (state.fav) lsSet(GUIDE_KEY, state.fav);
-  if (cloud()) cloud().setItem(TOUR_KEY, "2", () => {});
+  if (cloud()) cloud().setItem(TOUR_KEY, v, () => {});
 }
 
 // Тур закончен. После финала — «Главная», наверху: оттуда приложение и начинается
 function tourEnd() {
   const t = state.tour;
-  if (t && !t.greet) saveTourDone();
+  if (t && !t.greet) saveTourDone(t);
   if (t && t.greet && state.fav) lsSet(GUIDE_KEY, state.fav);
   state.tour = null;
   closeCoach();
@@ -2303,14 +2402,14 @@ function tourSkip() {
 }
 
 // Кнопка «Назад» Telegram в листе тура: в главе I — к предыдущему шагу, карточке матча на «Главной»;
-// в главе II — к контрольной точке (или к следующей главе). Главы не отмечаются
+// в «Ленте» — к шагу с рядом историй; в главе II — к следующей главе. Главы не отмечаются
 function tourSheetBack() {
   const t = state.tour;
   const id = t.chapters[t.ci];
   closeMatch();
   if (id === 1 && t.ctx.route && t.ctx.route.card) return tourShow(STEP.card);
-  if (checkpointDue(t)) return tourCheckpoint();
-  tourAfter(2);
+  if (id === FEED && packs().length) return tourShow(STEP.packs);
+  tourAfter(id);
 }
 
 function markChapter(id) {
@@ -2345,7 +2444,7 @@ function animateProgress(t, ch, i, n) {
 }
 
 // Нажали по затемнению: в окне на шаге «пройди» и «загляни» срабатывает сама цель, мимо окна — промах.
-// По окну шага «смотри» — мягкий промах: вздрагивает главная кнопка
+// По окну шага «смотри» и где угодно на шаге «листай» — мягкий промах: вздрагивает главная кнопка
 function tourTap(e) {
   const t = state.tour;
   const s = stepOf(t);
@@ -2353,8 +2452,9 @@ function tourTap(e) {
   if (!s || !el || t.busy || !$("#tour.aim")) return;
   const r = aimRect(el);
   const inside = e.clientX >= r.left - AIM_PAD && e.clientX <= r.right + AIM_PAD && e.clientY >= r.top - AIM_PAD && e.clientY <= r.bottom + AIM_PAD;
-  if (!inside) return tourMiss(t, s);
   const kind = val(s.kind, t.ctx);
+  if (kind === "swipe") return tourMiss(t, s, true);
+  if (!inside) return tourMiss(t, s);
   if (kind === "look") return tourMiss(t, s, true);
   const box = $("#tour");
   const under = document.elementsFromPoint(e.clientX, e.clientY).find((n) => !box.contains(n));
@@ -2445,7 +2545,7 @@ function findAim(find, fail, timeout) {
 
 // Слой тура: сцена (карточка, окно) меняется от шага к шагу, область для экранных дикторов — одна
 // на весь тур, в неё пишется реплика. Свайп и колесо по затемнению страницу не листают: прокручивает
-// только сам тур (style.css → .coach)
+// только сам тур (style.css → .coach). Исключение — шаг «листай»: там слой с классом scroll (ADR-016)
 function coachBox() {
   let box = $("#tour");
   if (box) return [box, false];
@@ -2456,7 +2556,7 @@ function coachBox() {
   box.setAttribute("role", "dialog");
   box.setAttribute("aria-modal", "true");
   box.innerHTML = `<div class="coach-stage"></div><div class="sr-only" aria-live="polite"></div>`;
-  const hold = (e) => e.preventDefault();
+  const hold = (e) => { if (!box.classList.contains("scroll")) e.preventDefault(); };
   box.addEventListener("wheel", hold, { passive: false });
   box.addEventListener("touchmove", hold, { passive: false });
   document.body.appendChild(box);
@@ -2476,7 +2576,7 @@ function coachDim(tab) {
   clearRoom();
   const [box] = coachBox();
   box.setAttribute("aria-label", "Подсказки");
-  box.classList.remove("aim");
+  box.classList.remove("aim", "scroll");
   stageOf(box).innerHTML = `<div class="coach-back" data-coach-back></div>`;
   lightTab(tab);
   box.focus({ preventScroll: true });
@@ -2502,7 +2602,7 @@ function coach(club, pose, text, buttons, label, extra = "") {
   const [box, fresh] = coachBox();
   const hadCard = !!box.querySelector(".coach-card") && !box.classList.contains("aim");
   box.setAttribute("aria-label", label);
-  box.classList.remove("aim");
+  box.classList.remove("aim", "scroll");
   const fig = pose ? guideFig(club, pose) : "";
   stageOf(box).innerHTML = `<div class="coach-back" data-coach-back></div>
     <div class="coach-card${fig ? "" : " bare"}">${fig ? `<div class="coach-guide">${fig}</div>` : ""}
@@ -2532,12 +2632,13 @@ function coachAt(el, o) {
   dropAim();
   box.setAttribute("aria-label", "Подсказки");
   box.classList.add("aim");
+  box.classList.toggle("scroll", !!o.scroll);
   const fig = o.pose ? guideFig(state.fav, o.cheer ? "cheer" : o.pose) : "";
   Object.assign(aim, { extend: o.extend || null, only: !!o.only });
   const r = aimRect(el);
   const right = r.left + r.width / 2 >= innerWidth / 2 - 1;
   stageOf(box).innerHTML = `<div class="coach-back" data-coach-back></div>
-    <div class="coach-hole"><i class="coach-fill"></i><i class="coach-ring"></i></div>
+    <div class="coach-hole"><i class="coach-fill"></i><i class="coach-ring"></i></div>${GESTURE[o.gesture] || ""}
     <div class="coach-card${right ? " right" : ""}${fig ? "" : " bare"}"><span class="coach-tail"></span>
       <div class="coach-say">${fig}<p>${o.text}</p></div><div class="coach-btns">${o.buttons}</div></div>`;
   say(box);
@@ -2552,6 +2653,8 @@ function coachAt(el, o) {
     // окно проявляется у новой цели
     fill.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 160, delay: from ? 60 : 0, easing: EASE_OUT, fill: "backwards" });
     box.querySelector(".coach-ring").animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, delay: from ? 60 : 0, easing: EASE_OUT, fill: "backwards" });
+    const gest = box.querySelector(".gest");
+    if (gest) gest.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, delay: 220, easing: EASE_OUT, fill: "backwards" });
     const to = card.getBoundingClientRect();
     if (from) {
       card.animate([{ transform: `translate(${from.left - to.left}px, ${from.top - to.top}px)` }, { transform: "none" }], { duration: 260, easing: EASE_OUT });
@@ -2610,6 +2713,7 @@ function aimAt(box, el, o) {
 
 function dropAim() {
   if (aim.off) aim.off();
+  if (swipeOff) swipeOff();
   aim.el = aim.off = aim.find = null;
   aim.side = "";
 }
@@ -2721,10 +2825,95 @@ function placeAim(box) {
     width: `${right - left}px`, height: `${r.height + 2 * AIM_PAD}px`, borderRadius: `${radius}px` });
   // высокая цель на коротком экране: карточка закрывает её низ, но не заходит под меню
   const y = aim.side === "below" ? r.bottom + AIM_PAD + AIM_GAP : r.top - AIM_PAD - AIM_GAP - h;
-  card.style.top = `${Math.max(b.top, Math.min(y, b.bottom - h))}px`;
+  const cy = Math.max(b.top, Math.min(y, b.bottom - h));
+  card.style.top = `${cy}px`;
+  placeGesture(box, r, b, cy, h);
   card.classList.toggle("up", aim.side === "above");   // карточка над целью — хвостик снизу
   const c = card.getBoundingClientRect();
   tail.style.left = `${Math.max(28, Math.min(r.left + r.width / 2 - c.left, c.width - 28)) - 8}px`;
+}
+
+// Жест в окне (ADR-016): в историях — метки над зонами касания (30% слева и 70% справа, как .pack-zone),
+// на ленте — точка ведёт след вверх. Нажатия проходят сквозь него
+const GESTURE = {
+  tap: `<div class="gest gest-tap" aria-hidden="true"><span class="gest-l"><i class="gest-dot ghost"></i><b>‹ Назад</b></span>
+    <span class="gest-r"><i class="gest-dot"></i><b>Дальше ›</b></span></div>`,
+  swipe: '<div class="gest gest-swipe" aria-hidden="true"><i class="gest-trail"></i><i class="gest-dot"></i></div>',
+};
+
+// Жест — в видимой части окна: от верха окна (или области) до карточки; карточка над целью — от неё до низа
+function placeGesture(box, r, b, cy, h) {
+  const g = box.querySelector(".gest");
+  if (!g) return;
+  let top = Math.max(r.top, b.top);
+  let bottom = Math.min(r.bottom, b.bottom);
+  if (aim.side === "above") top = Math.max(top, cy + h + AIM_GAP);
+  else bottom = Math.min(bottom, cy - AIM_GAP);
+  const height = Math.max(0, bottom - top);
+  Object.assign(g.style, { left: `${r.left}px`, width: `${r.width}px`, top: `${top}px`, height: `${height}px` });
+  g.style.setProperty("--travel", `${Math.round(Math.min(140, height * 0.45))}px`);
+  g.classList.toggle("tight", height < 72);   // жесту негде встать — его нет, реплика и так говорит
+}
+
+// «Листай»: долистал сам на треть экрана — получилось. Отсчёт — с первого касания, колеса или клавиши:
+// прокрутку, которой тур поставил окно на место, не считаем. Начал листать — жест гаснет; прокрутка по
+// инерции уляжется — следующая карточка, с прыжком
+const SWIPE_SHARE = 0.3;
+const SWIPE_SETTLE_MS = 180;   // тишина после последней прокрутки
+const SWIPE_MAX_MS = 900;      // дольше инерцию не ждём
+let swipeOff = null;
+function watchSwipe(t, s) {
+  const box = $("#tour");
+  if (!box) return;
+  if (swipeOff) swipeOff();
+  let base = null, need = 0, won = false, fired = false, quiet = 0, t0 = 0;
+  const arm = () => {
+    if (base != null) return;
+    base = window.scrollY;
+    const room = document.documentElement.scrollHeight - innerHeight - base;
+    need = Math.max(24, Math.min(innerHeight * SWIPE_SHARE, room - 4));
+    const g = box.querySelector(".gest");
+    if (!g) return;
+    if (calm()) return g.classList.add("off");
+    g.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 160, easing: EASE_IN, fill: "forwards" }).finished
+      .then(() => g.classList.add("off"), () => {});
+  };
+  const key = (e) => { if (["ArrowDown", "PageDown", "End"].includes(e.key)) arm(); };
+  const done = () => {
+    if (fired) return;
+    fired = true;
+    off();
+    if (state.tour === t && t.key === s.key) {
+      t.busy = false;
+      tourNext(t);
+    }
+  };
+  const scroll = () => {
+    if (state.tour !== t || t.key !== s.key) return off();
+    if (!won) {
+      if (base == null || t.busy || window.scrollY - base < need) return;
+      won = true;
+      t.busy = true;
+      t.cheer = true;   // сам долистал — следующая карточка радуется
+      t0 = Date.now();
+    }
+    clearTimeout(quiet);
+    if (Date.now() - t0 > SWIPE_MAX_MS) return done();
+    quiet = setTimeout(done, SWIPE_SETTLE_MS);
+  };
+  const off = () => {
+    clearTimeout(quiet);
+    box.removeEventListener("touchstart", arm);
+    box.removeEventListener("wheel", arm);
+    document.removeEventListener("keydown", key, true);
+    removeEventListener("scroll", scroll);
+    if (swipeOff === off) swipeOff = null;
+  };
+  box.addEventListener("touchstart", arm, { passive: true });
+  box.addEventListener("wheel", arm, { passive: true });
+  document.addEventListener("keydown", key, true);
+  addEventListener("scroll", scroll, { passive: true });
+  swipeOff = off;
 }
 
 // Вкладка меню, о которой речь, — над затемнением с кольцом. aimed — пульсирует цель, у вкладки кольцо без пульса.
@@ -3398,16 +3587,20 @@ function closeMatch(fromY = 0) {
 }
 
 // Свайп вниз закрывает лист: он идёт за пальцем, пока прокрутка листа в самом верху.
-// Дальше 30% высоты или быстрым движением — закрыть, иначе пружиной на место
+// Дальше 30% высоты или быстрым движением — закрыть, иначе пружиной на место.
+// В историях свайп вбок — соседний клуб (ADR-016)
+const SWIPE_X = 48;   // свайп вбок в историях: не короче и вбок в полтора раза больше, чем вниз
 function initSheetDrag() {
   const sheet = $("#sheet");
   const back = $("#sheet-backdrop");
   const SLOP = 8;   // первые пиксели — ещё не жест, а неточное касание
-  let y0 = 0, dy = 0, lastY = 0, lastT = 0, v = 0, armed = false, drag = false;
+  let x0 = 0, y0 = 0, dy = 0, lastY = 0, lastT = 0, v = 0, armed = false, drag = false, side = false;
   sheet.addEventListener("touchstart", (e) => {
     armed = e.touches.length === 1 && sheet.scrollTop <= 0 && !sheetClosing;
+    side = e.touches.length === 1 && sheet.classList.contains("pack-open") && !!state.pack && !sheetClosing;
     drag = false;
     dy = v = 0;
+    x0 = e.touches[0].clientX;
     y0 = lastY = e.touches[0].clientY;
     lastT = e.timeStamp;
   }, { passive: true });
@@ -3417,6 +3610,9 @@ function initSheetDrag() {
     dy = y - y0;
     if (!drag) {
       if (dy < 0 || sheet.scrollTop > 0) { armed = false; return; }   // листают вверх — обычная прокрутка
+      const dx = Math.abs(e.touches[0].clientX - x0);
+      if (dy < SLOP && dx < SLOP) return;
+      if (side && dx > dy) { armed = false; return; }   // в историях вбок — соседний клуб, а не закрытие
       if (dy < SLOP) return;
       drag = true;
     }
@@ -3428,8 +3624,14 @@ function initSheetDrag() {
     sheet.style.transform = `translateY(${d}px)`;
     back.style.opacity = String(Math.max(0, 1 - d / sheet.offsetHeight));
   }, { passive: false });
-  const end = () => {
+  const end = (e) => {
     armed = false;
+    const t = side && !drag && e && e.changedTouches && e.changedTouches[0];
+    side = false;
+    if (t) {
+      const dx = t.clientX - x0;
+      if (Math.abs(dx) >= SWIPE_X && Math.abs(dx) > 1.5 * Math.abs(t.clientY - y0)) return packClub(dx < 0 ? 1 : -1);
+    }
     if (!drag) return;
     drag = false;
     const d = Math.max(0, dy - SLOP);
@@ -3441,7 +3643,7 @@ function initSheetDrag() {
     sheet.style.transform = back.style.opacity = "";
   };
   sheet.addEventListener("touchend", end);
-  sheet.addEventListener("touchcancel", end);
+  sheet.addEventListener("touchcancel", () => end(null));
 }
 
 // ---------- бегущая строка ----------
@@ -3780,7 +3982,9 @@ document.addEventListener("keydown", (e) => {
       const n = i < 0 ? (e.shiftKey ? list.length - 1 : 0) : (i + (e.shiftKey ? list.length - 1 : 1)) % list.length;
       return list[n].focus();
     }
-    if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(e.key)) return e.preventDefault();
+    // страница под туром не листается — кроме шага «листай»; истории под туром стрелками не листаются
+    if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(e.key) && !box.classList.contains("scroll")) return e.preventDefault();
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") return e.preventDefault();
   }
   if (e.key === "Escape") {
     const t = state.tour;
@@ -3863,16 +4067,17 @@ function initTelegram() {
       // отметки глав — объединение устройства и облака
       const ch = [...new Set((lsGet(TOUR_CH_KEY) || "") + (v[TOUR_CH_KEY] || ""))].filter((x) => CHAPTER[x]).sort().join("");
       if (ch) lsSet(TOUR_CH_KEY, ch);
-      const cv = v[TOUR_KEY];
-      if ((cv !== "1" && cv !== "2") || tourDone() || cv === lsGet(TOUR_KEY)) return;
-      lsSet(TOUR_KEY, cv);
-      if (cv === "2") try { localStorage.removeItem(TOUR_AT_KEY); } catch (e) { /* приватный режим */ }
-      // тур здесь ещё не начинали, а на другом устройстве прошли — вступление гаснет
+      // уровень тура только растёт: облако берём, если там больше
+      const cv = tourLevel(v[TOUR_KEY]);
+      if (cv <= tourLevel()) return;
+      lsSet(TOUR_KEY, String(cv));
+      if (cv >= 2) try { localStorage.removeItem(TOUR_AT_KEY); } catch (e) { /* приватный режим */ }
+      // тур здесь ещё не начинали, а на другом устройстве прошли — вступление гаснет, вместо него «Новое»
       const t = state.tour;
       if (t && !t.greet && t.ci < 0 && t.key !== "final") {
         state.tour = null;
         closeCoach();
-        if (cv === "1") tourNews();
+        if (cv < TOUR_LEVEL) tourNews();
       }
     });
   }
@@ -3987,14 +4192,14 @@ function boot(d, cached = false) {
   // «Звено»: точка «надо решить» на вкладке — в фоне, когда экран уже нарисован
   if (state.fav && state.tab !== "zveno") setTimeout(zvPeek, (cached ? SPLASH_REPEAT_MS : SPLASH_MIN_MS) + 2500);
   // Тур и проводник — один раз и не поверх ссылки из бота: прерванный тур — «Продолжение»,
-  // прошёл старый тур — «Новое», новый пройден — знакомство при смене команды, иначе вступление
+  // прошёл тур раньше — «Новое» (ADR-016), нынешний пройден — знакомство при смене команды, иначе вступление
   if (state.fav && !state.openedFromLink && !state.tour) {
     setTimeout(() => {
       if (state.tour || !$("#sheet").hidden) return;
       const at = savedAt();
       if (tourDone()) greetGuide();
       else if (at) tourResume(at);
-      else if (lsGet(TOUR_KEY) === "1") tourNews();
+      else if (tourSeen()) tourNews();
       else startTour(false);
     }, (cached ? SPLASH_REPEAT_MS : SPLASH_MIN_MS) + 500);
   }

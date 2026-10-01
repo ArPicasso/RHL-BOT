@@ -12,6 +12,7 @@
   --band-mint: #55db9c;
   --band-concrete: #cccccc;
   --band-peach: #ffd9c7;     /* «Звено» (ADR-014) */
+  --deck: #edf4fb;           /* подложка листа дня (ADR-017) */
   --backdrop: rgba(0, 0, 0, .35);
   /* стикеры — одинаковые в обеих темах */
   --sticker: #ffffff;
@@ -60,6 +61,7 @@
   --band-mint: #15291f;
   --band-concrete: #1c222c;
   --band-peach: #2a1f1b;
+  --deck: #0e131b;           /* глубже фона: карточки --paper на ней всплывают */
   --backdrop: rgba(4, 7, 12, .6);
   --act: #4da2ff;
   --on-act: #08121f;
@@ -216,7 +218,8 @@ h1, .display {
 
 /* ---------- статистика ---------- */
 
-.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 24px; }
+/* Цифры сезона — ниже табло (ADR-017): переключатель забрал полосу у первого экрана */
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 24px 0; }
 .stat { border: var(--line); border-radius: 20px; padding: 12px 12px 10px; background: var(--paper); }
 .stat b { display: block; font: 800 24px/1 var(--display); }
 .stat > span { display: block; margin-top: 6px; font-size: 12px; color: var(--muted); line-height: 1.25; }
@@ -224,7 +227,24 @@ h1, .display {
 .form i { flex: none; width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--edge-strong); background: transparent; }
 .form i.W { background: var(--ink); border-color: var(--ink); }
 
-/* ---------- заголовки секций ---------- */
+/* ---------- секции и заголовки ---------- */
+
+/* Секция — отдельный блок, поэтому её заголовок прилипает только пока она на экране и уходит
+   вместе с ней (ADR-017). Фон непрозрачный: под прилипшим заголовком проезжают карточки */
+.part { position: relative; background: var(--canvas); }
+.part:empty { display: none; }
+.part > .label {
+  position: sticky;
+  top: var(--marquee-h);
+  z-index: 3;
+  margin: 0 -16px 10px;
+  padding: 24px 18px 8px;
+  background: inherit;
+}
+/* Первая секция экрана: отступ от полосы-шапки уже есть у неё самой — иначе между ними 44px */
+#home-body > .part:first-child > .label { padding-top: 4px; }
+/* Лист дня лежит на своей подложке во всю ширину: переход от «моего матча» к листу виден цветом */
+.part.deck { margin: 0 -16px; padding: 0 16px 16px; background: var(--deck); }
 
 .label {
   display: flex;
@@ -473,6 +493,8 @@ h1, .display {
 
 /* Шапка «Таблицы» — только сегменты; конференции — лёгкие чипы под ней (DESIGN.md) */
 .table-seg { margin-top: 16px; }
+/* «Сегодня · Лента лиги» в полосе «Главной» (ADR-017): «Главная» делится на конечный экран и ленту */
+.home-seg { position: relative; z-index: 1; margin-top: 16px; }
 .chips.fill { margin: -4px 0 12px; }
 .chips.fill button { flex: 1 1 0; }
 
@@ -1131,8 +1153,8 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 }
 .fc[role="button"], .fc-post { cursor: pointer; }
 .fc[role="button"]:active, .fc-post:active { transform: scale(.985); background: var(--sel); transition-delay: 60ms; }
-.fc-top { display: flex; align-items: center; gap: 6px; font: 700 12px/1.2 var(--ui); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
-.fc-new { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ember); }
+/* Ранг 3 (DESIGN.md → «Три ранга заголовков»): прописными набран только заголовок секции */
+.fc-top { display: flex; align-items: center; gap: 6px; font: 500 12px/1.2 var(--ui); color: var(--muted); }
 .fc-sub { margin-top: 8px; font-size: 13px; color: var(--muted); }
 .fc-verdict { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--mist); font-size: 15px; line-height: 1.4; }
 
@@ -1162,7 +1184,6 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 /* пост канала: превью, а не перепечатка — чей пост видно всегда, нажатие ведёт в сам пост */
 .fc-head { display: grid; grid-template-columns: 24px 1fr 40px; align-items: center; gap: 10px; }
 .fc-who { min-width: 0; }
-.fc-who .fc-new { display: inline-block; margin-right: 6px; vertical-align: 1px; }
 /* название канала — одной строкой с многоточием: блоком, иначе длинное уходит под «⋯» и за край карточки */
 .fc-who b { display: block; font-weight: 700; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* «канал клуба · соперник серии · 3 ч»: сжимается метка, время остаётся целым */
@@ -1211,8 +1232,10 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 .fc-end p { margin: 0; max-width: 320px; font-size: 15px; line-height: 1.4; }
 .fc-end .pills { justify-content: center; margin-top: 4px; }
 
-/* «Ты в курсе за сутки» — отметка между листом дня и лентой лиги: здесь можно закрыть, но лента идёт дальше */
+/* «Ты в курсе за сутки» — конец «Сегодня»: здесь не жалко закрыть приложение, а кто хочет листать
+   дальше, уходит в ленту сам — кнопка под отметкой переключает сегмент (ADR-017) */
 .fc-caught { padding-bottom: 4px; }
+.fc-caught .pills button { font-size: 14px; }
 .fc-caught p b { font-weight: 700; }
 .stream-pin { display: block; height: 0; }
 /* Фильтры ленты прилипают под бегущей строкой на фоне страницы, прилипшие — с линией снизу (ADR-015, 01.10) */

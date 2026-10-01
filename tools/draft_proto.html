@@ -1,0 +1,424 @@
+<title>Драфт РХЛ</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@800&family=Onest:wght@500;700&display=swap">
+<style>
+/* Карточки крупно, текста почти нет: выбор игрока — одно касание, матч считается сам. Токены — DESIGN.md */
+:root{
+  --canvas:#ffffff; --paper:#ffffff; --ink:#000000; --muted:#555555;
+  --edge:#000000; --mist:#e9e9e9; --act:#000000; --on-act:#ffffff; --sel:#dceeff; --band:#dceeff;
+  --sticker:#ffffff; --blue:#4da2ff; --mint:#55db9c; --lavender:#e9ccff; --ember:#fb4903;
+  --sun:#ffd731; --violet:#5c4ade; --shadow:2px 2px 0 var(--edge);
+  --display:"Unbounded","Arial Black",system-ui,sans-serif;
+  --body:"Onest",system-ui,-apple-system,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --canvas:#131922; --paper:#1a212c; --ink:#e4e8ee; --muted:#8e98a8; --edge:#2c3645; --mist:#252e3a;
+  --act:#4da2ff; --on-act:#08121f; --sel:#1f2c3f; --band:#182538; --shadow:2px 2px 0 #0b1017;
+  color-scheme:dark}}
+:root[data-theme="dark"]{
+  --canvas:#131922; --paper:#1a212c; --ink:#e4e8ee; --muted:#8e98a8; --edge:#2c3645; --mist:#252e3a;
+  --act:#4da2ff; --on-act:#08121f; --sel:#1f2c3f; --band:#182538; --shadow:2px 2px 0 #0b1017;
+  color-scheme:dark}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--canvas);color:var(--ink);font:500 15px/1.4 var(--body);-webkit-text-size-adjust:100%}
+.wrap{max-width:560px;margin:0 auto;padding:0 16px;padding-block:14px 28px}
+h1,h2{font-family:var(--display);font-weight:800;margin:0;line-height:.95}
+h1{font-size:24px} h2{font-size:19px}
+.lbl{font:700 12px/1.3 var(--body);letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.note{font:500 12px/1.4 var(--body);color:var(--muted)}
+.num{font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+.btn{background:var(--act);color:var(--on-act);border:1px solid var(--edge);border-radius:12px;
+  padding:13px 16px;font-weight:700;letter-spacing:.03em;width:100%;box-shadow:var(--shadow)}
+.btn.ghost{background:var(--paper);color:var(--ink)}
+.btn:active{transform:translate(1px,1px);box-shadow:1px 1px 0 var(--edge)}
+.btn:disabled{opacity:.45;box-shadow:none;cursor:default}
+.card{background:var(--paper);border:1px solid var(--edge);border-radius:14px;padding:12px;box-shadow:var(--shadow)}
+.row{display:flex;gap:8px;align-items:center}
+.col{display:flex;flex-direction:column;gap:10px}
+.between{justify-content:space-between}
+.pill{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--edge);border-radius:999px;
+  padding:4px 10px;font:700 12px/1 var(--body);background:var(--paper)}
+.pill.hot{background:var(--ember);color:#000} .pill.mint{background:var(--mint);color:#000}
+.pill.lav{background:var(--lavender);color:#000}
+.emb{width:26px;height:26px;border-radius:999px;background:var(--sticker);border:1px solid var(--edge);
+  object-fit:contain;padding:1px;flex:0 0 auto}
+.emb.lg{width:54px;height:54px}
+/* выбор клуба */
+.clubs{display:grid;grid-template-columns:repeat(auto-fill,minmax(62px,1fr));gap:8px}
+.club{display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:0;padding:3px}
+.club .emb{width:40px;height:40px}
+.club span{font:700 10px/1.1 var(--body);color:var(--muted)}
+/* карточка игрока — главный объект экрана */
+.picks{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+@media (min-width:420px){.picks{grid-template-columns:repeat(3,1fr)}}
+.p{position:relative;display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 6px 8px;
+  background:var(--paper);border:1px solid var(--edge);border-radius:16px;box-shadow:var(--shadow);width:100%}
+.p .ovr{font-family:var(--display);font-size:28px;line-height:1}
+.p .role{font:700 12px/1.1 var(--body)}
+.p .num{font:500 11px/1 var(--body);color:var(--muted)}
+.p img.sk{width:64px;height:64px;object-fit:contain}
+.p .top{position:absolute;top:8px;left:8px;display:flex;gap:4px;align-items:center}
+.p .chem{position:absolute;top:8px;right:8px;width:12px;height:12px;border-radius:999px;
+  border:1px solid var(--edge);background:var(--mist)}
+.p .chem.on{background:var(--mint)}
+.p:active{transform:translate(1px,1px)}
+.slot{display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 4px;border-radius:12px;
+  border:1px dashed var(--edge);min-width:0}
+.slot.full{border-style:solid;background:var(--paper)}
+.slot.now{border-color:var(--ember);background:var(--sel)}
+.slot img{width:34px;height:34px;object-fit:contain}
+.slot b{font:700 15px/1 var(--display)}
+.slot em{font:500 10px/1.1 var(--body);font-style:normal;color:var(--muted)}
+.lineup{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
+/* сетка и матч */
+.board{background:var(--band);border:1px solid var(--edge);border-radius:14px;padding:12px;
+  display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;box-shadow:var(--shadow)}
+.board span{font:700 11px/1.1 var(--body);color:#000;text-align:center}
+.score{font-family:var(--display);font-size:40px;line-height:.85;text-align:center;color:#000}
+.side{display:flex;flex-direction:column;align-items:center;gap:4px}
+.goals{display:flex;flex-direction:column;gap:6px}
+.g{display:grid;grid-template-columns:42px 1fr auto;gap:8px;align-items:center;
+  font:500 13px/1.3 var(--body);padding:6px 0;border-bottom:1px solid var(--mist)}
+.g b{font-family:var(--display);font-size:13px}
+.tac{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.tac button{background:var(--paper);border:1px solid var(--edge);border-radius:12px;padding:10px 6px;
+  box-shadow:var(--shadow);display:flex;flex-direction:column;align-items:center;gap:3px}
+.tac button[aria-pressed="true"]{background:var(--sel)}
+.tac b{font:700 13px/1 var(--body)} .tac em{font:500 11px/1 var(--body);font-style:normal;color:var(--muted)}
+.rounds{display:flex;gap:6px}
+.rd{flex:1;text-align:center;padding:6px 2px;border:1px solid var(--edge);border-radius:10px;
+  font:700 11px/1.2 var(--body);background:var(--paper)}
+.rd.done{background:var(--mint);color:#000} .rd.now{background:var(--ember);color:#000} .rd.lost{background:var(--mist)}
+.fin{font-family:var(--display);font-size:46px;line-height:.85}
+.bar{height:8px;border-radius:999px;background:var(--mist);overflow:hidden;border:1px solid var(--edge)}
+.bar i{display:block;height:100%;background:var(--ink)}
+@media (prefers-reduced-motion:reduce){.btn:active,.p:active{transform:none}}
+</style>
+
+<div class="wrap" id="app"></div>
+
+<script>
+// --- engine start
+// Драфт и симуляция. Без DOM: всё решается из сида, поэтому забег воспроизводится.
+var CLUBS=[
+{id:"arktika",n:"Арктика",a:"АРК",conf:"west"},{id:"akhmat-granit",n:"Ахмат-Гранит",a:"АХМ",conf:"west"},
+{id:"vityaz-podolsk",n:"Витязь-Подольск",a:"ВИТ",conf:"west"},{id:"dinamo-576",n:"Динамо-576",a:"576",conf:"west"},
+{id:"kaluga",n:"Калужские Ракеты",a:"КЛР",conf:"west"},{id:"krasnaya-mashina",n:"Красная машина",a:"КМА",conf:"west"},
+{id:"leningradets",n:"Ленинградец",a:"ЛЕН",conf:"west"},{id:"metallurg",n:"Металлург",a:"МЕТ",conf:"west"},
+{id:"dinamo-kareliya",n:"Динамо-Карелия",a:"ДКР",conf:"west"},{id:"polet",n:"Полёт",a:"ПОЛ",conf:"west"},
+{id:"tverichi",n:"Тверичи-СШОР",a:"ТВЕ",conf:"west"},{id:"fakel-yamal",n:"Факел Ямал",a:"ФАК",conf:"west"},
+{id:"bryansk",n:"Брянск",a:"БРЯ",conf:"west"},{id:"dizelist",n:"Дизелист",a:"ДИЗ",conf:"east"},
+{id:"ermak",n:"Ермак",a:"ЕРМ",conf:"east"},{id:"belgorod",n:"Белгород",a:"БЕЛ",conf:"east"},
+{id:"kristall",n:"Кристалл",a:"КРИ",conf:"east"},{id:"ryazan-vdv",n:"Рязань-ВДВ",a:"РЯЗ",conf:"east"},
+{id:"tambov",n:"Тамбов",a:"ТАМ",conf:"east"},{id:"progress",n:"Прогресс",a:"ПРГ",conf:"east"},
+{id:"proton",n:"Протон",a:"ПРТ",conf:"east"},{id:"rostov",n:"Ростов",a:"РОС",conf:"east"},
+{id:"sokol",n:"Сокол",a:"СОК",conf:"east"},{id:"krasnodar",n:"Краснодар",a:"КДР",conf:"east"},
+{id:"samara",n:"Самара",a:"САМ",conf:"east"},{id:"ekoniva-bobrov",n:"ЭкоНива-Бобров",a:"БОБ",conf:"east"}];
+var LOGO={bryansk:"jpg",dizelist:"jpg",tverichi:"jpg"};
+var byId={}; CLUBS.forEach(function(c){byId[c.id]=c});
+
+// Шесть мест в составе. Роль — одно слово, читать нечего.
+var SLOTS=[{k:"G",n:"Ворота"},{k:"D",n:"Защитник"},{k:"D",n:"Защитник"},
+           {k:"F",n:"Нападающий"},{k:"F",n:"Нападающий"},{k:"F",n:"Нападающий"}];
+// Перк — два слова максимум, виден на карточке
+var PERKS={
+ G:[{id:"wall",n:"Стенка",t:"+3 к обороне"},{id:"calm",n:"Спокойный",t:"+2 в третьем периоде"},
+    {id:"shootout",n:"Буллитный",t:"решает ничьи"}],
+ D:[{id:"hard",n:"Жёсткий",t:"+2 к обороне"},{id:"first",n:"Первый пас",t:"+2 к атаке"},
+    {id:"block",n:"Блокирующий",t:"+2 в меньшинстве"}],
+ F:[{id:"sniper",n:"Снайпер",t:"+3 к атаке"},{id:"work",n:"Работяга",t:"+2 к атаке и обороне"},
+    {id:"play",n:"Диспетчер",t:"+2 к атаке, +1 сыгранность"}]};
+
+function hash32(s){var h=0x811c9dc5;for(var i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,0x01000193)>>>0}return h>>>0}
+function rng(st){st.r=(st.r+0x6D2B79F5)>>>0;var t=st.r;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return ((t^(t>>>14))>>>0)/4294967296}
+function ri(st,n){return Math.floor(rng(st)*n)}
+function shuffled(st,a){a=a.slice();for(var i=a.length-1;i>0;i--){var j=ri(st,i+1);var t=a[i];a[i]=a[j];a[j]=t}return a}
+
+function makeWeek(seed){
+  var st={r:hash32(seed)},table=shuffled(st,CLUBS.map(function(c){return c.id})),place={};
+  table.forEach(function(id,i){place[id]=i+1});
+  return {seed:seed,table:table,place:place};
+}
+// Кандидат: клуб, роль, ОВР и перк. Чем выше клуб в таблице, тем сильнее его игроки.
+function candidate(st,week,slot,myClub){
+  var club=ri(st,4)===0?myClub:week.table[ri(st,26)];
+  var pl=week.place[club];
+  var ovr=63+Math.floor((27-pl)/2)+ri(st,9);
+  var perks=PERKS[slot.k];
+  return {club:club,k:slot.k,role:slot.n,ovr:ovr,num:[7,9,11,13,17,19,21,27,33,44,55,61,72,77,88,91,98][ri(st,17)],
+          perk:perks[ri(st,perks.length)]};
+}
+function offers(st,week,slot,myClub){
+  var out=[];
+  for(var i=0;i<5;i++)out.push(candidate(st,week,slot,myClub));
+  return out;
+}
+// Сыгранность: зелёная точка, если клуб игрока совпал с чьим-то ещё или с твоим
+function chemOf(squad,myClub){
+  var cnt={};
+  squad.forEach(function(p){if(p)cnt[p.club]=(cnt[p.club]||0)+1});
+  var green=0,total=0;
+  squad.forEach(function(p){
+    if(!p)return; total++;
+    var ok=cnt[p.club]>1||p.club===myClub||(p.perk.id==="play");
+    if(ok)green++;
+  });
+  return {green:green,total:total,score:total?Math.round(green/total*10):0};
+}
+function power(squad,myClub){
+  var g=squad[0],d=[squad[1],squad[2]],f=[squad[3],squad[4],squad[5]],ch=chemOf(squad,myClub);
+  var atk=0,def=0;
+  f.forEach(function(p){if(p)atk+=p.ovr}); atk=f.length?atk/3:0;
+  d.forEach(function(p){if(p)def+=p.ovr}); def=(def/2)*0.65+(g?g.ovr*0.35:0);
+  squad.forEach(function(p){
+    if(!p)return;
+    var id=p.perk.id;
+    if(id==="sniper")atk+=3; if(id==="first")atk+=2; if(id==="play")atk+=2;
+    if(id==="work"){atk+=2;def+=2} if(id==="hard")def+=2; if(id==="wall")def+=3;
+  });
+  atk+=ch.score; def+=ch.score;
+  return {atk:Math.round(atk),def:Math.round(def),chem:ch};
+}
+var TACTICS=[{id:"atk",n:"Атака",t:"+4 / −4",a:4,d:-4},{id:"bal",n:"Баланс",t:"ровно",a:0,d:0},
+             {id:"def",n:"Оборона",t:"−4 / +4",a:-4,d:4}];
+// камень-ножницы-бумага: ответ на манеру соперника даёт +3 в обе стороны
+var COUNTER={atk:"def",def:"atk",bal:"bal"};
+var ROUNDS=[{n:"1/8",place:20},{n:"1/4",place:13},{n:"1/2",place:6},{n:"Финал",place:1}];
+function oppOf(week,round,myClub){
+  var want=ROUNDS[round].place,list=week.table.filter(function(id){return id!==myClub});
+  var id=list[Math.min(list.length-1,want-1)],pl=week.place[id];
+  var s=79+Math.floor((27-pl)*0.6);
+  return {club:id,place:pl,atk:s,def:s,style:pl<=8?"atk":(pl>=18?"def":"bal")};
+}
+// Матч: по три момента на сторону в периоде. Голы считаются сразу, показ — дело экрана.
+function simMatch(st,squad,myClub,opp,tacticId){
+  var p=power(squad,myClub),t=TACTICS.filter(function(x){return x.id===tacticId})[0]||TACTICS[1];
+  var good=COUNTER[opp.style]===t.id?3:0;
+  var atk=p.atk+t.a+good,def=p.def+t.d+good;
+  var oa=opp.atk+(opp.style==="atk"?4:(opp.style==="def"?-3:0));
+  var od=opp.def+(opp.style==="def"?4:(opp.style==="atk"?-3:0));
+  var scorers=[squad[3],squad[4],squad[5],squad[1],squad[2]];
+  var weights=[3,3,3,1,1],ev=[],us=0,them=0,per=[[0,0],[0,0],[0,0]];
+  for(var period=0;period<3;period++){
+    var third=period===2&&squad[0]&&squad[0].perk.id==="calm"?2:0;
+    for(var k=0;k<3;k++){
+      var pu=0.20+(atk-od)/110; pu=Math.max(0.08,Math.min(0.55,pu));
+      if(rng(st)<pu){
+        us++; per[period][0]++;
+        var pick=0,r=ri(st,weights.reduce(function(a,b){return a+b},0)),acc=0;
+        for(var i=0;i<weights.length;i++){acc+=weights[i];if(r<acc){pick=i;break}}
+        ev.push({us:true,period:period+1,min:period*20+1+ri(st,19),by:scorers[pick]});
+      }
+      var pt=0.20+(oa-def-third)/110; pt=Math.max(0.08,Math.min(0.55,pt));
+      if(rng(st)<pt){them++;per[period][1]++;ev.push({us:false,period:period+1,min:period*20+1+ri(st,19)})}
+    }
+  }
+  var so=null;
+  if(us===them){
+    var lucky=squad[0]&&squad[0].perk.id==="shootout"?1:0;
+    var a=0,b=0;
+    for(var j=0;j<3;j++){if(ri(st,10)+lucky*2>=5)a++;if(ri(st,10)>=5)b++}
+    if(a===b)a+=ri(st,2)?1:-1;
+    if(a>b)us++; else them++;
+    so=(a>b?"победа":"поражение")+" по буллитам";
+  }
+  ev.sort(function(x,y){return x.min-y.min});
+  return {us:us,them:them,ev:ev,per:per,so:so,won:us>them,atk:atk,def:def,oa:oa,od:od};
+}
+function runPoints(s){return s.round*25+s.goals*3-s.conceded+(s.cup?50:0)}
+// --- engine end
+
+var S=null,SEED="draft:3",PICK={club:null},BEST=null;
+try{var raw=localStorage.getItem("draftrhl");if(raw){var j=JSON.parse(raw);PICK.club=j.club||null;BEST=j.best||null}}catch(e){}
+function save(){try{localStorage.setItem("draftrhl",JSON.stringify({club:PICK.club,best:BEST}))}catch(e){}}
+var app=document.getElementById("app");
+function esc(t){return String(t==null?"":t).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
+function logo(id,cls){var c=byId[id];if(!c)return"";
+  return '<img class="emb '+(cls||"")+'" src="logos/'+id+'.'+(LOGO[id]||"png")+'" alt="'+esc(c.n)+'" loading="lazy">'}
+function sk(id,k){return '<img class="sk" src="players/clubs/'+id+'-'+(k==="G"?"goalie":"skater")+'.webp" alt="" loading="lazy">'}
+
+function newRun(){
+  var week=makeWeek(SEED);
+  S={week:week,club:PICK.club,st:{r:hash32(SEED+":"+PICK.club+":"+Date.now())},
+     squad:[null,null,null,null,null,null],slot:0,offer:null,
+     round:0,goals:0,conceded:0,cup:false,over:false,screen:"draft",last:null,tactic:"bal",history:[]};
+  S.offer=offers(S.st,S.week,SLOTS[0],S.club);
+}
+function render(){
+  var h="";
+  if(!S)h=PICK.club?screenStart():screenClub();
+  else if(S.screen==="draft")h=screenDraft();
+  else if(S.screen==="squad")h=screenSquad();
+  else if(S.screen==="pre")h=screenPre();
+  else if(S.screen==="match")h=screenMatch();
+  else if(S.screen==="end")h=screenEnd();
+  app.innerHTML=h;
+}
+function head(sub){
+  return '<div class="row between" style="margin-bottom:12px"><div class="row">'
+    +(PICK.club?logo(PICK.club,"lg"):"")+'<div><h1>Драфт</h1><div class="note">'+esc(sub||"")+'</div></div></div>'
+    +'<span class="pill num">'+esc(SEED)+'</span></div>';
+}
+function screenClub(){
+  return head("За кого болеете")
+    +'<div class="clubs">'+CLUBS.map(function(c){
+      return '<button class="club" data-club="'+c.id+'">'+logo(c.id)+'<span>'+esc(c.a)+'</span></button>'}).join("")+'</div>';
+}
+function screenStart(){
+  return head("Шесть игроков. Четыре матча. Одно поражение — всё")
+    +'<div class="card col"><div class="row between"><span class="lbl">Ваш клуб</span>'
+    +'<button class="pill" id="changeclub">сменить</button></div>'
+    +'<div class="row">'+logo(PICK.club,"lg")+'<h2>'+esc(byId[PICK.club].n)+'</h2></div>'
+    +'<div class="note">Игрок своего клуба всегда даёт сыгранность.</div></div>'
+    +(BEST?'<div class="card row between" style="margin-top:10px"><span class="lbl">Рекорд</span>'
+      +'<span class="row">'+logo(BEST.club)+'<b class="num">'+BEST.points+'</b></span></div>':"")
+    +'<div style="margin-top:12px"><button class="btn" id="go">Начать драфт</button></div>';
+}
+function lineupStrip(){
+  return '<div class="lineup">'+SLOTS.map(function(sl,i){
+    var p=S.squad[i],cl=i===S.slot&&S.screen==="draft"?" now":(p?" full":"");
+    return '<div class="slot'+cl+'">'+(p?sk(p.club,p.k):'<div style="height:34px"></div>')
+      +'<b>'+(p?p.ovr:"—")+'</b><em>'+esc(sl.n.slice(0,4))+'</em></div>'}).join("")+'</div>';
+}
+function screenDraft(){
+  var ch=chemOf(S.squad,S.club),pw=power(S.squad,S.club);
+  return head("Выбор "+(S.slot+1)+" из 6 — "+SLOTS[S.slot].n.toLowerCase())
+    +'<div class="card col" style="margin-bottom:12px">'+lineupStrip()
+      +'<div class="row between"><span class="pill mint">Сыгранность '+ch.score+'/10</span>'
+      +'<span class="pill num">Атака '+pw.atk+'</span><span class="pill num">Оборона '+pw.def+'</span></div></div>'
+    +'<div class="picks">'+S.offer.map(function(c,i){
+      var fake=S.squad.slice(); fake[S.slot]=c;
+      var ok=chemOf(fake,S.club).green>chemOf(S.squad,S.club).green;
+      return '<button class="p" data-pick="'+i+'">'
+        +'<div class="top">'+logo(c.club)+'</div><div class="chem'+(ok?" on":"")+'"></div>'
+        +sk(c.club,c.k)+'<div class="ovr num">'+c.ovr+'</div>'
+        +'<div class="role">'+esc(c.perk.n)+'</div>'
+        +'<div class="num">№'+c.num+' · '+esc(c.perk.t)+'</div></button>'}).join("")+'</div>';
+}
+function screenSquad(){
+  var pw=power(S.squad,S.club);
+  return head("Состав собран")
+    +'<div class="card col" style="margin-bottom:12px">'+lineupStrip()
+      +'<div class="row between"><span class="pill mint">Сыгранность '+pw.chem.score+'/10</span>'
+      +'<span class="pill num">Атака '+pw.atk+'</span><span class="pill num">Оборона '+pw.def+'</span></div></div>'
+    +'<div class="card col" style="margin-bottom:12px"><span class="lbl">Сетка</span>'+roundsStrip()+'</div>'
+    +'<button class="btn" id="toPre">Первый матч</button>';
+}
+function roundsStrip(){
+  return '<div class="rounds">'+ROUNDS.map(function(r,i){
+    var cl=i<S.round?"done":(i===S.round?(S.over?"lost":"now"):"");
+    return '<div class="rd '+cl+'">'+r.n+'</div>'}).join("")+'</div>';
+}
+function screenPre(){
+  var opp=oppOf(S.week,S.round,S.club),pw=power(S.squad,S.club);
+  var styleWord={atk:"играет в атаку",bal:"играет ровно",def:"закрывается"}[opp.style];
+  return head(ROUNDS[S.round].n)
+    +'<div class="board" style="margin-bottom:12px">'
+      +'<div class="side">'+logo(S.club,"lg")+'<span>'+esc(byId[S.club].a)+'</span></div>'
+      +'<div class="score">—</div>'
+      +'<div class="side">'+logo(opp.club,"lg")+'<span>'+esc(byId[opp.club].a)+'</span></div></div>'
+    +'<div class="card col" style="margin-bottom:12px"><div class="row between">'
+      +'<span class="pill num">Вы '+pw.atk+' / '+pw.def+'</span>'
+      +'<span class="pill num">Соперник '+opp.atk+' / '+opp.def+'</span></div>'
+      +'<div class="note">«'+esc(byId[opp.club].n)+'» '+styleWord+'.</div></div>'
+    +'<div class="lbl" style="margin-bottom:6px">Как играем</div>'
+    +'<div class="tac" style="margin-bottom:12px">'+TACTICS.map(function(t){
+      return '<button data-tac="'+t.id+'" aria-pressed="'+(S.tactic===t.id)+'"><b>'+t.n+'</b><em>'+t.t+'</em></button>'}).join("")+'</div>'
+    +'<button class="btn" id="play">Играть</button>';
+}
+function screenMatch(){
+  var m=S.last,opp=oppOf(S.week,S.round,S.club),shown=S.shown||m.ev.length;
+  var ev=m.ev.slice(0,shown),us=ev.filter(function(e){return e.us}).length,them=ev.length-us;
+  var done=shown>=m.ev.length;
+  return head(ROUNDS[S.round].n)
+    +'<div class="board" style="margin-bottom:12px">'
+      +'<div class="side">'+logo(S.club,"lg")+'<span>'+esc(byId[S.club].a)+'</span></div>'
+      +'<div class="score">'+us+':'+them+'</div>'
+      +'<div class="side">'+logo(opp.club,"lg")+'<span>'+esc(byId[opp.club].a)+'</span></div></div>'
+    +'<div class="card goals" style="margin-bottom:12px">'
+      +(ev.length?ev.map(function(e){
+        return '<div class="g"><b class="num">'+e.min+"'"+'</b>'
+          +(e.us?'<span class="row">'+logo(S.club)+'№'+e.by.num+' '+esc(e.by.perk.n)+'</span>'
+                :'<span class="row">'+logo(opp.club)+esc(byId[opp.club].n)+'</span>')
+          +'<span class="pill '+(e.us?"mint":"lav")+'">гол</span></div>'}).join("")
+        :'<div class="note">Голов пока нет</div>')
+      +(done&&m.so?'<div class="note" style="margin-top:8px">'+esc(m.so)+'</div>':"")+'</div>'
+    +(done?'<button class="btn" id="afterMatch">'+(m.won?(S.round>=3?"Кубок наш":"Дальше"):"Итог")+'</button>'
+          :'<button class="btn ghost" id="skip">Пропустить</button>');
+}
+function screenEnd(){
+  var pts=runPoints(S);
+  if(!BEST||pts>BEST.points){BEST={points:pts,club:S.club};save()}
+  var share="Драфт "+SEED+": "+(S.cup?"кубок":ROUNDS[Math.min(3,S.round)].n)+", "+pts+" очков";
+  return head(S.cup?"Кубок взят":"Вылет в "+ROUNDS[Math.min(3,S.round)].n)
+    +'<div class="card col"><div class="lbl">Очки</div><div class="fin num">'+pts+'</div>'
+      +'<div class="note">'+S.goals+' забито · '+S.conceded+' пропущено'+(S.cup?' · +50 за кубок':'')+'</div>'
+      +roundsStrip()
+      +'<div class="col" style="margin-top:4px">'+S.history.map(function(h){
+        return '<div class="row between"><span class="row">'+logo(h.club)+esc(byId[h.club].a)+'</span>'
+          +'<b class="num">'+h.us+':'+h.them+'</b></div>'}).join("")+'</div></div>'
+    +'<div class="card col" style="margin-top:10px"><span class="lbl">Состав</span>'+lineupStrip()
+      +'<div class="note" id="sh">'+esc(share)+'</div>'
+      +'<button class="btn ghost" id="copy">Скопировать</button></div>'
+    +'<div class="col" style="margin-top:12px"><button class="btn" id="again">Ещё драфт</button>'
+      +'<button class="btn ghost" id="other">Другая неделя</button></div>';
+}
+
+function reveal(){
+  var m=S.last; S.shown=0;
+  var reduce=matchMedia&&matchMedia("(prefers-reduced-motion:reduce)").matches;
+  if(reduce||!m.ev.length){S.shown=m.ev.length;return render()}
+  render();
+  var tick=function(){
+    if(!S||S.screen!=="match")return;
+    S.shown++;
+    render();
+    if(S.shown<m.ev.length)setTimeout(tick,700);
+  };
+  setTimeout(tick,500);
+}
+function afterMatch(){
+  var m=S.last;
+  S.goals+=m.us; S.conceded+=m.them;
+  S.history.push({club:oppOf(S.week,S.round,S.club).club,us:m.us,them:m.them});
+  if(m.won){
+    S.round++;
+    if(S.round>=4){S.cup=true;S.over=true;S.screen="end"}
+    else S.screen="pre";
+  }else{S.over=true;S.screen="end"}
+  render();
+}
+app.addEventListener("click",function(e){
+  var t=e.target.closest("[data-club],[data-pick],[data-tac],#go,#changeclub,#toPre,#play,#skip,#afterMatch,#again,#other,#copy");
+  if(!t)return;
+  if(t.dataset.club){PICK.club=t.dataset.club;save();return render()}
+  if(t.id==="changeclub"){PICK.club=null;return render()}
+  if(t.id==="go"){newRun();return render()}
+  if(t.dataset.pick!==undefined){
+    S.squad[S.slot]=S.offer[+t.dataset.pick]; S.slot++;
+    if(S.slot>=6){S.screen="squad"} else S.offer=offers(S.st,S.week,SLOTS[S.slot],S.club);
+    return render();
+  }
+  if(t.id==="toPre"){S.screen="pre";return render()}
+  if(t.dataset.tac){S.tactic=t.dataset.tac;return render()}
+  if(t.id==="play"){
+    S.last=simMatch(S.st,S.squad,S.club,oppOf(S.week,S.round,S.club),S.tactic);
+    S.screen="match"; return reveal();
+  }
+  if(t.id==="skip"){S.shown=S.last.ev.length;return render()}
+  if(t.id==="afterMatch")return afterMatch();
+  if(t.id==="again"){newRun();return render()}
+  if(t.id==="other"){SEED="draft:"+(1+Math.floor(Math.random()*24));newRun();return render()}
+  if(t.id==="copy"){
+    var box=document.getElementById("sh"),txt=box.textContent;
+    if(navigator.clipboard&&navigator.clipboard.writeText)
+      navigator.clipboard.writeText(txt).then(function(){t.textContent="Скопировано"},sel);
+    else sel();
+    function sel(){var r=document.createRange();r.selectNode(box);var s=getSelection();
+      s.removeAllRanges();s.addRange(r);t.textContent="Выделено — скопируйте"}
+    return;
+  }
+});
+render();
+</script>

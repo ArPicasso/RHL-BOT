@@ -530,9 +530,6 @@ function homeToday() {
   } else {
     html += `<section class="part"><div class="label">Следующий матч</div><div class="empty">Матчей регулярного чемпионата больше нет</div></section>`;
   }
-  // ряд «Сегодня» — под табло: на 320×568 над ним он вытеснял табло с первого экрана (ADR-015, 01.10)
-  html += `<div id="packs">${packsHTML()}</div>`;
-
   if (last) {
     html += `<section class="part"><div class="label">Последний результат</div>
       <div class="board-card tap" data-game="${esc(last.id)}" role="button" tabindex="0">
@@ -547,8 +544,15 @@ function homeToday() {
   const stats = seasonStats(me, true);
   if (stats) html += `<div class="stats">${stats}</div>`;
 
-  // лист дня — на своей подложке: переход от «моего матча» к листу виден цветом (ADR-017)
-  html += `<div id="feed" class="part deck">${feedHTML(me)}</div>`;
+  // Истории и лист дня — на общей подложке, одним телом (ADR-017, пересмотр 02.10). Раньше ряд стоял
+  // между табло и цифрами сезона: вокруг — свой клуб, а в кружках вся лига, и ряд читался как чужой.
+  // Теперь белое — про мой клуб, подложка — про то, что сегодня пишут
+  const row = packsHTML();
+  html += `<section class="part deck packs-part" id="packs-part"${row ? "" : " hidden"}>
+      <div class="label" role="heading" aria-level="2">Истории<span class="aside">свежее из каналов</span></div>
+      <div id="packs">${row}</div>
+    </section>
+    <div id="feed" class="part deck">${feedHTML(me)}</div>`;
   return html + footer();
 }
 
@@ -1020,7 +1024,13 @@ function packsHTML() {
 
 function refreshPacks() {
   const box = $("#packs");
-  if (box && state.tab === "home") box.innerHTML = packsHTML();
+  if (box && state.tab === "home") {
+    const row = packsHTML();
+    box.innerHTML = row;
+    // секция прячется целиком: заголовок «Истории» без кружков висел бы один (ADR-017, пересмотр 02.10)
+    const sec = $("#packs-part");
+    if (sec) sec.hidden = !row;
+  }
   if (state.stream !== undefined) lsSet(PACKS_ROW_KEY, packs().length ? "1" : "0");
 }
 

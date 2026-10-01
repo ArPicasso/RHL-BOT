@@ -53,6 +53,7 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `art/mascots/` | Проводники онбординга (ADR-011): промпты Midjourney `prompts.md`, листы `<клуб>.png`, какая фигура листа в какой позе — `poses.json` |
 | `tools/mascot_stickers.py` | Нарезать листы проводников из `art/mascots/` на четыре позы → `webapp/mascots/<клуб>-<поза>.webp` (руками, после новых картинок, ADR-011) |
 | `tools/fantasy_model/` | Агентная модель сезона фэнтези «Звено»: прогон каждой новой плюшки против бюджета до включения (ADR-014, раздел 14) |
+| `tools/capture_model/` | Агентная модель игры «Наш лёд»: свой клуб и захват карты лиги, прогон правила против бюджета до включения (ADR-017, предложено) |
 | `tools/player_kits.py` | Нарезать стикеры формы из `art/players/clubs/` и найти место номера на майке → `art/players/kits.json` (руками, после новых картинок) |
 | `webapp/story.html`, `webapp/stories/` | Карточки клубов для Telegram Stories и их готовые картинки (ADR-004) |
 | `tools/render_stories.js` | Перерисовать `webapp/stories/` (Playwright, запускается руками) |

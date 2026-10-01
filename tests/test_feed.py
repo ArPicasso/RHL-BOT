@@ -244,7 +244,9 @@ class Sheet(unittest.TestCase):
         self.assertNotEqual(cards[0]["kind"], "post")
         n_posts = sum(1 for c in cards if c["kind"] == "post")
         self.assertGreater(n_posts, 0)
-        self.assertLessEqual(n_posts, 0.4 * len(cards) + 1e-9)
+        # посты своего клуба в долю 40% не идут (пересмотр 01.10)
+        rest = [c for c in cards if c.get("slot") != "mine"]
+        self.assertLessEqual(sum(1 for c in rest if c["kind"] == "post"), 0.4 * len(rest) + 1e-9)
         for x, y in zip(cards, cards[1:]):
             self.assertFalse(x["kind"] == y["kind"] == "post", kinds(sheet))
         self.assertLessEqual(len(cards), feed.MAX_CARDS)
@@ -305,6 +307,23 @@ class Sheet(unittest.TestCase):
                            channel("ch_c", "c", kind="fan")]
         self.assertNotIn("post", kinds(self.w.build()))
 
+    def test_own_club_posts_outside_share(self):
+        # одна своя карточка («Дальше») — доля чужих постов ноль, но новость своего клуба встаёт
+        own = [{"id": "next-1", "kind": "upcoming"}]
+        queue = [feed.post_card(p, channel("ch_a", "a"), "A", "mine") for p in posts_of("ch_a", 1, 2)["posts"]]
+        queue += [feed.post_card(p, channel("ch_d", "d"), "D", "club") for p in posts_of("ch_d", 1)["posts"]]
+        self.assertEqual([c["kind"] for c in feed.assemble(own, queue)], ["upcoming", "post"])
+        self.assertEqual(feed.assemble(own, queue)[1]["slot"], "mine")
+        self.assertEqual(feed.assemble(own, queue[2:]), own)              # чужой пост — нет
+
+    def test_short_channel_name(self):
+        c = channel("ch_a", "a", short="ХК «Сокол»")
+        posts = {"ch_a": posts_of("ch_a", 1, title="🦅 ХК «Сокол» – Новочебоксарск")}
+        card = feed.club_posts("a", [c], posts, NOW, "mine", 1)[0]
+        self.assertEqual((card["ctitle"], card["cfull"]), ("ХК «Сокол»", "🦅 ХК «Сокол» – Новочебоксарск"))
+        plain = feed.club_posts("a", [channel("ch_a", "a")], posts, NOW, "mine", 1)[0]
+        self.assertNotIn("cfull", plain)
+
     def test_no_posts_without_own_cards(self):
         self.assertEqual(feed.assemble([], [feed.post_card(p, channel("ch_a", "a"), "A", "mine")
                                             for p in posts_of("ch_a", 1)["posts"]]), [])
@@ -356,6 +375,9 @@ class Sheet(unittest.TestCase):
         card = feed.table_card("a", standings, last, date(2026, 10, 10))
         self.assertEqual((card["place"], card["to8"]), (10, 2))
         self.assertIsNone(feed.table_card("a", standings, last, date(2026, 10, 12)))
+        # первому — отрыв от второго
+        top = feed.table_card("b", standings, game("g", "2026-10-09", "b", "a", (2, 1)), date(2026, 10, 10))
+        self.assertEqual((top["place"], top["lead"]), (1, 1))
 
 
 
@@ -395,6 +417,31 @@ class Stream(unittest.TestCase):
                     "game_id": n} for n, (y, b) in enumerate([(2022, "b"), (2022, "c"), (2023, "d"), (2024, "e")])]
         cards = feed.stream_cards([], history, {"h2": {"story": "Камбэк."}}, date(2026, 10, 10))
         self.assertEqual([(c["date"][:4], c.get("match")) for c in cards], [("2023", "h2"), ("2024", None), ("2022", None)])
+
+
+    def test_own_cards_before_first_tour(self):
+        # до тура сюжетов нет: матчи ближайших дней, очные встречи серий и лидеры по клубам — по кругу
+        games = [game("t1", "2026-10-11", "a", "b"), game("t2", "2026-10-12", "a", "b"),
+                 game("t3", "2026-10-11", "c", "d"), game("t4", "2026-10-20", "e", "f")]
+        h2h = {"a|b": {"games": 3, "wins": {"a": 2, "b": 1}, "goals": {"a": 9, "b": 5}, "since": "2022"},
+               "e|f": {"games": 1, "wins": {"e": 1}, "goals": {"e": 2, "f": 1}}}
+        leaders = {"season": "2025/26", "league": "НМХЛ", "categories": {
+            "pts": [{"rank": 1, "name": "Иванов Пётр", "team": "c"}, {"rank": 2, "name": "Петров Иван", "team": "b"}]}}
+        cards = feed.stream_cards(games, [], {}, date(2026, 10, 10), h2h=h2h, leaders=leaders, clubs=CLUBS)
+        self.assertEqual([c["kind"] for c in cards], ["today", "h2h", "leaders", "today", "leaders"])
+        self.assertEqual((cards[0]["date"], cards[0]["n"], cards[0]["games"]), ("2026-10-11", 2, ["t1", "t3"]))
+        self.assertEqual((cards[1]["id"], cards[1]["club"], cards[1]["wins"]), ("h2h-t1", "a", [2, 1]))  # пара — одна
+        self.assertEqual(cards[3]["date"], "2026-10-12")
+        self.assertEqual({c["club"] for c in cards if c["kind"] == "leaders"}, {"b", "c"})
+        self.assertEqual(sum(1 for c in cards if c["kind"] == "h2h"), 1)   # e—f через 10 дней — не в неделе
+        self.assertEqual(len({c["id"] for c in cards}), len(cards))
+
+    def test_stream_ids_match_sheet(self):
+        # те же id, что в листе клуба: в «Все» лента не повторяет лист
+        w = World()
+        sheet = {c["id"] for c in w.build(now=NOW - timedelta(days=1))["cards"]}
+        stream = feed.stream_cards(w.games, w.history, w.recaps, date(2026, 10, 9), h2h=w.h2h, clubs=CLUBS)
+        self.assertIn("h2h-g2", sheet & {c["id"] for c in stream})
 
 
 if __name__ == "__main__":

@@ -108,12 +108,14 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Onest:wght@500;700;800&family=Unbounded:wght@800&display=swap" onload="this.onload=null;this.rel='stylesheet'">
   <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@500;700;800&family=Unbounded:wght@800&display=swap"></noscript>
+  <!-- «Звено» (ADR-014) отложено: 125 КБ zveno.js на старте не грузим. Вернуть вместе с вкладкой
   <script>
     // База API «Звена» (ADR-014). Пусто — только Пролог. Подставляет Pages-задание из переменной ZVENO_API
     window.ZVENO_API = "";
   </script>
   <link rel="stylesheet" href="zveno.css">
   <script defer src="zveno.js"></script>
+  -->
   <script defer src="app.js"></script>
 </head>
 <body>
@@ -178,10 +180,13 @@
       <svg viewBox="0 0 24 24"><path d="M5 20V11M12 20V4M19 20v-6"/></svg>
       <span>Таблица</span>
     </button>
+    <!-- «Звено» (ADR-014) отложено до сервера: вкладки нет. Вернуть — раскомментировать,
+         поставить ZVENO_ON = true в app.js, вернуть zveno.css/zveno.js ниже и метку версии в pages.yml
     <button data-tab="zveno" aria-label="Звено">
       <svg viewBox="0 0 24 24"><path d="M19.5 12.5V6A2.5 2.5 0 0 0 17 3.5H7A2.5 2.5 0 0 0 4.5 6v12A2.5 2.5 0 0 0 7 20.5h5.5z"/><path d="M12.5 20.5v-5.5a2.5 2.5 0 0 1 2.5-2.5h4.5"/></svg>
       <span>Звено</span>
     </button>
+    -->
     <button data-tab="me" aria-label="Я — паспорт болельщика">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="4"/><path d="M4.5 20.5c1.2-3.8 4-5.5 7.5-5.5s6.3 1.7 7.5 5.5"/></svg>
       <span>Я</span>

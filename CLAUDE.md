@@ -44,7 +44,7 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `history.json` | Прошлые сезоны, команды уже в id из `teams.json`. В git, пересобирается руками раз в сезон |
 | `history_protocols.json` | Протоколы прошлых матчей из «Последних встреч» для их разбора (ADR-008). В git, докачивается `history.py --protocols` |
 | `webapp/` | Мини-апп: `index.html`, `style.css`, `app.js`, без сборки. Публикуется на GitHub Pages |
-| `webapp/zveno.js`, `webapp/zveno.css` | Вкладка «Звено» (ADR-014): Пролог по опубликованным `data/zveno/*.json` без сервера, экраны сезона поверх API из `window.ZVENO_API` (переменная Pages `ZVENO_API`) |
+| `webapp/zveno.js`, `webapp/zveno.css` | Вкладка «Звено» (ADR-014) — **отложена 02.10.2026, в мини-аппе не показывается**: флаг `ZVENO_ON = false` в `app.js`, вкладка и скрипты закомментированы в `index.html`. Внутри — Пролог по опубликованным `data/zveno/*.json` без сервера и экраны сезона поверх API из `window.ZVENO_API` |
 | `webapp/data/zveno/mock/` | Мок-сервер `api.js` и выдуманные данные «Звена» для разработки без сервера: `?zveno_mock=1`, `=team`, `=open`, `=prolog`, `=start`, `=none`. В git через `add -f`: `webapp/data/` в `.gitignore` |
 | `webapp/brand/` | Иконка для экрана загрузки Telegram и фавиконки (`icon.svg`, `icon-512.png`) |
 | `webapp/logos/` | Эмблемы всех 26 клубов, 200×200 PNG с прозрачным фоном, путь — поле `logo` в `teams.json` |

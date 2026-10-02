@@ -65,6 +65,8 @@ jobs:
         run: python build_data.py
 
       # «Звено» (ADR-014): туры, пул наклеек и матчи в webapp/data/zveno/ из тех же протоколов.
+      # Игра отложена (02.10.2026), мини-апп её не показывает — шаг оставлен, чтобы движок считался
+      # на живых протоколах и данные были готовы к возвращению вкладки.
       # Упадёт — мини-апп всё равно публикуется, «Звено» остаётся без данных до следующего часа
       - name: Собрать данные «Звена»
         continue-on-error: true
@@ -72,22 +74,12 @@ jobs:
 
       # Pages отдаёт файлы с кэшем на 10 минут, а Telegram держит их ещё дольше. Метка версии в адресе
       # заставляет взять свежие app.js и style.css вместе с новым index.html, иначе они расходятся
-      # Тот же шаг подставляет базу API «Звена» (ADR-014): Settings → Variables → ZVENO_API=https://…/api/zveno.
-      # Пусто — мини-апп показывает только Пролог
+      # Метки для zveno.css/zveno.js и подстановку ZVENO_API вернуть вместе с вкладкой «Звена» (ADR-014)
       - name: Метка версии для кэша
-        env:
-          ZVENO_API: ${{ vars.ZVENO_API }}
         run: |
           v="${GITHUB_SHA::8}"
           sed -i "s#href=\"style.css\"#href=\"style.css?v=$v\"#; s#src=\"app.js\"#src=\"app.js?v=$v\"#" webapp/index.html
-          sed -i "s#href=\"zveno.css\"#href=\"zveno.css?v=$v\"#; s#src=\"zveno.js\"#src=\"zveno.js?v=$v\"#" webapp/index.html
           grep -q "app.js?v=$v" webapp/index.html && grep -q "style.css?v=$v" webapp/index.html
-          grep -q "zveno.js?v=$v" webapp/index.html && grep -q "zveno.css?v=$v" webapp/index.html
-          if [ -n "$ZVENO_API" ]; then
-            [[ "$ZVENO_API" =~ ^https://[A-Za-z0-9./_:-]+$ ]] || { echo "ZVENO_API — только https://адрес без пробелов и кавычек"; exit 1; }
-            sed -i "s#window.ZVENO_API = \"\";#window.ZVENO_API = \"$ZVENO_API\";#" webapp/index.html
-            grep -q "window.ZVENO_API = \"https://" webapp/index.html
-          fi
 
       - uses: actions/upload-pages-artifact@v3
         with:

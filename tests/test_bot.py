@@ -1,8 +1,10 @@
 """Онбординг бота (ADR-005): тексты, кнопки и стикеры — без Telegram и без токена."""
 import asyncio
 import json
+import os
 import re
 import sys
+import tempfile
 import unittest
 from datetime import date, datetime, time
 from pathlib import Path
@@ -246,6 +248,153 @@ class Leaders(unittest.TestCase):
         data = build_data.leaders(build_data.load_teams(), build_data.load_leaders())
         text = bot.leaders_text(data)
         self.assertIn("Султанов Реваль (Полёт) — 78 очков", text)
+
+
+class Raskat(unittest.TestCase):
+    """«Раскат» в боте (контракт «Раската», раздел 6): игра дня, лист ожидания зачёта."""
+
+    index = {"built": "2026-10-03T09:17:00+03:00", "season": "2026/27", "today": "2026-10-03",
+             "days": [{"date": "2026-10-02", "n": 1, "w": 6, "h": 6, "k": 4, "hard": 1, "par": 55},
+                      {"date": "2026-10-03", "n": 2, "w": 6, "h": 6, "k": 5, "hard": 1, "par": 70}]}
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()) / "raskat_waitlist.json"
+        self.file = mock.patch.object(bot, "WAITLIST_FILE", self.tmp)
+        self.file.start()
+        self.addCleanup(self.file.stop)
+
+    def saved(self):
+        return json.loads(self.tmp.read_text())
+
+    def api(self, value):
+        """Сервер зачётов включён (непустая RASKAT_API) или нет."""
+        return mock.patch.dict(os.environ, {"RASKAT_API": value})
+
+    # ---------- кнопка и текст ----------
+
+    def test_button_opens_raskat(self):
+        with mock.patch.object(bot, "WEBAPP_URL", "https://x.github.io/app/"), self.api(""):
+            kb = bot.raskat_kb(42).inline_keyboard
+        self.assertEqual(kb[0][0].web_app.url, "https://x.github.io/app/?startapp=raskat")
+        self.assertIn("Собрать раскат", kb[0][0].text)
+
+    def test_day_of_index_in_text(self):
+        with mock.patch.object(bot, "WAITLIST", set()), self.api(""):
+            text = bot.raskat_text(self.index, 42, date(2026, 10, 3))
+        self.assertIn("Раскат дня</b> №2", text)
+        self.assertIn("Сегодня 5 номеров и поле 6×6, норма — 1:10.", text)
+        self.assertIn("номера звена по порядку", text)
+        self.assertIn("Зачёта пока нет", text)
+        self.assertEqual(text.count("<b>"), text.count("</b>"))
+
+    def test_text_without_index_still_points_to_app(self):
+        with mock.patch.object(bot, "WAITLIST", set()), self.api(""):
+            text = bot.raskat_text(None)
+        self.assertIn("Раскат дня", text)
+        self.assertIn("Жми кнопку", text)
+
+    def test_par_text(self):
+        self.assertEqual([bot.par_text(n) for n in (45, 60, 70, 125)],
+                         ["45 секунд", "1:00", "1:10", "2:05"])
+
+    def test_texts_are_russian(self):
+        with mock.patch.object(bot, "WAITLIST", {42}), self.api(""):
+            texts = [bot.raskat_text(self.index, 42, date(2026, 10, 3)), bot.raskat_open_text(),
+                     bot.B_RASKAT, bot.B_WAIT_ON, bot.B_WAIT_OFF]
+        for t in texts:
+            self.assertFalse(re.search(r"[A-Za-z]", re.sub(r"<[^>]+>", "", t)), t)
+
+    # ---------- лист ожидания ----------
+
+    def test_waitlist_add_remove_and_idempotent(self):
+        with mock.patch.object(bot, "WAITLIST", set()):
+            self.assertTrue(bot.waitlist_set(42, True))
+            self.assertEqual(self.saved(), [42])
+            bot.waitlist_set(42, True)          # дважды — файл не ломается
+            bot.waitlist_set(7, True)
+            self.assertEqual(self.saved(), [7, 42])
+            self.assertFalse(bot.waitlist_set(42, False))
+            bot.waitlist_set(42, False)         # отказ дважды — тоже ничего
+            self.assertEqual(self.saved(), [7])
+            self.assertEqual(bot.WAITLIST, {7})
+
+    def test_waitlist_survives_broken_file(self):
+        self.tmp.write_text("{не json")
+        self.assertEqual(bot.load_waitlist(), set())
+        with mock.patch.object(bot, "WAITLIST_FILE", self.tmp.parent / "нет.json"):
+            self.assertEqual(bot.load_waitlist(), set())
+
+    def test_second_raskat_offers_to_stop(self):
+        with mock.patch.object(bot, "WAITLIST", set()), self.api(""):
+            self.assertIn(bot.B_WAIT_ON, bot.raskat_kb(42).inline_keyboard[1][0].text)
+            bot.waitlist_set(42, True)
+            kb = bot.raskat_kb(42).inline_keyboard
+            self.assertIn(bot.B_WAIT_OFF, kb[1][0].text)
+            self.assertIn("Позову, как только он откроется", bot.raskat_text(self.index, 42))
+
+    def test_no_waitlist_button_when_scored(self):
+        with mock.patch.object(bot, "WAITLIST", {42}), self.api("https://rhl.example/api/raskat"):
+            self.assertEqual(len(bot.raskat_kb(42).inline_keyboard), 1)
+            self.assertIn("идёт в зачёт дня", bot.raskat_text(self.index, 42))
+
+    # ---------- диплинк ----------
+
+    def run_start(self, args):
+        m = mock.Mock()
+        m.chat.id = 42
+        with mock.patch.object(bot, "WAITLIST", set()), self.api(""), \
+                mock.patch.object(bot, "published_raskat", mock.AsyncMock(return_value=self.index)), \
+                mock.patch.object(bot, "send_sticker", mock.AsyncMock(return_value=True)), \
+                mock.patch.object(bot, "say", mock.AsyncMock()) as say:
+            asyncio.run(bot.start(m, bot.CommandObject(prefix="/", command="start", args=args)))
+            return say.call_args.args[2]()
+
+    def test_start_raskat_opens_game_of_the_day(self):
+        text, kb = self.run_start("raskat")
+        self.assertIn("Раскат дня", text)
+        self.assertIn("startapp=raskat", kb.inline_keyboard[0][0].web_app.url)
+        self.assertIn(bot.B_WAIT_ON, kb.inline_keyboard[1][0].text)
+
+    def test_plain_start_is_not_raskat(self):
+        text, kb = self.run_start(None)
+        self.assertIn("Жми «Открыть РХЛ»", text)
+        self.assertEqual(len(kb.inline_keyboard), 1)
+
+    # ---------- зачёт включили ----------
+
+    def test_waitlist_called_once_when_api_appears(self):
+        with mock.patch.object(bot, "WAITLIST", {7, 42}), \
+                mock.patch.object(bot, "say", mock.AsyncMock()) as say, self.api("https://rhl.example/api"):
+            self.assertEqual(asyncio.run(bot.raskat_open_broadcast(mock.Mock())), 2)
+            self.assertEqual(bot.WAITLIST, set())
+            self.assertEqual(self.saved(), [])
+            text, kb = say.call_args.args[2]()
+            self.assertEqual(asyncio.run(bot.raskat_open_broadcast(mock.Mock())), 0)   # второй раз — тишина
+            self.assertEqual(say.await_count, 2)
+        self.assertIn("открылся зачёт", text)
+        self.assertEqual(len(kb.inline_keyboard), 1)   # в рассылке кнопка одна
+
+    def test_nobody_called_without_api(self):
+        with mock.patch.object(bot, "WAITLIST", {42}), \
+                mock.patch.object(bot, "say", mock.AsyncMock()) as say, self.api(""):
+            self.assertEqual(asyncio.run(bot.raskat_open_broadcast(mock.Mock())), 0)
+            self.assertEqual(bot.WAITLIST, {42})
+            say.assert_not_awaited()
+
+    def test_blocked_bot_does_not_stop_broadcast(self):
+        err = bot.TelegramForbiddenError(method=mock.Mock(), message="bot was blocked")
+        with mock.patch.object(bot, "WAITLIST", {7, 42}), self.api("https://rhl.example/api"), \
+                mock.patch.object(bot, "say", mock.AsyncMock(side_effect=[err, None])):
+            self.assertEqual(asyncio.run(bot.raskat_open_broadcast(mock.Mock())), 1)
+            self.assertEqual(bot.WAITLIST, set())
+
+    # ---------- ежедневных напоминаний про раскат нет ----------
+
+    def test_no_daily_raskat_reminder(self):
+        g = bot.GAMES[0]
+        for text in (bot.reminder_text(g, "today"), bot.reminder_text(g, "tomorrow"),
+                     bot.remind_text(42, date(2026, 9, 25))):
+            self.assertNotIn("аскат", text)
 
 
 if __name__ == "__main__":

@@ -24,12 +24,12 @@ There is no backend server for the app. A scheduled job turns public league page
 
 ```mermaid
 flowchart LR
-  subgraph Sources
+  subgraph SRC["Sources"]
     L[League site<br>match protocols]
     C[Calendar site]
     T[Club Telegram<br>channels]
   end
-  subgraph GitHub Actions, hourly
+  subgraph GA["GitHub Actions, hourly"]
     B[build_data.py<br>league.py · feed.py]
   end
   L --> B

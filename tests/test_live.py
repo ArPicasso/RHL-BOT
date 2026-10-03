@@ -483,7 +483,7 @@ class Service(unittest.TestCase):
     def test_files_follow_adr_019(self):
         self.run_step(self.make())
         allowed = {"key", "date", "home", "away", "start", "time", "status", "period", "clock", "score", "events",
-                   "online", "khl_id", "protocol", "seen", "src"}
+                   "online", "khl_id", "tournament", "protocol", "seen", "src"}
         iso_msk = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+03:00$")
         day = self.read("2026-10-03.json")
         self.assertEqual(day, self.read("today.json"))
@@ -510,7 +510,7 @@ class Service(unittest.TestCase):
         sched = self.read("schedule.json")
         self.assertEqual(set(sched), {"updated", "games"})
         for g in sched["games"]:
-            self.assertLessEqual(set(g), {"key", "date", "home", "away", "start", "time", "online", "khl_id", "src"})
+            self.assertLessEqual(set(g), {"key", "date", "home", "away", "start", "time", "online", "khl_id", "tournament", "src"})
             self.assertGreaterEqual(g["date"], "2026-10-03")
             self.assertLess(g["date"], "2026-10-17")
         for name, s in self.read("sources.json").items():
@@ -552,3 +552,51 @@ class AtomicWrite(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LeagueSite(unittest.TestCase):
+    """Сайт лиги rhl.fhr.ru — главный источник (03.10.2026): настоящие страницы, онлайн КХЛ отвечает 403."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.now = [msk("2026-10-03T17:51:00")]
+        site = "https://rhl.fhr.ru"
+        self.site = FakeSite({
+            f"{site}/calendar/": fixture("rhl_calendar_2026_10_03.html"),
+            f"{site}/matchcenter/1432/905111/": fixture("rhl_match_905111_live.html"),
+            f"{site}/matchcenter/1432/905113/": fixture("rhl_match_905113_final.html"),
+        })
+        self.lv = live.Live(self.dir, TEAMS, self.site, clock=lambda: self.now[0], site=site)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def today(self) -> dict[str, dict]:
+        data = json.loads((self.dir / "today.json").read_text(encoding="utf-8"))
+        return {g["key"]: g for g in data["games"]}
+
+    def test_live_score_from_league_site(self):
+        asyncio.run(self.lv.step(force=True))
+        games = self.today()
+        g = games["2026-10-03|ryazan-vdv|belgorod"]
+        self.assertEqual((g["status"], g["period"], g["score"], g["time"], g["src"]),
+                         ("live", "2", {"home": 2, "away": 0, "decision": None}, "17:00", "rhl.fhr.ru"))
+        self.assertEqual(g["online"], "https://rhl.fhr.ru/matchcenter/1432/905111/live/")
+        # сыгранный в 13:00: дата — со страницы матча, счёт — из ленты, протокол — вкладка сайта
+        r = games["2026-10-03|rostov|krasnodar"]
+        self.assertEqual((r["status"], r["score"]["home"], r["score"]["away"], r["time"]), ("ended", 0, 6, "13:00"))
+        self.assertEqual(r["protocol"], "https://rhl.fhr.ru/matchcenter/1432/905113/protocol/")
+
+    def test_online_403_pauses_for_an_hour(self):
+        async def blocked(url):
+            if "online.khl.ru" in url:
+                raise ConnectionError("403, message='Forbidden'")
+            return await self.site(url)
+        self.lv.fetch = blocked
+        asyncio.run(self.lv.step(force=True))
+        self.assertTrue(self.lv.online_blocked(self.now[0]))
+        self.assertIn("не спрашиваем до", json.loads((self.dir / "sources.json").read_text(encoding="utf-8"))
+                      ["online.khl.ru"]["note"])
+        self.now[0] = msk("2026-10-03T18:55:00")
+        self.assertFalse(self.lv.online_blocked(self.now[0]))

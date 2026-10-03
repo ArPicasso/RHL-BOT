@@ -11,7 +11,9 @@
   --band-lavender: #e9ccff;
   --band-mint: #55db9c;
   --band-concrete: #cccccc;
-  --band-peach: #ffd9c7;     /* «Звено» (ADR-014) */
+  --band-peach: #ffd9c7;     /* полоса «Раската» (ADR-018) */
+  --ice: #e8f3ff;            /* лёд поля «Раската» */
+  --ice-mark: rgba(77, 162, 255, .18);   /* разметка арены под сеткой: две линии и круг */
   --deck: #edf4fb;           /* подложка листа дня (ADR-017) */
   --backdrop: rgba(0, 0, 0, .35);
   /* стикеры — одинаковые в обеих темах */
@@ -61,6 +63,8 @@
   --band-mint: #15291f;
   --band-concrete: #1c222c;
   --band-peach: #2a1f1b;
+  --ice: #16202e;
+  --ice-mark: rgba(77, 162, 255, .22);
   --deck: #0e131b;           /* глубже фона: карточки --paper на ней всплывают */
   --backdrop: rgba(4, 7, 12, .6);
   --act: #4da2ff;
@@ -791,7 +795,7 @@ h1, .display {
   .tabs span[data-short] { font-size: 0; }
   .tabs span[data-short]::after { content: attr(data-short); font-size: 13px; }
 }
-/* Точка «надо решить» на иконке «Звена» — в самой иконке, едет вместе с ней */
+/* Точка «надо решить» на иконке «Раската» — в самой иконке, едет вместе с ней */
 .tabs svg .due { fill: var(--ember); stroke: var(--paper); stroke-width: 2; }
 .tabs button.active svg .due { stroke: var(--act); }
 

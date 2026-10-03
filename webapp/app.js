@@ -3766,7 +3766,7 @@ function render(dir = 0) {
   }
   const cur = $("#tabs button.active");
   if (!cur || cur.dataset.tab !== state.tab || !$("#tabs").classList.contains("ready")) setTab(state.tab, false);
-  const views = { home: renderHome, calendar: renderCalendar, table: renderTable, zveno: renderZveno, me: renderMe };
+  const views = { home: renderHome, calendar: renderCalendar, table: renderTable, raskat: renderRaskat, me: renderMe };
   screen.innerHTML = views[state.tab]();
   addThemeToggle();
   placeRunners(screen);
@@ -3783,7 +3783,7 @@ function render(dir = 0) {
     watchSeen(screen);
     mountStream();
   }
-  if (state.tab === "zveno") zvMounted();
+  if (state.tab === "raskat") rsMounted();
   if (dir && !calm()) {
     // двигаем детей, а не сам экран: его край обрезает сдвиг (#screen в style.css)
     for (const el of screen.children) {
@@ -3792,8 +3792,9 @@ function render(dir = 0) {
   }
 }
 
-// «Звено» (ADR-014) — между «Таблицей» и «Я»: первые три вкладки про настоящий хоккей, «Я» всегда последняя
-const TAB_ORDER = ["home", "calendar", "table", "zveno", "me"];
+// «Раскат» (ADR-018) — между «Таблицей» и «Я»: первые три вкладки про настоящий хоккей, «Раскат» —
+// игра, «Я» всегда последняя
+const TAB_ORDER = ["home", "calendar", "table", "raskat", "me"];
 const tabDir = (from, to) => Math.sign(TAB_ORDER.indexOf(to) - TAB_ORDER.indexOf(from)) || 1;
 
 function haptic() {
@@ -3829,8 +3830,8 @@ function confirmTeam(id = state.draft || state.fav) {
   state.conf = team(id).conf;
   saveFav(id);
   closeMatch();
-  // пришёл по ссылке на лидеров или в «Звено» и только что выбрал команду — ведём туда, куда звали
-  state.tab = !wasFav && state.tableView === "players" ? "table" : !wasFav && state.zvLink ? "zveno" : "home";
+  // пришёл по ссылке на лидеров или в «Раскат» и только что выбрал команду — ведём туда, куда звали
+  state.tab = !wasFav && state.tableView === "players" ? "table" : !wasFav && state.rsLink ? "raskat" : "home";
   if (inTelegram && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
   render(dir);
   // новичок, пришедший не по ссылке, — проводник показывает приложение (ADR-011);
@@ -4255,15 +4256,15 @@ function boot(d, cached = false) {
   useData(d);
   const fromLink = startParam();
   const saved = lsGet(FAV_KEY);
-  // «Звено» из бота или от друга: startapp=zveno, startapp=lg-<код> — раньше id команды (ADR-014)
-  const zvLink = zvLinkParam(fromLink);
-  if (zvLink && !state.openedFromLink) {
+  // «Раскат» из бота или от друга: startapp=raskat, startapp=rs-<код> — раньше id команды (ADR-018)
+  const rsLink = rsLinkParam(fromLink);
+  if (rsLink && !state.openedFromLink) {
     state.openedFromLink = true;
-    state.zvLink = true;
-    state.tab = "zveno";
-    zvFromLink(zvLink);
+    state.rsLink = true;
+    state.tab = "raskat";
+    rsFromLink(rsLink);
   }
-  zvRestoreJoin();
+  rsRestoreDuel();
   // Ссылка с командой (приглашение от друга, бот) новичку открывает знакомство с этим клубом:
   // выбирает он сам. Свой клуб ссылка не перезаписывает
   if (saved && state.teams[saved]) {
@@ -4288,8 +4289,8 @@ function boot(d, cached = false) {
   if (!state.fav && state.draft && !state.openedFromLink) {
     setTimeout(() => { if (!state.fav && state.draft && $("#sheet").hidden) openMeet(state.draft); }, (cached ? SPLASH_REPEAT_MS : SPLASH_MIN_MS) + 300);
   }
-  // «Звено»: точка «надо решить» на вкладке — в фоне, когда экран уже нарисован
-  if (state.fav && state.tab !== "zveno") setTimeout(zvPeek, (cached ? SPLASH_REPEAT_MS : SPLASH_MIN_MS) + 2500);
+  // «Раскат»: точка «надо решить» на вкладке — в фоне, когда экран уже нарисован
+  if (state.fav && state.tab !== "raskat") setTimeout(rsPeek, (cached ? SPLASH_REPEAT_MS : SPLASH_MIN_MS) + 2500);
   // Тур и проводник — один раз и не поверх ссылки из бота: прерванный тур — «Продолжение»,
   // прошёл тур раньше — «Новое» (ADR-016), нынешний пройден — знакомство при смене команды, иначе вступление
   if (state.fav && !state.openedFromLink && !state.tour) {

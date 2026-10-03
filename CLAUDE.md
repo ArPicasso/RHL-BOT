@@ -35,6 +35,8 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `raskat/` | Движок игры «Раскат» (ADR-018), только stdlib: константы и формула очков `rules.py`, размер поля по дню недели `plan.py`, расклад, решатель и проверка пути `puzzle.py`, зачёты `standings.py` |
 | `build_raskat.py` | Собирает `webapp/data/raskat/`: `index.json` и расклад на каждый день сезона. В Pages-задании сразу после `build_data.py` |
 | `docs/raskat/contract.md` | Контракт частей «Раската»: правила поля, опубликованные данные, функции движка, очки и зачёты, API сервера, бот |
+| `server.py` | API на VPS (ADR-019): `/api/live/*`, зачёт «Раската» `/api/raskat/*`, прогнозы `/api/predict/*`, `/api/health`. aiohttp на `127.0.0.1:8080`, подпись `initData`, CORS для Pages, сверка соли |
+| `raskat_store.py`, `predict.py` | Хранилище зачёта «Раската» и голоса «Кто победит?» (ADR-020) в SQLite `state.db` (не в git); в `predict.py` ещё правила приёма и итога матча |
 | `rhockey.py` | Календарь всей лиги с r-hockey.ru — временно, до открытия rhl.fhr.ru |
 | `channels.json` | Telegram-каналы клубов и лиги для листа «Главной» (ADR-015): `kind`, `scope`, `markers`, короткое имя `short`, отказ клуба `optout` (`images` — без картинок, `all` — не показываем), дата письма клубу `notified`. Правится руками |
 | `tg_channels.py` | Посты каналов из `t.me/s` → `channel_posts.json` (не в git): только превью, фильтры рекламы, букмекеров (и по ссылкам), пиратских трансляций, дней рождения и возраста, постов не о молодёжке. Для матч-центра у поста внешние ссылки `links` и строки со временем `times`, короткие посты со ссылкой — в `extra` канала (ADR-019) |
@@ -61,7 +63,7 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `tools/render_stickers.js` | Перерисовать стикеры и эмодзи (Playwright, запускается руками) |
 | `tools/upload_emoji.py` | Опубликовать эмодзи набором `t.me/addemoji/rhl_u21_by_<бот>` |
 | `.claude/agents/bot-logic.md` | Агент для логики бота: онбординг, хендлеры, напоминания |
-| `deploy/` | Сервер: `setup.sh` — первая настройка VPS, `update.sh` — выкладка (`rhl-update`), служба `bot.service`, `tunnel.sh` и `tg-tunnel.service` — выход в Telegram через зарубежный сервер (`TELEGRAM_PROXY`) |
+| `deploy/` | Сервер: `setup.sh` — первая настройка VPS, `update.sh` — выкладка (`rhl-update`), службы `bot.service`, `live.service`, `api.service`, `https.sh` — Caddy и HTTPS для API, `tunnel.sh` и `tg-tunnel.service` — выход в Telegram через зарубежный сервер (`TELEGRAM_PROXY`) |
 | `.github/workflows/deploy.yml` | После слияния в `main` выкладывает бота на сервер по ключу, который умеет только `rhl-update` |
 | `calendar.pdf` | Календарь на печать, отдаётся по кнопке |
 | `docs/SYSTEM.md` | Как система работает сейчас: части, выкладка, секреты, сервер, что делать при сбоях |
@@ -86,6 +88,7 @@ venv/bin/python history.py --protocols           # затем протоколы
 venv/bin/python tg_channels.py                   # посты каналов клубов в channel_posts.json (ADR-015)
 venv/bin/python build_data.py                    # собрать webapp/data/league.json, h2h.json и листы feed/
 venv/bin/python build_raskat.py                  # расклады «Раската» в webapp/data/raskat/ (ADR-018)
+BOT_TOKEN=... venv/bin/python server.py          # API на 127.0.0.1:8080: /api/health, зачёт, прогнозы
 cd webapp && python3 -m http.server 8000         # мини-апп в браузере: localhost:8000
 ```
 

@@ -6,6 +6,7 @@
 #
 # Повторный запуск безопасен: что уже сделано, пропускается. Токен бота скрипт спросит
 # сам и положит только в /etc/rhl/bot.env (права 640) — в git, чат и журналы он не попадает.
+# Ставит службы bot, live и api; HTTPS для API — отдельно, deploy/https.sh.
 # Порядок и пояснения — BOT_README.md.
 set -euo pipefail
 
@@ -70,17 +71,15 @@ if [ -f /etc/systemd/system/ryazan-bot.service ]; then
   done
 fi
 
-step "Служба bot"
-install -m 644 "$APP/deploy/bot.service" /etc/systemd/system/bot.service
-systemctl daemon-reload
-systemctl enable bot >/dev/null
-systemctl restart bot
-sleep 3
+step "Службы bot, live и api"
+# Ставит и запускает их выкладка rhl-update — та же, что потом зовёт GitHub Actions.
+# Службу, чьего кода ещё нет в main (live.py), она пропускает
+install -m 755 "$APP/deploy/update.sh" /usr/local/sbin/rhl-update
+/usr/local/sbin/rhl-update || echo "ВНИМАНИЕ: не все службы поднялись — журнал выше. Продолжаю."
 systemctl --no-pager --lines=5 status bot || true
 
 step "Ключ для выкладки из GitHub Actions"
 # Ключ умеет ровно одно — запустить rhl-update. Ни шелла, ни проброса портов.
-install -m 755 "$APP/deploy/update.sh" /usr/local/sbin/rhl-update
 install -d -m 700 /root/.ssh
 [ -f "$DEPLOY_KEY" ] || ssh-keygen -q -t ed25519 -N '' -C rhl-actions -f "$DEPLOY_KEY"
 touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
@@ -92,6 +91,7 @@ ip=$(curl -fsS -4 --max-time 5 https://api.ipify.org || hostname -I | awk '{prin
 cat <<EOF
 
 Готово. Бот работает как служба: journalctl -u bot -f
+API зачёта и прогнозов слушает только 127.0.0.1:8080: journalctl -u api -f
 
 Чтобы GitHub сам выкладывал код после слияния в main, заведи в репозитории
 Settings → Secrets and variables → Actions → New repository secret три секрета:
@@ -106,4 +106,7 @@ DEPLOY_SSH_KEY  (весь блок, вместе со строками BEGIN и 
 $(cat "$DEPLOY_KEY")
 
 После этого приватный ключ на сервере больше не нужен: rm $DEPLOY_KEY
+
+Сервер в России — сначала туннель до Telegram: bash $APP/deploy/tunnel.sh user@ЗАРУБЕЖНЫЙ-IP
+Потом HTTPS для зачёта «Раската» и прогнозов, один раз: bash $APP/deploy/https.sh
 EOF

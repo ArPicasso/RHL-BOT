@@ -10,3 +10,5 @@ channel_posts.json
 raskat_waitlist.json
 schedule.json
 schedule.tmp
+state.db
+state.db-*

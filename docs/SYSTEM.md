@@ -13,9 +13,12 @@
                     └──▶ «Выложить бота на сервер» (deploy.yml) ──ssh──┐
                                                                        ▼
  болельщик ── Telegram ── мини-апп (Pages)            VPS в России (Timeweb, Новосибирск)
-     ▲                                                 /opt/rhl, служба bot (bot.py)
-     │                                                   │  читает data/*.json с Pages
+     ▲                         │                       /opt/rhl, служба bot (bot.py)
+     │                         │                         │  читает data/*.json с Pages
      └──── Telegram Bot API ◀── зарубежный сервер ◀──────┘  через tg-tunnel (SOCKS 127.0.0.1:1080)
+                               │
+                               └─ https://<хост>/api ──▶ Caddy :443 ──▶ служба api (server.py, 127.0.0.1:8080)
+                                  зачёт, прогнозы, живое        state.db · live/*.json ◀── служба live (live.py)
 ```
 
 ## Части
@@ -41,9 +44,24 @@
   расклад, прошлые дни — тренировка.
 - Работает **без сервера**. Расклад выводится из даты (соль — секрет `RASKAT_SALT`), путь
   проверяется на телефоне. Решения в опубликованных файлах нет.
-- **Зачёта пока нет**: нужен API (`docs/raskat/contract.md`, раздел 5). Когда он появится, адрес
-  кладётся в переменную `RASKAT_API`. Тогда мини-апп включит зачёт, а бот позовёт лист ожидания.
+- **Зачёт** — служба `api` на VPS (`docs/raskat/contract.md`, раздел 5). Включается переменной
+  Pages `RASKAT_API=https://<хост>/api/raskat`: тогда мини-апп показывает зачёт дня, кубок клубов и
+  дуэли, а бот один раз зовёт лист ожидания. Пусто — играем без зачёта, как раньше.
+- Соль: секрет `RASKAT_SALT` задания Pages и `RASKAT_SALT` в `/etc/rhl/bot.env` — одно значение.
+  Сервер при старте и раз в час сверяет свой расклад дня с опубликованным; разошлись — зачёт
+  отвечает «временно выключен», причина — в `/api/health`.
 - В боте: `/raskat` и кнопка «Собрать раскат», лист ожидания зачёта — `raskat_waitlist.json`.
+
+### API — VPS в России (ADR-019, ADR-020)
+
+- `server.py`, aiohttp, слушает только `127.0.0.1:8080`. Наружу — через Caddy по HTTPS
+  (`https://<хост>/api/…`, сертификат Let's Encrypt сам). Ставит Caddy `deploy/https.sh`.
+- `/api/raskat/*` — зачёт «Раската», `/api/predict/*` — «Кто победит?», `/api/live/*.json` —
+  живые файлы матч-центра из `live/` (их пишет служба `live`, `live.py`), `/api/health` — жив ли.
+- Вход — подпись `initData` Telegram (токен бота), CORS — только адрес Pages (`PAGES_ORIGIN`).
+- Хранит всё в SQLite `/opt/rhl/state.db`: результаты раскатов, настройки, коды дуэлей, голоса.
+  О человеке — Telegram id, клуб и (только по галочке) «Пётр К.». Стирается кнопками «Удалить мои
+  раскаты» (`DELETE /api/raskat/me`) и `DELETE /api/predict/me`.
 
 ### Бот — VPS в России
 
@@ -61,8 +79,13 @@
 ### Выкладка
 
 - Слияние в `main` запускает задание **«Выложить бота на сервер»** (`deploy.yml`). Задание по ssh
-  запускает на сервере `rhl-update`: `git reset --hard origin/main`, pip, перезапуск и проверка
-  службы. Правки только в `webapp/`, `docs/`, `art/`, `stickers/` и `*.md` бота не перезапускают.
+  запускает на сервере `rhl-update`: `git reset --hard origin/main`, pip, установка и перезапуск
+  служб `bot`, `live`, `api` из `deploy/` и проверка каждой (у `api` — `/api/health`). Службу, чьего
+  файла кода ещё нет в `main`, выкладка пропускает с сообщением. Правки только в `webapp/`,
+  `docs/`, `art/`, `stickers/` и `*.md` служб не перезапускают.
+- `rhl-update` обновляет сам себя: новая `deploy/update.sh` в `main` ставится и сразу продолжает
+  выкладку. Старая копия, поставленная до служб `api` и `live`, этого не умела — её один раз
+  заменяет `deploy/https.sh`.
 - Ключ выкладки на сервере умеет одно — запустить `rhl-update`.
 
 ## Секреты и переменные GitHub
@@ -70,10 +93,11 @@
 | Имя | Где | Что |
 | --- | --- | --- |
 | `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_SSH_KEY` | Secrets | Выкладка на сервер. Печатает `setup.sh` |
-| `RASKAT_SALT` | Secrets | Соль раскладов. Без неё берётся соль из `raskat/rules.py` |
+| `RASKAT_SALT` | Secrets | Соль раскладов. Без неё берётся соль из `raskat/rules.py`. На сервере — то же значение в `/etc/rhl/bot.env` |
 | `BOT_TOKEN` | Secrets | Только для стенда «Запустить бота». На сервере токен — в `/etc/rhl/bot.env` |
 | `LEAGUE_SITE` | Variables | Сайт лиги для протоколов. Пусто до открытия `rhl.fhr.ru` |
-| `RASKAT_API` | Variables | API зачёта «Раската». Пусто — играем без зачёта |
+| `RASKAT_API` | Variables | `https://<хост>/api/raskat` — зачёт «Раската». Пусто — играем без зачёта. Печатает `https.sh` |
+| `LIVE_API` | Variables | `https://<хост>/api` — матч-центр и прогнозы. Пусто — без живого и без «Кто победит?». Печатает `https.sh` |
 | `BOT_LINK`, `APP_LINK`, `WEBAPP_URL` | Variables | Ссылки, если отличаются от зашитых в код |
 
 ## Сервер: где что лежит
@@ -81,12 +105,15 @@
 | Путь | Что |
 | --- | --- |
 | `/opt/rhl` | Клон репозитория, venv, файлы состояния бота: `subscribers.json`, `announced.json`, `raskat_waitlist.json` |
-| `/etc/rhl/bot.env` | `BOT_TOKEN`, `WEBAPP_URL`, `TELEGRAM_PROXY`. Права 640 |
+| `/opt/rhl/state.db` | Зачёт «Раската» и прогнозы (SQLite, рядом `state.db-wal`, `-shm`) |
+| `/opt/rhl/live/` | Живые файлы матч-центра: пишет `live`, отдаёт `api`, читает бот |
+| `/etc/rhl/bot.env` | Общий для служб `bot`, `live`, `api`: `BOT_TOKEN`, `WEBAPP_URL`, `TELEGRAM_PROXY`, `RASKAT_SALT`, `RASKAT_API`, `PAGES_ORIGIN`. Права 640 |
 | `/etc/rhl/tunnel.env` | Куда идёт туннель |
+| `/etc/caddy/Caddyfile` | HTTPS: `/api/*` → `127.0.0.1:8080`, остальное 404. Пишет `https.sh` |
 | `/usr/local/sbin/rhl-update` | Выкладка (копия `deploy/update.sh`) |
-| службы `bot`, `tg-tunnel` | systemd, перезапускаются сами |
+| службы `bot`, `live`, `api`, `tg-tunnel`, `caddy` | systemd, перезапускаются сами |
 
-Наружу открыт только SSH (ufw).
+Наружу открыты SSH и, после `https.sh`, 80 и 443 для Caddy (ufw).
 
 ## Что делать, если
 
@@ -98,11 +125,15 @@
 | Выкладка красная, `error in libcrypto` | Секрет `DEPLOY_SSH_KEY` вставлен с ошибкой: весь блок BEGIN…END заново |
 | Нужно выложить руками | `rhl-update` |
 | Мини-апп со старыми данными | Actions → «Мини-апп» → лог. Обычно r-hockey не ответил: следующий час соберёт |
+| Зачёт «не отвечает», прогнозов нет | `systemctl status api caddy`, `journalctl -u api -n 50`, `curl -s 127.0.0.1:8080/api/health` |
+| Зачёт «временно выключен» | Соль сервера не сошлась с Pages: `curl -s 127.0.0.1:8080/api/health` → `raskat.note`. Поправить `RASKAT_SALT` в `/etc/rhl/bot.env` под секрет Pages, `systemctl restart api` |
+| HTTPS не открывается, сертификат | `journalctl -u caddy -n 50`; открыты ли 80 и 443 у хостинга и в `ufw status`; повторить `bash /opt/rhl/deploy/https.sh` |
+| Живого счёта нет | `systemctl status live`, `journalctl -u live -n 50`, `ls -l /opt/rhl/live` |
 
 ## Чего пока нет
 
-- **Бэкапа** `subscribers.json`. Сервер умрёт — подписчики нажмут «Напоминать» заново.
-- **Зачёта «Раската»**: сервер API с базой, домен и HTTPS.
+- **Бэкапа** `subscribers.json` и `state.db`. Сервер умрёт — подписчики нажмут «Напоминать» заново,
+  а зачёт и прогнозы начнутся с нуля. Простейшее — `sqlite3 state.db ".backup …"` по таймеру.
 - **Сайта РХЛ**: календарь — предварительный с r-hockey (`official: false`), протоколов
   и лидеров 2026/27 нет.
 - **Живого счёта** (ADR-012): опрос источников с этого сервера — следующий шаг.

@@ -93,10 +93,12 @@ jobs:
       # Pages отдаёт файлы с кэшем на 10 минут, а Telegram держит их ещё дольше. Метка версии в адресе
       # заставляет взять свежие app.js и style.css вместе с новым index.html, иначе они расходятся
       # Тот же шаг подставляет базу API «Раската» (ADR-018): Settings → Variables → RASKAT_API=https://…/api/raskat.
-      # Пусто — игра работает без зачёта: поле, время и личные записи на устройстве
+      # Пусто — игра работает без зачёта: поле, время и личные записи на устройстве.
+      # И базу матч-центра (ADR-019, ADR-020): LIVE_API=https://…/api. Пусто — без живого счёта и прогнозов
       - name: Метка версии для кэша
         env:
           RASKAT_API: ${{ vars.RASKAT_API }}
+          LIVE_API: ${{ vars.LIVE_API }}
         run: |
           v="${GITHUB_SHA::8}"
           sed -i "s#href=\"style.css\"#href=\"style.css?v=$v\"#; s#src=\"app.js\"#src=\"app.js?v=$v\"#" webapp/index.html
@@ -107,6 +109,11 @@ jobs:
             [[ "$RASKAT_API" =~ ^https://[A-Za-z0-9./_:-]+$ ]] || { echo "RASKAT_API — только https://адрес без пробелов и кавычек"; exit 1; }
             sed -i "s#window.RASKAT_API = \"\";#window.RASKAT_API = \"$RASKAT_API\";#" webapp/index.html
             grep -q "window.RASKAT_API = \"https://" webapp/index.html
+          fi
+          if [ -n "$LIVE_API" ]; then
+            [[ "$LIVE_API" =~ ^https://[A-Za-z0-9./_:-]+$ ]] || { echo "LIVE_API — только https://адрес без пробелов и кавычек"; exit 1; }
+            sed -i "s#window.LIVE_API = \"\";#window.LIVE_API = \"${LIVE_API%/}\";#" webapp/index.html
+            grep -q "window.LIVE_API = \"https://" webapp/index.html
           fi
 
       - uses: actions/upload-pages-artifact@v3

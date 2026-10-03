@@ -1,0 +1,191 @@
+{
+ "date": "2026-10-03",
+ "updated": "2026-10-03T22:05:00+03:00",
+ "games": [
+  {
+   "key": "2026-10-03|ryazan-vdv|belgorod",
+   "date": "2026-10-03",
+   "home": "ryazan-vdv",
+   "away": "belgorod",
+   "start": "2026-10-03T17:00:00+03:00",
+   "time": "17:00",
+   "status": "ended",
+   "period": "РБ",
+   "clock": null,
+   "score": {
+    "home": 3,
+    "away": 2,
+    "decision": "Б"
+   },
+   "events": [
+    {
+     "period": "1",
+     "time": "00:00",
+     "team": null,
+     "kind": "period",
+     "text": "Начался 1-й период"
+    },
+    {
+     "period": "1",
+     "time": "05:12",
+     "team": "home",
+     "kind": "goal",
+     "text": "Иванов (Петров, Сидоров)",
+     "score": "1:0"
+    },
+    {
+     "period": "1",
+     "time": "09:40",
+     "team": "away",
+     "kind": "penalty",
+     "text": "Смирнов — 2 мин, подножка"
+    },
+    {
+     "period": "1",
+     "time": "14:03",
+     "team": "away",
+     "kind": "goal",
+     "text": "Козлов (Орлов)",
+     "score": "1:1"
+    },
+    {
+     "period": "1",
+     "time": "20:00",
+     "team": null,
+     "kind": "period",
+     "text": "Конец 1-го периода — 1:1, броски 11:8"
+    },
+    {
+     "period": "2",
+     "time": "00:00",
+     "team": null,
+     "kind": "period",
+     "text": "Начался 2-й период"
+    },
+    {
+     "period": "2",
+     "time": "03:21",
+     "team": "home",
+     "kind": "goal",
+     "text": "Петров (Иванов)",
+     "score": "2:1"
+    },
+    {
+     "period": "2",
+     "time": "10:05",
+     "team": "home",
+     "kind": "penalty",
+     "text": "Сидоров — 2 мин, задержка клюшкой"
+    },
+    {
+     "period": "2",
+     "time": "11:58",
+     "team": null,
+     "kind": "text",
+     "text": "Вратарь «Белгорода» Лебедев отбивает бросок в упор"
+    },
+    {
+     "period": "3",
+     "time": "19:31",
+     "team": "away",
+     "kind": "goal",
+     "text": "Орлов (Козлов)",
+     "score": "2:2"
+    },
+    {
+     "period": "РБ",
+     "time": "",
+     "team": "home",
+     "kind": "goal",
+     "text": "Иванов — победный буллит",
+     "score": "3:2"
+    },
+    {
+     "period": "РБ",
+     "time": "",
+     "team": null,
+     "kind": "period",
+     "text": "Матч окончен — 3:2 Б"
+    }
+   ],
+   "online": "https://online.khl.ru/online/904950.html",
+   "khl_id": 904950,
+   "protocol": null,
+   "seen": "2026-10-03T22:04:50+03:00",
+   "src": "online.khl.ru",
+   "watch": [
+    {
+     "title": "Трансляция · канал «МХК Рязань-ВДВ»",
+     "url": "https://vk.com/video-12345_456239017",
+     "src": "t.me/hcryazan"
+    }
+   ]
+  },
+  {
+   "key": "2026-10-03|proton|kristall",
+   "date": "2026-10-03",
+   "home": "proton",
+   "away": "kristall",
+   "start": "2026-10-03T16:00:00+03:00",
+   "time": "16:00",
+   "status": "final",
+   "period": null,
+   "clock": null,
+   "score": {
+    "home": 1,
+    "away": 4,
+    "decision": null
+   },
+   "events": [],
+   "online": "https://online.khl.ru/online/904951.html",
+   "khl_id": 904951,
+   "protocol": null,
+   "seen": "2026-10-03T22:04:50+03:00",
+   "src": "online.khl.ru"
+  },
+  {
+   "key": "2026-10-03|rostov|krasnodar",
+   "date": "2026-10-03",
+   "home": "rostov",
+   "away": "krasnodar",
+   "start": "2026-10-03T14:00:00+03:00",
+   "time": "14:00",
+   "status": "final",
+   "period": null,
+   "clock": null,
+   "score": {
+    "home": 4,
+    "away": 3,
+    "decision": "ОТ"
+   },
+   "events": [],
+   "online": "https://online.khl.ru/online/904952.html",
+   "khl_id": 904952,
+   "protocol": null,
+   "seen": "2026-10-03T22:04:50+03:00",
+   "src": "online.khl.ru"
+  },
+  {
+   "key": "2026-10-03|tverichi|metallurg",
+   "date": "2026-10-03",
+   "home": "tverichi",
+   "away": "metallurg",
+   "start": "2026-10-03T19:30:00+03:00",
+   "time": "19:30",
+   "status": "ended",
+   "period": null,
+   "clock": null,
+   "score": {
+    "home": 2,
+    "away": 5,
+    "decision": null
+   },
+   "events": [],
+   "online": "https://online.khl.ru/online/904953.html",
+   "khl_id": 904953,
+   "protocol": null,
+   "seen": "2026-10-03T22:04:50+03:00",
+   "src": "online.khl.ru"
+  }
+ ]
+}

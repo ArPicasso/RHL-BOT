@@ -50,9 +50,10 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `history.py` | Матчи пяти прошлых сезонов НМХЛ с сайта лиги → `history.json` для очных встреч (ADR-006) |
 | `history.json` | Прошлые сезоны, команды уже в id из `teams.json`. В git, пересобирается руками раз в сезон |
 | `history_protocols.json` | Протоколы прошлых матчей из «Последних встреч» для их разбора (ADR-008). В git, докачивается `history.py --protocols` |
-| `webapp/` | Мини-апп: `index.html`, `style.css`, `app.js`, без сборки. Публикуется на GitHub Pages |
+| `webapp/` | Мини-апп: `index.html`, `style.css`, `app.js`, без сборки. Публикуется на GitHub Pages. Живое и прогнозы — с `window.LIVE_API` (переменная Pages `LIVE_API`), пусто — по `league.json` |
 | `webapp/raskat.js`, `webapp/raskat.css` | Вкладка «Раскат» (ADR-018): поле и ведение шайбы по опубликованному раскладу дня без сервера, зачёты поверх API из `window.RASKAT_API` (переменная Pages `RASKAT_API`) |
 | `webapp/data/raskat/mock/` | Мок-сервер `api.js` и выдуманные зачёты «Раската» для разработки без сервера: `?raskat_mock=1`, `=solved`, `=none`. В git через `add -f`: `webapp/data/` в `.gitignore` |
+| `webapp/data/live/mock/` | Мок матч-центра (ADR-019) и прогнозов «Кто победит?» (ADR-020) без сервера: живое дня 03.10 `today.json` (`pre/`, `post/` — до и после матчей) и `api.js` с ответами `/predict/*`, как у `server.py`. `?live_mock=1` — матчи в разных статусах, `=pre`, `=post`, `=guest` — как вне Telegram, `=stale` — живое старше 5 минут. В git через `add -f` |
 | `webapp/brand/` | Иконка для экрана загрузки Telegram и фавиконки (`icon.svg`, `icon-512.png`) |
 | `webapp/logos/` | Эмблемы всех 26 клубов, 200×200 PNG с прозрачным фоном, путь — поле `logo` в `teams.json` |
 | `webapp/players/` | Стикеры игроков вместо фото, 192×192 WebP: в форме клубов — `clubs/<клуб>-skater.webp` и `-goalie.webp`, общие — `skater.webp`, `goalie.webp`; исходники — `art/players/` (ADR-009) |

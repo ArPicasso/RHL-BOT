@@ -131,6 +131,22 @@ def check_init_data(init_data: str, token: str, now: float | None = None) -> tup
     return user, ""
 
 
+def published_puzzle(day: str, pub) -> raskat.Puzzle | None:
+    """Опубликованный файл дня (контракт, раздел 2) → расклад для проверки пути. Кривой — None."""
+    if not isinstance(pub, dict) or pub.get("date", day) != day:
+        return None
+    try:
+        w, h, par = int(pub["w"]), int(pub["h"]), int(pub["par"])
+        dots = tuple(int(x) for x in pub["dots"])
+        walls = tuple(str(x) for x in pub["walls"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (2 <= w <= 12 and 2 <= h <= 12 and dots and all(0 <= x < w * h for x in dots) and par > 0):
+        return None
+    return raskat.Puzzle(date=day, n=int(pub.get("n") or 0), w=w, h=h, dots=dots, walls=walls,
+                         hard=int(pub.get("hard") or 1), par=par)
+
+
 def short_name(user: dict) -> str | None:
     """«Пётр К.» — имя и первая буква фамилии, не больше (ADR-018, раздел 3.9)."""
     first = " ".join(str(user.get("first_name") or "").split())[:32]
@@ -199,7 +215,11 @@ class Api:
         # Сверка соли (контракт, раздел 3): None — ещё не сверяли, True — сошлось или не с чем
         self.salt_ok: bool | None = None
         self.salt_note = "сверка ещё не прошла"
+        # Соль на сервере не сошлась с Pages — расклады берём из опубликованных файлов дня: поле
+        # болельщика нарисовано по ним, а Pages — наш же сайт. Так зачёт не ждёт ручной правки bot.env
+        self.published_mode = False
         self._puzzles: dict[tuple[str, str], raskat.Puzzle] = {}
+        self._pub_puzzles: dict[str, raskat.Puzzle] = {}
         self._league: tuple[float, dict] = (0.0, {})
         self._index: tuple[float, str] = (0.0, "")
         self._stand: dict[tuple, object] = {}
@@ -260,6 +280,23 @@ class Api:
             self._puzzles[k] = raskat.generate(day)
         return self._puzzles[k]
 
+    async def puzzle_for(self, day: str) -> raskat.Puzzle:
+        """Расклад, по которому проверяется путь: свой движком или, если соль не сошлась с Pages,
+        опубликованный файл дня. Файла нет и не скачался — зачёт этого дня ждёт: 503."""
+        if not self.published_mode:
+            return self.puzzle(day)
+        if day not in self._pub_puzzles:
+            try:
+                pub = await self.fetch(f"{self.cfg.pages}data/raskat/{day}.json")
+            except Exception as e:
+                log.warning("расклад %s с Pages не скачался: %s", day, type(e).__name__)
+                pub = None
+            p = published_puzzle(day, pub)
+            if p is None:
+                raise Fail(503, OFF_TEXT)
+            self._pub_puzzles[day] = p
+        return self._pub_puzzles[day]
+
     async def salt_check(self) -> None:
         """Сегодняшний расклад движком против опубликованного файла дня. Разошлись — зачёт выключен:
         иначе путь болельщика не сходится с полем на сервере и отказ получают все разом.
@@ -283,12 +320,18 @@ class Api:
                 continue
             mine = raskat.as_json(self.puzzle(day.isoformat()))
             if isinstance(pub, dict) and all(pub.get(k) == mine[k] for k in ("w", "h", "dots", "walls")):
-                self.salt_ok, self.salt_note = True, f"соль сошлась с опубликованным раскладом {day}"
+                self.salt_ok, self.published_mode = True, False
+                self.salt_note = f"соль сошлась с опубликованным раскладом {day}"
                 log.info("сверка соли: %s", self.salt_note)
+            elif published_puzzle(day.isoformat(), pub):
+                self.salt_ok, self.published_mode = True, True
+                self.salt_note = (f"расклад {day} на сервере не совпал с опубликованным — зачёт идёт по "
+                                  f"опубликованным раскладам. Чтобы сервер считал сам, RASKAT_SALT в "
+                                  f"/etc/rhl/bot.env и секрет RASKAT_SALT задания Pages должны совпасть")
+                log.warning("сверка соли: %s", self.salt_note)
             else:
                 self.salt_ok = False
-                self.salt_note = (f"расклад {day} на сервере не совпал с опубликованным: RASKAT_SALT в "
-                                  f"/etc/rhl/bot.env и секрет RASKAT_SALT задания Pages должны быть одинаковыми")
+                self.salt_note = f"опубликованный расклад {day} не читается — зачёт выключен"
                 log.error("сверка соли: %s", self.salt_note)
             return
         self.salt_ok = True if self.salt_ok is None else self.salt_ok
@@ -457,7 +500,7 @@ class Api:
             raise Fail(400, "Не понял, была ли подсказка.")
         ms = int(round(ms))
         club = self.club_arg(data)
-        puzzle = self.puzzle(day.isoformat())
+        puzzle = await self.puzzle_for(day.isoformat())
         verdict = raskat.check(puzzle, path)
         if not verdict:
             raise Fail(400, verdict.reason)

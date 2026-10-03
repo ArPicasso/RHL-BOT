@@ -421,16 +421,31 @@ class Salt(Base):
         self.api = self.app[server.API_KEY]
         await self.start()
 
-    async def test_mismatch_turns_off(self):
+    async def test_mismatch_uses_published(self):
+        # Соль Pages другая (секрет RASKAT_SALT не перенесли на сервер): зачёт идёт по опубликованному
+        # раскладу — путь болельщика по полю Pages принимается, путь по своему движку — нет
         with mock.patch.dict(os.environ, {"RASKAT_SALT": "другая соль"}):
-            self.pub[f"data/raskat/{D1}.json"] = raskat.as_json(raskat.generate(D1))
+            other = raskat.generate(D1)
+            self.pub[f"data/raskat/{D1}.json"] = raskat.as_json(other)
+            path = raskat.solve(other, limit=1)[0]
+        await self.restart()
+        h = await self.call("GET", "/api/health")
+        self.assertTrue(h["raskat"]["on"])
+        self.assertIn("по опубликованным раскладам", h["raskat"]["note"])
+        await self.call("POST", f"/api/raskat/day/{D1}", fan(2),
+                        {"path": solution(D1), "ms": 40_000, "hint": False}, status=400)
+        r = await self.call("POST", f"/api/raskat/day/{D1}", fan(1), {"path": path, "ms": 40_000, "hint": False})
+        self.assertEqual(r["place"], 1)
+
+    async def test_unreadable_published_turns_off(self):
+        with mock.patch.dict(os.environ, {"RASKAT_SALT": "другая соль"}):
+            self.pub[f"data/raskat/{D1}.json"] = {"date": D1, "w": "?", "dots": []}
         await self.restart()
         d = await self.solve_day(fan(1), status=503)
         self.assertIn("Зачёт временно выключен", d["error"])
         await self.call("GET", "/api/raskat/me", fan(1), status=503)
         h = await self.call("GET", "/api/health")
         self.assertFalse(h["raskat"]["on"])
-        self.assertIn("RASKAT_SALT", h["raskat"]["note"])
         # стереть свои данные можно и при выключенном зачёте
         await self.call("DELETE", "/api/raskat/me", fan(1))
 

@@ -111,7 +111,11 @@ echo "Сверка соли: $salt"
 
 step "Бот узнаёт адрес зачёта"
 api="https://$HOST/api/raskat"
-if grep -qx "RASKAT_API=$api" "$ENV_FILE"; then
+raskat_on=$(printf '%s' "$health" | python3 -c 'import json, sys; print(1 if json.load(sys.stdin)["raskat"]["on"] else 0)' || echo 0)
+if [ "$raskat_on" != 1 ]; then
+  # Иначе бот позовёт лист ожидания в выключенный зачёт
+  echo "Зачёт выключен — RASKAT_API в $ENV_FILE не пишу. Причина — в https://$HOST/api/health"
+elif grep -qx "RASKAT_API=$api" "$ENV_FILE"; then
   echo "Уже стоит: RASKAT_API=$api"
 else
   if grep -q '^RASKAT_API=' "$ENV_FILE"; then
@@ -129,8 +133,9 @@ cat <<EOF
 
 Готово. Проверь с телефона: https://$HOST/api/health
 
-Заведи в репозитории Settings → Secrets and variables → Actions → Variables → New repository
-variable две переменные:
+Мини-апп найдёт API сам: задание «Мини-апп» раз в час проверяет адрес <ip>.sslip.io по секрету
+DEPLOY_HOST. Чтобы не ждать — Actions → «Мини-апп» → Run workflow. Если у API свой домен, заведи
+Settings → Secrets and variables → Actions → Variables:
 
 LIVE_API
 https://$HOST/api
@@ -138,10 +143,6 @@ https://$HOST/api
 RASKAT_API
 https://$HOST/api/raskat
 
-Потом Actions → «Мини-апп» → Run workflow: мини-апп подхватит адреса, и зачёт откроется.
-Бот позовёт лист ожидания зачёта в ближайшее время напоминаний (10:00 или 19:00 МСК) — заведи
-переменные до него.
-
-Соль раскладов: секрет RASKAT_SALT задания Pages и RASKAT_SALT в $ENV_FILE должны совпадать.
-Не совпали — зачёт отвечает «временно выключен», причина — в https://$HOST/api/health.
+Соль раскладов: секрет RASKAT_SALT задания Pages и RASKAT_SALT в $ENV_FILE лучше держать
+одинаковыми. Разошлись — зачёт идёт по опубликованным раскладам, причина — в https://$HOST/api/health.
 EOF

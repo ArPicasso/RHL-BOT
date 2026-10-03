@@ -32,9 +32,9 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `leaders.json` | Лидеры лиги по шести показателям, по 30 игроков (ADR-009). В git: сейчас НМХЛ 2025/26, после первого тура РХЛ его заменяет задание мини-аппа |
 | `past_clubs.json` | Клубы прошлых сезонов, которых нет в РХЛ: написания и эмблема из `webapp/logos/past/` (ADR-009) |
 | `teams.json` | 26 команд лиги: конференция, город, id на r-hockey, варианты написания, прежние названия (`former`), цвета формы (`colors`), проводник онбординга (`mascot`: имя и фразы, ADR-011) |
-| `zveno/` | Движок фэнтези «Звено» (ADR-014), только stdlib: константы `rules.py`, туры и дедлайны `tours.py`, очки за матч `points.py`, стоимость `prices.py`, приоры 25/26 `prior.py` → `zveno/data/prior_2526.json`, конструктор названий `names.py`, правила менеджера для сервера `manager.py` |
-| `build_zveno.py` | Собирает `webapp/data/zveno/`: `tours.json`, `pool.json`, `matches.json`, `names.json`. В Pages-задании сразу после `build_data.py` |
-| `docs/zveno/contract.md` | Контракт частей «Звена»: опубликованные данные, функции движка, API сервера, бот |
+| `raskat/` | Движок игры «Раскат» (ADR-018), только stdlib: константы и формула очков `rules.py`, размер поля по дню недели `plan.py`, расклад, решатель и проверка пути `puzzle.py`, зачёты `standings.py` |
+| `build_raskat.py` | Собирает `webapp/data/raskat/`: `index.json` и расклад на каждый день сезона. В Pages-задании сразу после `build_data.py` |
+| `docs/raskat/contract.md` | Контракт частей «Раската»: правила поля, опубликованные данные, функции движка, очки и зачёты, API сервера, бот |
 | `rhockey.py` | Календарь всей лиги с r-hockey.ru — временно, до открытия rhl.fhr.ru |
 | `channels.json` | Telegram-каналы клубов и лиги для листа «Главной» (ADR-015): `kind`, `scope`, `markers`, короткое имя `short`, отказ клуба `optout` (`images` — без картинок, `all` — не показываем), дата письма клубу `notified`. Правится руками |
 | `tg_channels.py` | Посты каналов из `t.me/s` → `channel_posts.json` (не в git): только превью, фильтры рекламы, букмекеров, дней рождения и возраста, постов не о молодёжке |
@@ -44,15 +44,14 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `history.json` | Прошлые сезоны, команды уже в id из `teams.json`. В git, пересобирается руками раз в сезон |
 | `history_protocols.json` | Протоколы прошлых матчей из «Последних встреч» для их разбора (ADR-008). В git, докачивается `history.py --protocols` |
 | `webapp/` | Мини-апп: `index.html`, `style.css`, `app.js`, без сборки. Публикуется на GitHub Pages |
-| `webapp/zveno.js`, `webapp/zveno.css` | Вкладка «Звено» (ADR-014): Пролог по опубликованным `data/zveno/*.json` без сервера, экраны сезона поверх API из `window.ZVENO_API` (переменная Pages `ZVENO_API`) |
-| `webapp/data/zveno/mock/` | Мок-сервер `api.js` и выдуманные данные «Звена» для разработки без сервера: `?zveno_mock=1`, `=team`, `=open`, `=prolog`, `=start`, `=none`. В git через `add -f`: `webapp/data/` в `.gitignore` |
+| `webapp/raskat.js`, `webapp/raskat.css` | Вкладка «Раскат» (ADR-018): поле и ведение шайбы по опубликованному раскладу дня без сервера, зачёты поверх API из `window.RASKAT_API` (переменная Pages `RASKAT_API`) |
+| `webapp/data/raskat/mock/` | Мок-сервер `api.js` и выдуманные зачёты «Раската» для разработки без сервера: `?raskat_mock=1`, `=solved`, `=none`. В git через `add -f`: `webapp/data/` в `.gitignore` |
 | `webapp/brand/` | Иконка для экрана загрузки Telegram и фавиконки (`icon.svg`, `icon-512.png`) |
 | `webapp/logos/` | Эмблемы всех 26 клубов, 200×200 PNG с прозрачным фоном, путь — поле `logo` в `teams.json` |
 | `webapp/players/` | Стикеры игроков вместо фото, 192×192 WebP: в форме клубов — `clubs/<клуб>-skater.webp` и `-goalie.webp`, общие — `skater.webp`, `goalie.webp`; исходники — `art/players/` (ADR-009) |
 | `webapp/mascots/` | Проводники онбординга: `<клуб>-<поза>.webp`, 288×288, позы `hello`, `point`, `cheer`, `shrug` (ADR-011) |
 | `art/mascots/` | Проводники онбординга (ADR-011): промпты Midjourney `prompts.md`, листы `<клуб>.png`, какая фигура листа в какой позе — `poses.json` |
 | `tools/mascot_stickers.py` | Нарезать листы проводников из `art/mascots/` на четыре позы → `webapp/mascots/<клуб>-<поза>.webp` (руками, после новых картинок, ADR-011) |
-| `tools/fantasy_model/` | Агентная модель сезона фэнтези «Звено»: прогон каждой новой плюшки против бюджета до включения (ADR-014, раздел 14) |
 | `tools/player_kits.py` | Нарезать стикеры формы из `art/players/clubs/` и найти место номера на майке → `art/players/kits.json` (руками, после новых картинок) |
 | `webapp/story.html`, `webapp/stories/` | Карточки клубов для Telegram Stories и их готовые картинки (ADR-004) |
 | `tools/render_stories.js` | Перерисовать `webapp/stories/` (Playwright, запускается руками) |
@@ -83,6 +82,7 @@ venv/bin/python history.py                       # прошлые сезоны �
 venv/bin/python history.py --protocols           # затем протоколы прошлых встреч, ~30 минут
 venv/bin/python tg_channels.py                   # посты каналов клубов в channel_posts.json (ADR-015)
 venv/bin/python build_data.py                    # собрать webapp/data/league.json, h2h.json и листы feed/
+venv/bin/python build_raskat.py                  # расклады «Раската» в webapp/data/raskat/ (ADR-018)
 cd webapp && python3 -m http.server 8000         # мини-апп в браузере: localhost:8000
 ```
 

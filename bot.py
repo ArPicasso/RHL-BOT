@@ -28,6 +28,7 @@ BASE = Path(__file__).parent
 TZ = ZoneInfo("Europe/Moscow")
 SUBS_FILE = BASE / "subscribers.json"
 ANNOUNCED_FILE = BASE / "announced.json"   # матчи, о которых уже написали после игры (ADR-008)
+WAITLIST_FILE = BASE / "raskat_waitlist.json"   # кого позвать, когда в «Раскате» откроется зачёт
 STICKERS = BASE / "stickers"          # стикеры бота (ADR-005), 512×512 WEBP
 # мини-апп (ADR-003); переменная окружения — только чтобы подставить тестовый адрес
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://arpicasso.github.io/bogdanov/"
@@ -35,7 +36,7 @@ REMIND_TODAY_AT = time(10, 0)      # утром в день игры
 REMIND_TOMORROW_AT = time(19, 0)   # вечером накануне
 REMIND_TEAM = "Рязань-ВДВ"         # напоминания пока только о её матчах: games.json
 RESULTS_POLL = 600                 # раз в 10 минут смотрим опубликованные результаты мини-аппа
-LEADERS_TTL = 600                  # лидеров лиги перечитываем не чаще раза в 10 минут (ADR-009)
+DATA_TTL = 600                     # опубликованные данные перечитываем не чаще раза в 10 минут
 RESULTS_FRESH_DAYS = 2             # матчи старше не присылаем
 QUIET_FROM, QUIET_TO = time(23, 0), time(9, 0)   # ночью молчим, результат уйдёт утром
 
@@ -94,21 +95,28 @@ def emoji_off(err: Exception) -> bool:
 B_APP = "Открыть РХЛ"
 B_RECAP = "Как это было"
 B_LEADERS = "Все лидеры"
+B_RASKAT = "Собрать раскат"
+B_WAIT_ON = "Позвать, когда откроется"
+B_WAIT_OFF = "Больше не звать"
 
 # видно в пустом чате до «Старт» и в профиле бота (до 512 и 120 символов)
 DESCRIPTION = ("Бот Первенства России U21 — РХЛ 2026/27.\n\n"
                "🏒 Календарь всех 26 команд, таблица и счёт матчей — в приложении\n"
                "🏆 Лучшие игроки лиги: бомбардиры, снайперы, вратари\n"
+               "🏑 Раскат дня: головоломка про шайбу на пару минут\n"
                "🔔 Напоминания перед играми\n\n"
                "Жми «Старт» 👇")
 SHORT_DESCRIPTION = "РХЛ U21: календарь, таблица и счёт матчей. Напомню перед игрой 🏒"
 
 
-def app_url(team: str | None = None, match: str | None = None, view: str | None = None) -> str:
+def app_url(team: str | None = None, match: str | None = None, view: str | None = None,
+            startapp: str | None = None) -> str:
     """Адрес мини-аппа; с командой — ?team=<id>, мини-апп выберет её, если своей ещё нет.
     С матчем — ?match=<id>, мини-апп сразу откроет его карточку (ADR-008).
-    С view=leaders — сразу «Таблица → Игроки» (ADR-009)."""
-    extra = [(k, v) for k, v in (("team", team), ("match", match), ("view", view)) if v]
+    С view=leaders — сразу «Таблица → Игроки» (ADR-009).
+    С startapp=raskat — сразу «Раскат» (контракт «Раската», раздел 6)."""
+    extra = [(k, v) for k, v in (("team", team), ("match", match), ("view", view),
+                                 ("startapp", startapp)) if v]
     if not extra:
         return WEBAPP_URL
     u = urlsplit(WEBAPP_URL)
@@ -143,6 +151,21 @@ def leaders_kb() -> InlineKeyboardMarkup:
     else:
         btn = InlineKeyboardButton(text=f"{EMOJI['cup']} {B_LEADERS}", web_app=web_app)
     return InlineKeyboardMarkup(inline_keyboard=[[btn]])
+
+
+def raskat_kb(chat_id: int | None = None) -> InlineKeyboardMarkup:
+    """Кнопка «Раската» (startapp=raskat). Пока зачёта нет — вторым планом лист ожидания."""
+    web_app = WebAppInfo(url=app_url(startapp="raskat"))
+    if "stick" in CUSTOM:
+        btn = InlineKeyboardButton(text=B_RASKAT, icon_custom_emoji_id=CUSTOM["stick"], web_app=web_app)
+    else:
+        btn = InlineKeyboardButton(text=f"{EMOJI['stick']} {B_RASKAT}", web_app=web_app)
+    rows = [[btn]]
+    if chat_id is not None and not raskat_api():
+        waiting = chat_id in WAITLIST
+        rows.append([InlineKeyboardButton(text=f"🔕 {B_WAIT_OFF}" if waiting else f"🔔 {B_WAIT_ON}",
+                                          callback_data="rs:wait")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _pm(v: int) -> str:
@@ -191,7 +214,8 @@ def welcome_text(team: str | None = None) -> str:
             f"{e('star')} Календарь 26 команд\n"
             f"{e('cup')} Таблица конференций\n"
             f"{e('goal')} Счёт и голы матчей\n"
-            f"{e('fire')} Лучшие игроки лиги\n\n"
+            f"{e('fire')} Лучшие игроки лиги\n"
+            f"{e('stick')} Раскат дня — головоломка про шайбу\n\n"
             "<b>Жми «Открыть РХЛ»</b> 👇 и выбери, за кого болеешь.")
 
 
@@ -262,6 +286,84 @@ def result_text(g: dict, names: dict[str, str], story: str = "") -> str:
         text += f"\n\n{html.escape(story)}"
     return text + "\n\nГолы, ход матча и составы — по кнопке 👇"
 
+# ---------- «Раскат»: игра дня и лист ожидания зачёта ----------
+# Игра живёт в мини-аппе; бот только ведёт в неё и зовёт, когда включат зачёт (контракт, раздел 6).
+# Ежедневных напоминаний про раскат нет: бот не знает, кто уже собрал.
+
+def raskat_api() -> str:
+    """Адрес сервера зачётов. Пусто — играем без зачёта, есть — зачёт включили."""
+    return (os.environ.get("RASKAT_API") or "").strip()
+
+
+def load_waitlist() -> set[int]:
+    try:
+        return {int(x) for x in json.loads(WAITLIST_FILE.read_text())}
+    except (FileNotFoundError, ValueError, TypeError):
+        return set()
+
+
+def save_waitlist(ids: set[int]) -> None:
+    WAITLIST_FILE.write_text(json.dumps(sorted(ids)))
+
+
+WAITLIST = load_waitlist()
+
+
+def waitlist_set(chat_id: int, waiting: bool) -> bool:
+    """Позвать или больше не звать. Повторный вызов с тем же ответом ничего не меняет."""
+    if waiting != (chat_id in WAITLIST):
+        WAITLIST.symmetric_difference_update({chat_id})
+        save_waitlist(WAITLIST)
+    return waiting
+
+
+def raskat_today(data: dict | None, today: date | None = None) -> dict | None:
+    """Сегодняшний день из index.json; нет такого — последний опубликованный."""
+    days = [d for d in ((data or {}).get("days") or []) if isinstance(d, dict)]
+    if not days:
+        return None
+    d = (today or datetime.now(TZ).date()).isoformat()
+    return next((x for x in days if x.get("date") == d), days[-1])
+
+
+def par_text(seconds: int) -> str:
+    """Норма времени: 70 → «1:10», 45 → «45 секунд»."""
+    if seconds < 60:
+        return f"{seconds} {plural(seconds, 'секунда', 'секунды', 'секунд')}"
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def raskat_text(data: dict | None, chat_id: int | None = None, today: date | None = None) -> str:
+    """Короткое сообщение про раскат дня по опубликованному index.json."""
+    day = raskat_today(data, today) or {}
+    n = day.get("n")
+    head = f"{e('puck')} <b>Раскат дня</b>" + (f" №{int(n)}" if isinstance(n, int) else "")
+    lines = [head, "", "Одна шайба проходит весь лёд и задевает номера звена по порядку. "
+                       "Каждая клетка — ровно один раз."]
+    w, h, k, par = (day.get(key) for key in ("w", "h", "k", "par"))
+    if all(isinstance(v, int) for v in (w, h, k)):
+        about = f"Сегодня {k} {plural(k, 'номер', 'номера', 'номеров')} и поле {w}×{h}"
+        if isinstance(par, int) and par > 0:
+            about += f", норма — {par_text(par)}"
+        lines.append(about + ".")
+    lines.append("")
+    if raskat_api():
+        lines.append("Собранный раскат идёт в зачёт дня: очки, серия и кубок клубов.")
+    elif chat_id is not None and chat_id in WAITLIST:
+        lines.append("Зачёта пока нет — играешь для себя. Позову, как только он откроется.")
+    else:
+        lines.append("Зачёта пока нет: время и твои записи остаются на телефоне.")
+    return "\n".join(lines) + "\n\nЖми кнопку 👇"
+
+
+def raskat_open_text() -> str:
+    """Одно сообщение листу ожидания, когда зачёт включили."""
+    return (f"{e('cup')} <b>В «Раскате» открылся зачёт</b>\n\n"
+            "Ты просил позвать — зову. Теперь собранный раскат идёт в зачёт дня: очки за "
+            "скорость, серия дней подряд и кубок клубов.\n\n"
+            "Больше об этом не напишу — раскат ждёт в приложении 👇")
+
+
 # ---------- стикеры ----------
 
 _sticker_ids: dict[str, str] = {}   # имя → file_id: файл загружаем один раз
@@ -320,23 +422,37 @@ async def start(m: Message, command: CommandObject):
     if command.args == "leaders":   # ссылка t.me/<бот>?start=leaders (ADR-009)
         await send_leaders(m)
         return
+    if command.args == "raskat":    # ссылка t.me/<бот>?start=raskat (контракт «Раската», раздел 6)
+        await send_raskat(m)
+        return
     team = command.args if command.args in TEAMS else None
     await say(m.bot, cid, lambda: (welcome_text(team), app_kb(team)))
 
 
-# Лидеры меняются раз в час, вместе с мини-аппом: держим последний файл 10 минут
+# Данные мини-аппа меняются раз в час, вместе с ним: держим последний файл 10 минут
 _leaders: dict = {"at": None, "data": None}
+_raskat: dict = {"at": None, "data": None}
+
+
+async def published(cache: dict, name: str) -> dict | None:
+    """Файл, опубликованный вместе с мини-аппом. Не скачался — отдаём прошлый, если он был."""
+    now = datetime.now(TZ)
+    if cache["at"] and now - cache["at"] < timedelta(seconds=DATA_TTL):
+        return cache["data"]
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10), trust_env=True) as session:
+        data = await fetch_json(session, name)
+    if data:
+        cache.update(at=now, data=data)
+    return data or cache["data"]
 
 
 async def published_leaders() -> dict | None:
-    now = datetime.now(TZ)
-    if _leaders["at"] and now - _leaders["at"] < timedelta(seconds=LEADERS_TTL):
-        return _leaders["data"]
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10), trust_env=True) as session:
-        data = await fetch_json(session, "leaders.json")
-    if data:
-        _leaders.update(at=now, data=data)
-    return data or _leaders["data"]
+    return await published(_leaders, "leaders.json")
+
+
+async def published_raskat() -> dict | None:
+    """index.json «Раската»: дни от начала сезона до сегодня (контракт «Раската», раздел 2)."""
+    return await published(_raskat, "raskat/index.json")
 
 
 async def send_leaders(m: Message) -> None:
@@ -347,6 +463,27 @@ async def send_leaders(m: Message) -> None:
 @dp.message(Command("leaders"))   # в меню команд её нет (ADR-005), только ссылкой или руками
 async def h_leaders(m: Message):
     await send_leaders(m)
+
+
+async def send_raskat(m: Message) -> None:
+    cid = m.chat.id
+    data = await published_raskat()
+    await say(m.bot, cid, lambda: (raskat_text(data, cid), raskat_kb(cid)))
+
+
+@dp.message(Command("raskat"))   # в меню команд её нет (ADR-005), только ссылкой или руками
+async def h_raskat(m: Message):
+    await send_raskat(m)
+
+
+@dp.callback_query(F.data == "rs:wait")
+async def cb_raskat_wait(c: CallbackQuery):
+    """Та же кнопка зовёт и отказывает: второй раз болельщик видит «Больше не звать»."""
+    cid = c.message.chat.id
+    waiting = waitlist_set(cid, cid not in WAITLIST)
+    data = await published_raskat()
+    await safe_edit(c, lambda: (raskat_text(data, cid), raskat_kb(cid)))
+    await c.answer("Позову, когда откроется зачёт" if waiting else "Больше не позову")
 
 
 @dp.message(Command("remind"))
@@ -379,11 +516,32 @@ def next_reminder(now: datetime) -> tuple[datetime, str]:
     return min(s for s in slots if s[0] > now)
 
 
+async def raskat_open_broadcast(bot: Bot) -> int:
+    """Зачёт включили — один раз зовём лист ожидания, после чего лист пустеет."""
+    if not raskat_api() or not WAITLIST:
+        return 0
+    sent = 0
+    for cid in sorted(WAITLIST):
+        try:
+            await say(bot, cid, lambda: (raskat_open_text(), raskat_kb()))
+            sent += 1
+        except TelegramForbiddenError:   # бота заблокировали
+            pass
+        except Exception:
+            logging.exception("raskat to %s failed", cid)
+        WAITLIST.discard(cid)   # после каждого: перезапуск не позовёт второй раз
+        save_waitlist(WAITLIST)
+        await asyncio.sleep(0.05)
+    logging.info("raskat waitlist called: %d", sent)
+    return sent
+
+
 async def reminder_loop(bot: Bot):
     while True:
         now = datetime.now(TZ)
         at, kind = next_reminder(now)
         await asyncio.sleep((at - now).total_seconds())
+        await raskat_open_broadcast(bot)   # отдельного цикла не плодим
         day = at.date() + timedelta(days=1 if kind == "tomorrow" else 0)
         games = [g for g in GAMES if g.d == day]
         if not games:

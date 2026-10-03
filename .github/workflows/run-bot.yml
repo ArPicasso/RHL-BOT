@@ -44,6 +44,8 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           MINUTES: ${{ inputs.minutes }}
           WEBAPP_URL: ${{ vars.WEBAPP_URL }}
+          # Зачёт «Раската» (ADR-018). Пусто — бот только ведёт лист ожидания
+          RASKAT_API: ${{ vars.RASKAT_API }}
         run: |
           echo "Бот работает ${MINUTES} мин. Открывай его в Telegram и жми /start."
           code=0

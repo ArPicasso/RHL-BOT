@@ -116,6 +116,10 @@ class Build(unittest.TestCase):
         self.assertEqual(g["rh1"]["score"], {"home": 0, "away": 6, "decision": None, "periods": []})
         self.assertEqual((g["rh1"]["time"], g["rh1"]["n"], g["rh1"]["official"]), ("13:00", 3, True))
         self.assertEqual(g["rh1"]["league_url"], "https://rhl.fhr.ru/matchcenter/1432/905113/")
+        # до протокола — авторы голов с карточки сайта и ссылка на вкладку «Протокол»
+        self.assertEqual([(x["team"], x["min"], x["name"]) for x in g["rh1"]["site_goals"]][:2],
+                         [("away", 3, "Рябицев Дмитрий"), ("away", 34, "Дурдин Дмитрий")])
+        self.assertEqual(g["rh1"]["protocol"], "https://rhl.fhr.ru/matchcenter/1432/905113/protocol/")
         # идущий матч: счёта как итога нет, есть снимок живого с давностью
         self.assertNotIn("score", g["n1"])
         self.assertEqual({k: g["n1"]["live"][k] for k in ("status", "score", "src")},

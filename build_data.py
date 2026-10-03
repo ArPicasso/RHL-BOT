@@ -314,7 +314,17 @@ def apply_site(games: list[dict], store: dict, teams: "Teams", protocols: dict[s
             g["score"] = {"home": int(score[0]), "away": int(score[1]), "decision": r.get("decision"),
                           "periods": []}
             g["score_src"] = "rhl.fhr.ru"
-        elif not g.get("score"):
+        if g.get("score_src") == "rhl.fhr.ru":
+            # до протокола — авторы голов с карточки матча сайта, минутой «29'» (скрытых — без имени)
+            sg = [{"team": side, "min": x["min"], "no": x.get("no"),
+                   "name": HIDDEN_NAME if x.get("player") in hidden else x["name"]}
+                  for side, key in (("home", "home"), ("away", "away"))
+                  for x in ((r.get("goals") or {}).get(key) or []) if isinstance(x, dict) and x.get("min") is not None]
+            if sg:
+                g["site_goals"] = sorted(sg, key=lambda x: x["min"])
+        if r.get("status") == "final" or g.get("score"):
+            g["protocol"] = base + "protocol/"
+        if not g.get("score"):
             lv = rhl_site.live_state(r)
             if lv:
                 lv["seen"] = lv["seen"] or (store or {}).get("updated")

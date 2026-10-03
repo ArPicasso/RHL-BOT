@@ -6,7 +6,7 @@ import re
 import sys
 import tempfile
 import unittest
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -137,16 +137,20 @@ class AfterMatch(unittest.TestCase):
         self.assertIn("&lt;b&gt;", text)
         self.assertIn("a &lt; b", text)
 
-    def test_only_fresh_unannounced_games_of_our_team(self):
+    def test_only_fresh_unannounced_games(self):
         data = {"games": [
             self.game("old", "2026-10-01", "ryazan-vdv", "belgorod", 1, 0),
             self.game("done", "2026-10-04", "ryazan-vdv", "belgorod", 2, 0),
             self.game("new", "2026-10-05", "samara", "ryazan-vdv", 2, 3),
             self.game("other", "2026-10-05", "samara", "belgorod", 2, 3),
+            self.game("by-live", "2026-10-05", "sokol", "proton", 1, 0),
             {"id": "future", "date": "2026-10-06", "home": "ryazan-vdv", "away": "samara"},
         ]}
-        fresh = bot.fresh_results(data, {"done"}, date(2026, 10, 5))
+        announced = {"done", "2026-10-05|sokol|proton"}   # о последнем уже написали по онлайну
+        fresh = bot.fresh_results(data, announced, date(2026, 10, 5), teams={"ryazan-vdv"})
         self.assertEqual([g["id"] for g in fresh], ["new"])
+        fresh = bot.fresh_results(data, announced, date(2026, 10, 5))   # вся лига
+        self.assertEqual([g["id"] for g in fresh], ["new", "other"])
 
     def test_quiet_at_night(self):
         tz = bot.TZ
@@ -171,7 +175,8 @@ class RemindLink(unittest.TestCase):
         m.chat.id = 42
         m.answer = mock.AsyncMock()
         cmd = bot.CommandObject(prefix="/", command="start", args=args)
-        with mock.patch.object(bot, "SUBS", set()) as subs, mock.patch.object(bot, "save_subs") as save, \
+        with mock.patch.object(bot, "SUBS", {}) as subs, mock.patch.object(bot, "save_subs") as save, \
+                mock.patch.object(bot, "published_league", mock.AsyncMock(return_value=None)), \
                 mock.patch.object(bot, "send_sticker", mock.AsyncMock(return_value=True)) as sticker, \
                 mock.patch.object(bot, "say", mock.AsyncMock()) as say:
             asyncio.run(bot.start(m, cmd))
@@ -180,7 +185,7 @@ class RemindLink(unittest.TestCase):
 
     def test_link_turns_reminders_on(self):
         subs, save, stickers, text, kb = self.run_start("remind")
-        self.assertEqual(subs, {42})
+        self.assertEqual(subs, {42: ["ryazan-vdv"]})   # как раньше — «Рязань-ВДВ»
         save.assert_called_once()
         self.assertEqual(stickers, ["bell"])   # «Напомню!», а не приветствие
         self.assertIn("включены", text)
@@ -188,19 +193,25 @@ class RemindLink(unittest.TestCase):
 
     def test_plain_start_still_greets(self):
         subs, save, stickers, text, _ = self.run_start(None)
-        self.assertEqual(subs, set())
+        self.assertEqual(subs, {})
         save.assert_not_called()
         self.assertEqual(stickers, ["hello"])
         self.assertIn("Жми «Открыть РХЛ»", text)
 
     def test_next_game_named_when_on(self):
-        with mock.patch.object(bot, "SUBS", {42}):
-            text = bot.remind_text(42, date(2026, 9, 25))
-        self.assertIn("Ближайшая: Сб 03.10, дома с «МХК Белгород»", text)
-        with mock.patch.object(bot, "SUBS", set()):
+        with mock.patch.object(bot, "SUBS", {42: ["ryazan-vdv"]}):
+            text = bot.remind_text(42, date(2026, 9, 25))   # без league.json — по games.json
+        self.assertIn("Ближайшая: Сб 03.10, дома с «Белгород»", text)
+        with mock.patch.object(bot, "SUBS", {}):
             self.assertNotIn("Ближайшая", bot.remind_text(42, date(2026, 9, 25)))
-        with mock.patch.object(bot, "SUBS", {42}):   # сезон кончился — без строки
+        with mock.patch.object(bot, "SUBS", {42: ["ryazan-vdv"]}):   # сезон кончился — без строки
             self.assertNotIn("Ближайшая", bot.remind_text(42, date(2027, 6, 1)))
+
+    def test_link_with_team_subscribes_to_it(self):
+        subs, _, stickers, text, kb = self.run_start("remind-ermak")
+        self.assertEqual(subs, {42: ["ermak"]})
+        self.assertEqual(stickers, ["bell"])
+        self.assertIn("«Ермак» ✅ включены", text)
 
 
 class Leaders(unittest.TestCase):
@@ -358,7 +369,10 @@ class Raskat(unittest.TestCase):
     def test_plain_start_is_not_raskat(self):
         text, kb = self.run_start(None)
         self.assertIn("Жми «Открыть РХЛ»", text)
-        self.assertEqual(len(kb.inline_keyboard), 1)
+        rows = kb.inline_keyboard
+        self.assertIn("Открыть РХЛ", rows[0][0].text)          # главная кнопка — первая и одна в ряду
+        self.assertEqual(len(rows[0]), 1)
+        self.assertEqual([[b.callback_data for b in r] for r in rows[1:]], [["d:today"]])   # вторым планом
 
     # ---------- зачёт включили ----------
 
@@ -395,6 +409,478 @@ class Raskat(unittest.TestCase):
         for text in (bot.reminder_text(g, "today"), bot.reminder_text(g, "tomorrow"),
                      bot.remind_text(42, date(2026, 9, 25))):
             self.assertNotIn("аскат", text)
+
+
+def msk(text: str) -> datetime:
+    return datetime.fromisoformat(text).replace(tzinfo=bot.TZ)
+
+
+def tags_balanced(text: str) -> bool:
+    return all(text.count(f"<{t}") == text.count(f"</{t}>") for t in ("b", "a", "i"))
+
+
+class Subscribers(unittest.TestCase):
+    """subscribers.json — {chat_id: [команды]}; старый [chat_id] — «Рязань-ВДВ» (ADR-019, раздел 8)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()) / "subscribers.json"
+        p = mock.patch.object(bot, "SUBS_FILE", self.tmp)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def saved(self):
+        return json.loads(self.tmp.read_text(encoding="utf-8"))
+
+    def test_old_list_migrates_silently(self):
+        self.tmp.write_text("[42, 7]")
+        subs = bot.load_subs()
+        self.assertEqual(subs, {42: ["ryazan-vdv"], 7: ["ryazan-vdv"]})
+        self.assertEqual(self.saved(), {"7": ["ryazan-vdv"], "42": ["ryazan-vdv"]})   # файл уже в новом формате
+        self.assertEqual(bot.load_subs(), subs)
+
+    def test_new_format_cleaned(self):
+        self.tmp.write_text(json.dumps({"42": ["ermak", "нет-такой", "ermak", "samara", "sokol", "proton"],
+                                        "7": [], "x": ["ermak"], "5": "tambov"}))
+        self.assertEqual(bot.load_subs(), {42: ["ermak", "samara", "sokol"], 5: ["tambov"]})
+        self.assertEqual(self.saved(), {"5": ["tambov"], "42": ["ermak", "samara", "sokol"]})
+
+    def test_clean_file_not_rewritten(self):
+        self.tmp.write_text(json.dumps({"42": ["ermak"]}))
+        with mock.patch.object(bot, "save_subs") as save:
+            self.assertEqual(bot.load_subs(), {42: ["ermak"]})
+        save.assert_not_called()
+
+    def test_broken_or_missing_file(self):
+        self.assertEqual(bot.load_subs(), {})
+        self.tmp.write_text("{не json")
+        self.assertEqual(bot.load_subs(), {})
+
+    def test_up_to_three_teams(self):
+        with mock.patch.object(bot, "SUBS", {}):
+            self.assertEqual([bot.follow(42, t) for t in ("ermak", "samara", "sokol", "proton")],
+                             ["on", "on", "on", "full"])
+            self.assertEqual(bot.follow(42, "ermak"), "already")
+            self.assertEqual(bot.toggle_team(42, "proton"), "full")
+            self.assertEqual(bot.SUBS, {42: ["ermak", "samara", "sokol"]})
+            self.assertEqual(bot.toggle_team(42, "samara"), "off")
+            self.assertEqual(bot.toggle_team(42, "proton"), "on")
+        self.assertEqual(self.saved(), {"42": ["ermak", "sokol", "proton"]})
+
+    def test_off_forgets_chat_entirely(self):
+        """Удаление данных (CLAUDE.md, правило 4): выключил — chat_id нет в файле."""
+        with mock.patch.object(bot, "SUBS", {42: ["ermak"], 7: ["samara"]}):
+            bot.toggle_team(42, "ermak")      # сняли последнюю команду
+            self.assertEqual(self.saved(), {"7": ["samara"]})
+            bot.unsubscribe(7)
+            self.assertEqual(bot.SUBS, {})
+        self.assertEqual(self.saved(), {})
+
+    def test_remind_screen(self):
+        with mock.patch.object(bot, "SUBS", {42: ["ermak", "samara"]}):
+            games = [{"id": "a", "date": "2026-10-04", "home": "samara", "away": "ermak", "time": "16:00"},
+                     {"id": "b", "date": "2026-10-02", "home": "ermak", "away": "sokol"}]
+            text = bot.remind_text(42, date(2026, 10, 3), games)
+            kb = bot.remind_kb(42).inline_keyboard
+        self.assertIn("«Ермак» и «Самара» ✅ включены", text)
+        self.assertIn("«Ермак»: Вс 04.10 в 16:00 МСК, в гостях с «Самара»", text)
+        self.assertIn("«Самара»: Вс 04.10 в 16:00 МСК, дома с «Ермак»", text)
+        self.assertEqual([b.callback_data for b in kb[0]], ["r:toggle", "t:home"])
+        with mock.patch.object(bot, "SUBS", {}):
+            self.assertIn("выключены", bot.remind_text(42))
+            off = bot.remind_kb(42).inline_keyboard   # выключены — сразу выбор конференции
+        self.assertEqual([b.callback_data for b in off[0]], ["t:c:west", "t:c:east"])
+
+
+class TeamPicker(unittest.TestCase):
+    """/team: конференции → команды по две в ряд, ✅ — уже напоминаю, не больше трёх."""
+
+    def test_conferences_then_teams(self):
+        with mock.patch.object(bot, "SUBS", {42: ["ermak"]}):
+            kb = bot.team_kb(42).inline_keyboard
+            rows = bot.team_kb(42, "east").inline_keyboard
+            text = bot.team_text(42, "east")
+        self.assertEqual([b.callback_data for b in kb[0]], ["t:c:west", "t:c:east"])
+        self.assertEqual(kb[1][0].callback_data, "r:show")
+        teams = [b for r in rows[:-1] for b in r]
+        self.assertEqual(len(teams), sum(t["conf"] == "east" for t in bot.TEAM_LIST))
+        self.assertTrue(all(len(r) <= 2 for r in rows))
+        self.assertIn("✅ Ермак", [b.text for b in teams])
+        self.assertIn("Самара", [b.text for b in teams])
+        self.assertTrue(all(len(b.callback_data.encode()) <= 64 for r in rows for b in r))
+        self.assertIn("Сейчас: «Ермак».", text)
+
+    def run_cb(self, data, subs):
+        c = mock.Mock()
+        c.data = data
+        c.message.chat.id = 42
+        c.answer = mock.AsyncMock()
+        with mock.patch.object(bot, "SUBS", subs), mock.patch.object(bot, "save_subs"), \
+                mock.patch.object(bot, "safe_edit", mock.AsyncMock()) as edit, \
+                mock.patch.object(bot, "send_sticker", mock.AsyncMock(return_value=True)) as sticker:
+            asyncio.run(bot.cb_team(c))
+            made = edit.call_args.args[1]() if edit.called else None
+        return c, made, sticker
+
+    def test_pick_and_unpick(self):
+        subs = {}
+        c, (text, kb), sticker = self.run_cb("t:s:ermak", subs)
+        self.assertEqual(subs, {42: ["ermak"]})
+        self.assertIn("Восток", text)
+        self.assertIn("✅ Ермак", [b.text for r in kb.inline_keyboard for b in r])
+        self.assertEqual(c.answer.call_args.args[0], "Напомню о матчах «Ермак»")
+        sticker.assert_awaited_once()   # первая команда — стикер «Напомню!»
+        c, _, sticker = self.run_cb("t:s:ermak", subs)
+        self.assertEqual(subs, {})
+        sticker.assert_not_awaited()
+
+    def test_fourth_team_refused(self):
+        subs = {42: ["ermak", "samara", "sokol"]}
+        c, made, _ = self.run_cb("t:s:proton", subs)
+        self.assertEqual(subs[42], ["ermak", "samara", "sokol"])
+        self.assertIsNone(made)
+        self.assertTrue(c.answer.call_args.kwargs.get("show_alert"))
+        self.assertIn("до трёх", c.answer.call_args.args[0])
+
+    def test_conference_screen(self):
+        _, (text, kb), _ = self.run_cb("t:c:west", {})
+        self.assertIn("Запад", text)
+        self.assertIn("Арктика", [b.text for r in kb.inline_keyboard for b in r])
+
+
+class Today(unittest.TestCase):
+    """«Матчи сегодня» (ADR-019, раздел 8): все матчи дня, свои первыми, время, статус, ссылки."""
+
+    league = {"games": [
+        {"id": "n1", "date": "2026-10-03", "home": "ryazan-vdv", "away": "belgorod", "time": "17:00",
+         "start": "2026-10-03T17:00:00+03:00", "online": "https://online.khl.ru/online/1.html",
+         "watch": [{"title": "Трансляция", "url": "https://vk.com/video-1_2?a=1&b=2"}]},
+        {"id": "rh2", "date": "2026-10-03", "home": "ermak", "away": "samara", "time": "12:00",
+         "start": "2026-10-03T12:00:00+03:00", "local": "17:00",
+         "score": {"home": 4, "away": 2, "decision": "", "periods": []}},
+        {"id": "rh3", "date": "2026-10-03", "home": "sokol", "away": "proton", "time": "15:00"},
+        {"id": "rh4", "date": "2026-10-03", "home": "tambov", "away": "rostov"},
+        {"id": "rh5", "date": "2026-10-03", "home": "polet", "away": "arktika", "time": "18:30"},
+        {"id": "rh6", "date": "2026-10-04", "home": "belgorod", "away": "ryazan-vdv", "time": "16:00"},
+        {"id": "rh7", "date": "2026-10-05", "home": "kaluga", "away": "bryansk"},
+    ]}
+    live = {"date": "2026-10-03", "updated": "2026-10-03T17:41:00+03:00", "games": [
+        {"key": "2026-10-03|ryazan-vdv|belgorod", "date": "2026-10-03", "home": "ryazan-vdv", "away": "belgorod",
+         "status": "live", "period": "2", "clock": "12:34", "score": {"home": 2, "away": 1, "decision": None}},
+        {"key": "2026-10-03|sokol|proton", "date": "2026-10-03", "home": "sokol", "away": "proton",
+         "time": "15:05", "start": "2026-10-03T15:05:00+03:00",
+         "status": "break", "period": "1", "score": {"home": 1, "away": 1, "decision": None}},
+        # матча нет в календаре мини-аппа (r-hockey его потерял) — онлайн всё равно показывает
+        {"key": "2026-10-03|dizelist|kristall", "date": "2026-10-03", "home": "dizelist", "away": "kristall",
+         "time": "14:00", "status": "ended", "score": {"home": 3, "away": 2, "decision": "ОТ"}},
+        {"key": "2026-10-03|ermak|samara", "date": "2026-10-03", "home": "ermak", "away": "samara",
+         "status": "ended", "score": {"home": 9, "away": 9, "decision": None}},   # протокол главнее
+    ]}
+    now = msk("2026-10-03T17:42")
+
+    def text(self, **kw):
+        args = {"league": self.league, "live": self.live, "schedule": None, "fans": ["belgorod"], "now": self.now}
+        return bot.today_text(**{**args, **kw})
+
+    def test_order_fans_first_then_time(self):
+        text = self.text()
+        order = ["Рязань-ВДВ — Белгород", "Ермак — Самара", "Дизелист — Кристалл", "Сокол — Протон",
+                 "Полёт — Арктика", "Тамбов — Ростов"]
+        pos = [text.index(x) for x in order]
+        self.assertEqual(pos, sorted(pos))
+        self.assertIn("Матчи РХЛ сегодня · Сб 03.10", text)
+        self.assertIn("⭐ <b>17:00</b> · Рязань-ВДВ — Белгород", text)
+        self.assertNotIn("⭐ <b>12:00</b>", text)
+        self.assertNotIn("Калужские Ракеты", text)    # другой день
+        self.assertTrue(tags_balanced(text))
+
+    def test_statuses(self):
+        text = self.text()
+        self.assertIn("Рязань-ВДВ — Белгород\nидёт · 2-й период · <b>2:1</b>", text)
+        self.assertIn("<b>15:05</b> · Сокол — Протон\nперерыв · <b>1:1</b>", text)   # время онлайна главнее
+        self.assertIn("<b>12:00</b> (местное 17:00) · Ермак — Самара\nокончен <b>4:2</b>", text)
+        self.assertIn("Дизелист — Кристалл\nокончен <b>3:2</b> (ОТ)", text)
+        self.assertIn("Полёт — Арктика\nчерез 48 мин", text)
+        self.assertIn("время уточняется · Тамбов — Ростов", text)
+        self.assertIn("Счёт — по онлайну лиги на 17:41.", text)
+
+    def test_links_escaped(self):
+        text = self.text()
+        self.assertIn('<a href="https://online.khl.ru/online/1.html">текстовая трансляция</a>', text)
+        self.assertIn('<a href="https://vk.com/video-1_2?a=1&amp;b=2">смотреть</a>', text)
+        bad = {"games": [{"id": "x", "date": "2026-10-03", "home": "sokol", "away": "proton",
+                          "online": "javascript:alert(1)", "watch": [{"url": "ftp://x"}]}]}
+        self.assertNotIn("<a ", self.text(league=bad, live=None))
+
+    def test_stale_live_shows_no_progress(self):
+        stale = {**self.live, "updated": "2026-10-03T16:00:00+03:00"}
+        text = self.text(live=stale)
+        self.assertNotIn("идёт", text)
+        self.assertNotIn("перерыв", text)
+        self.assertIn("окончен <b>3:2</b> (ОТ)", text)   # итог онлайна остаётся
+        self.assertNotIn("по онлайну лиги", text)
+        other_day = {**self.live, "date": "2026-10-02"}   # служба встала вчера
+        self.assertNotIn("идёт", self.text(live=other_day))
+
+    def test_without_live_and_time(self):
+        text = self.text(live=None, fans=[])
+        self.assertIn("<b>17:00</b> · Рязань-ВДВ — Белгород\n"
+                      '<a href="https://online.khl.ru/online/1.html">текстовая трансляция</a>', text)
+        self.assertNotIn("⭐", text)
+        self.assertNotIn("Дизелист", text)
+
+    def test_no_games_today_shows_next_day(self):
+        text = self.text(now=msk("2026-10-02T12:00"), live=None)
+        self.assertIn("Сегодня матчей в РХЛ нет.", text)
+        self.assertIn("Ближайшие — завтра, Сб 03.10", text)
+        self.assertIn("⭐ <b>17:00</b> · Рязань-ВДВ — Белгород", text)
+        self.assertNotIn("окончен <b>4:2</b>", bot.today_text(self.league, None, None, [], msk("2026-10-04T09:00")))
+        text = self.text(now=msk("2026-10-04T20:00"))
+        self.assertIn("Матчи РХЛ сегодня · Вс 04.10", text)
+        self.assertIn("пока не видно", self.text(now=msk("2026-10-06T12:00")))
+
+    def test_schedule_adds_time_for_next_day(self):
+        schedule = {"games": [{"key": "2026-10-05|kaluga|bryansk", "date": "2026-10-05", "home": "kaluga",
+                               "away": "bryansk", "time": "19:30", "start": "2026-10-05T19:30:00+03:00"}]}
+        league = {"games": [g for g in self.league["games"] if g["id"] == "rh7"]}
+        text = self.text(league=league, now=msk("2026-10-04T12:00"), live=None, schedule=schedule)
+        self.assertIn("Ближайшие — завтра, Пн 05.10", text)
+        self.assertIn("<b>19:30</b> · Калужские Ракеты — Брянск", text)
+
+    def test_no_data(self):
+        self.assertIn("Не получилось загрузить", bot.today_text(None, None, None, [], self.now))
+        only_live = bot.today_text(None, self.live, None, [], self.now)   # Pages упали — живое есть
+        self.assertIn("Дизелист — Кристалл", only_live)
+
+    def test_local_time_from_arena_zone(self):
+        start = msk("2026-10-03T17:00")
+        self.assertEqual(bot.local_hm({"home": "ermak"}, start), "22:00")
+        self.assertEqual(bot.local_hm({"home": "samara"}, start), "18:00")
+        self.assertIsNone(bot.local_hm({"home": "ryazan-vdv"}, start))
+
+    def test_keyboard(self):
+        with mock.patch.object(bot, "SUBS", {}):
+            kb = bot.today_kb(42).inline_keyboard
+        self.assertIn("Открыть РХЛ", kb[0][0].text)
+        self.assertEqual([b.callback_data for b in kb[1]], ["d:refresh", "r:open"])
+
+    def test_words_lead_to_today(self):
+        for t in ("когда игра?", "Какой счёт", "матчи сегодня"):
+            self.assertTrue(bot.TODAY_WORDS.search(t), t)
+        self.assertFalse(bot.TODAY_WORDS.search("привет"))
+
+
+class Reminder(unittest.TestCase):
+    """Напоминание о матче (ADR-019, раздел 8; ADR-020, раздел 2): время, где, где смотреть, кнопки."""
+
+    games = Today.league["games"]
+
+    def match(self, gid, live=None):
+        g = next(x for x in self.games if x["id"] == gid)
+        return next(m for m in bot.day_matches(date.fromisoformat(g["date"]), {"games": self.games}, live)
+                    if m["id"] == gid)
+
+    def test_with_time_city_and_watch(self):
+        text = bot.reminder_text(self.match("n1"), "today", "ryazan-vdv", self.games)
+        self.assertIn("<b>Сегодня игра!</b>", text)
+        self.assertIn("Рязань-ВДВ — <b>Белгород</b>", text)
+        self.assertIn("Сб 03.10 · сегодня в 17:00 МСК", text)
+        self.assertIn("🏠 Дома, Рязань", text)
+        self.assertIn('<a href="https://vk.com/video-1_2?a=1&amp;b=2">Смотреть трансляцию</a>', text)
+        self.assertTrue(tags_balanced(text))
+
+    def test_without_time(self):
+        text = bot.reminder_text(self.match("rh7"), "tomorrow", "bryansk", self.games)
+        self.assertIn("<b>Завтра игра!</b>", text)
+        self.assertIn("Брянск — <b>Калужские Ракеты</b>", text)
+        self.assertIn("Пн 05.10 · завтра, время начала уточняется", text)
+        self.assertIn("✈️ На выезде, Калуга", text)
+        self.assertNotIn("Смотреть", text)
+
+    def test_local_time_and_away(self):
+        text = bot.reminder_text(self.match("rh2"), "today", "samara")
+        self.assertIn("сегодня в 12:00 МСК · 17:00 по местному", text)
+        self.assertIn("На выезде, Ангарск", text)
+
+    def test_fan_of_both_teams(self):
+        text = bot.reminder_text(self.match("n1"), "today", None)
+        self.assertIn("<b>Рязань-ВДВ</b> — <b>Белгород</b>", text)
+        self.assertIn("📍 Рязань", text)
+
+    def test_warmup_line(self):
+        played = [{**self.games[0], "score": {"home": 2, "away": 1, "decision": ""}},
+                  {"id": "x", "date": "2026-10-02", "home": "sokol", "away": "belgorod",
+                   "score": {"home": 0, "away": 3, "decision": ""}}]
+        text = bot.reminder_text(self.match("rh6"), "today", "belgorod", played)
+        self.assertIn("Прошлая встреча 03.10: Рязань-ВДВ <b>2:1</b> Белгород", text)
+        form = bot.warmup_text({"date": "2026-10-05", "home": "belgorod", "away": "kaluga"}, "belgorod", played)
+        self.assertEqual(form, "🔥 Форма «Белгород»: ✅ ❌")   # сначала старый матч
+        self.assertEqual(bot.warmup_text(self.match("rh7"), "bryansk", played), "")
+
+    def test_buttons(self):
+        m = self.match("n1")
+        with mock.patch.object(bot, "WEBAPP_URL", "https://x.github.io/app/"), \
+                mock.patch.dict(os.environ, {"RASKAT_API": "https://rhl.example/api/raskat"}):
+            kb = bot.match_kb(m).inline_keyboard
+        self.assertIn("Кто победит?", kb[0][0].text)
+        self.assertEqual(kb[0][0].web_app.url, "https://x.github.io/app/?match=n1")
+        self.assertIn("Текстовая трансляция", kb[1][0].text)
+        self.assertEqual(kb[1][0].url, "https://online.khl.ru/online/1.html")
+        with mock.patch.dict(os.environ, {"RASKAT_API": "", "LIVE_API": ""}):
+            kb = bot.match_kb(self.match("rh7")).inline_keyboard
+        self.assertEqual(len(kb), 1)                       # онлайна нет — одна кнопка
+        self.assertIn("Матч в приложении", kb[0][0].text)  # сервера прогнозов нет — без «Кто победит?»
+
+    def test_plan_by_teams(self):
+        subs = {1: ["belgorod"], 2: ["ryazan-vdv", "belgorod"], 3: ["ermak"], 4: ["kaluga"]}
+        plan = bot.reminder_plan(subs, date(2026, 10, 3), {"games": self.games})
+        self.assertEqual([(cid, m["id"], team) for cid, m, team in plan],
+                         [(3, "rh2", "ermak"), (1, "n1", "belgorod"), (2, "n1", None)])
+
+    def test_fallback_to_games_json(self):
+        schedule = {"games": [{"key": "2026-10-03|ryazan-vdv|belgorod", "date": "2026-10-03",
+                               "home": "ryazan-vdv", "away": "belgorod", "time": "17:00"}]}
+        plan = bot.reminder_plan({1: ["ryazan-vdv"], 2: ["ermak"]}, date(2026, 10, 3), None, None, schedule)
+        self.assertEqual([(cid, m["id"], m["away"]) for cid, m, _ in plan], [(1, "n1", "belgorod")])
+        self.assertIn("сегодня в 17:00 МСК", bot.reminder_text(plan[0][1], "today", "ryazan-vdv"))
+        plan = bot.reminder_plan({1: ["ryazan-vdv"]}, date(2026, 10, 3), None)
+        self.assertIn("время начала уточняется", bot.reminder_text(plan[0][1], "today", "ryazan-vdv"))
+
+    def test_send_one_sticker_per_chat(self):
+        tmp = Path(tempfile.mkdtemp())
+        err = bot.TelegramForbiddenError(method=mock.Mock(), message="bot was blocked")
+        league = {"games": [*self.games, {"id": "z", "date": "2026-10-03", "home": "belgorod", "away": "sokol"}]}
+        subs = {1: ["belgorod"], 5: ["ermak"]}
+        with mock.patch.object(bot, "LIVE_DIR", tmp), mock.patch.object(bot, "SUBS", subs), \
+                mock.patch.object(bot, "save_subs"), \
+                mock.patch.object(bot, "send_sticker", mock.AsyncMock(return_value=True)) as sticker, \
+                mock.patch.object(bot, "say", mock.AsyncMock(side_effect=[None, None, err])) as say, \
+                mock.patch.object(bot.asyncio, "sleep", mock.AsyncMock()):
+            sent = asyncio.run(bot.send_reminders(mock.Mock(), "today", date(2026, 10, 3), league))
+        self.assertEqual(sent, 2)
+        self.assertEqual([c.args[1] for c in sticker.call_args_list], [5, 1])   # стикер — раз на человека
+        self.assertEqual([c.args[1] for c in say.call_args_list], [5, 1, 1])
+        self.assertEqual(subs, {5: ["ermak"]})   # заблокировал бота — подписка снята
+
+
+class LiveFinal(unittest.TestCase):
+    """Финал по онлайну (ADR-019, раздел 8): «окончен» 10 минут подряд, без дублей с протоколом."""
+
+    key = "2026-10-03|ryazan-vdv|belgorod"
+
+    def ended(self, h=4, a=2, status="ended"):
+        return {"key": self.key, "date": "2026-10-03", "home": "ryazan-vdv", "away": "belgorod",
+                "status": status, "score": {"home": h, "away": a, "decision": None}}
+
+    def test_ten_minutes_in_a_row(self):
+        seen, t0 = {}, msk("2026-10-03T19:30")
+        self.assertEqual(bot.live_finals([self.ended()], seen, t0), [])
+        self.assertEqual(bot.live_finals([self.ended()], seen, t0 + timedelta(minutes=9)), [])
+        ready = bot.live_finals([self.ended()], seen, t0 + timedelta(minutes=10))
+        self.assertEqual([(x["key"], x["score"]["home"]) for x in ready], [(self.key, 4)])
+
+    def test_score_change_or_flicker_restarts(self):
+        seen, t0 = {}, msk("2026-10-03T19:30")
+        bot.live_finals([self.ended()], seen, t0)
+        bot.live_finals([self.ended(4, 3)], seen, t0 + timedelta(minutes=5))      # счёт поправили
+        self.assertEqual(bot.live_finals([self.ended(4, 3)], seen, t0 + timedelta(minutes=12)), [])
+        self.assertTrue(bot.live_finals([self.ended(4, 3)], seen, t0 + timedelta(minutes=15)))
+        seen = {}
+        bot.live_finals([self.ended()], seen, t0)
+        bot.live_finals([self.ended(status="live")], seen, t0 + timedelta(minutes=5))   # снова «идёт»
+        bot.live_finals([self.ended()], seen, t0 + timedelta(minutes=6))
+        self.assertEqual(bot.live_finals([self.ended()], seen, t0 + timedelta(minutes=12)), [])
+        self.assertTrue(bot.live_finals([self.ended(status="final")], seen, t0 + timedelta(minutes=16)))
+
+    def test_pending_prefers_protocol(self):
+        ready = [{**self.ended(), "score": {"home": 4, "away": 2, "decision": ""}}]
+        league = {"games": [{"id": "n1", "date": "2026-10-03", "home": "ryazan-vdv", "away": "belgorod"}]}
+        out = bot.pending_results(league, ready, set(), date(2026, 10, 3))
+        self.assertEqual([(g["id"], g["live"]) for g in out], [("n1", True)])
+        played = {"games": [{**league["games"][0], "score": {"home": 4, "away": 2, "decision": "", "periods": []}}]}
+        out = bot.pending_results(played, ready, set(), date(2026, 10, 3))
+        self.assertEqual([(g["id"], g["live"]) for g in out], [("n1", False)])   # протокол, одно сообщение
+        self.assertEqual(bot.pending_results(played, ready, {"n1"}, date(2026, 10, 3)), [])
+        self.assertEqual(bot.pending_results(None, ready, {self.key}, date(2026, 10, 3)), [])
+
+    def test_text(self):
+        g = {"id": "n1", "home": "ryazan-vdv", "away": "belgorod", "score": {"home": 4, "away": 2, "decision": None}}
+        text = bot.result_text(g, {}, team="belgorod", live=True)
+        self.assertIn("Поражение", text)
+        self.assertIn("Рязань-ВДВ <b>4:2</b> Белгород\n<i>по данным онлайна лиги</i>", text)
+        self.assertIn("когда лига выложит протокол", text)
+        self.assertIn("Матч окончен", bot.result_text(g, {}, team=None, live=True))
+        self.assertTrue(tags_balanced(text))
+
+    def run_steps(self, steps, subs, league, announced=()):
+        """steps — [(время, live/<дата>.json или None, league.json)], возвращает вызовы say."""
+        tmp = Path(tempfile.mkdtemp())
+        ann = tmp / "announced.json"
+        if announced is not None:
+            ann.write_text(json.dumps(list(announced)))
+        say = mock.AsyncMock()
+        fetch = mock.AsyncMock(return_value={"story": "Камбэк."})
+        with mock.patch.object(bot, "LIVE_DIR", tmp), mock.patch.object(bot, "ANNOUNCED_FILE", ann), \
+                mock.patch.object(bot, "SUBS", subs), mock.patch.object(bot, "LIVE_ENDED", {}), \
+                mock.patch.object(bot, "fetch_once", fetch), mock.patch.object(bot, "say", say), \
+                mock.patch.object(bot, "WEBAPP_URL", "https://x.github.io/app/"), \
+                mock.patch.object(bot.asyncio, "sleep", mock.AsyncMock()):
+            counts = []
+            for now, live, lg in steps:
+                f = tmp / "2026-10-03.json"
+                if live is None:
+                    f.unlink(missing_ok=True)
+                else:
+                    f.write_text(json.dumps(live, ensure_ascii=False), encoding="utf-8")
+                with mock.patch.object(bot, "published_league", mock.AsyncMock(return_value=lg or league)):
+                    counts.append(asyncio.run(bot.results_step(mock.Mock(), now)))
+            made = [(c.args[1], c.args[2]()) for c in say.call_args_list]
+            saved = json.loads(ann.read_text()) if ann.exists() else None
+        return counts, made, saved, fetch
+
+    def test_live_final_then_protocol_without_duplicate(self):
+        live = {"date": "2026-10-03", "updated": "2026-10-03T19:30:00+03:00", "games": [self.ended()]}
+        league = {"teams": [], "games": [{"id": "n1", "date": "2026-10-03", "home": "ryazan-vdv", "away": "belgorod"}]}
+        played = {"teams": [], "games": [{**league["games"][0],
+                                          "score": {"home": 4, "away": 2, "decision": "", "periods": []}}]}
+        subs = {1: ["ryazan-vdv"], 2: ["samara"], 3: ["belgorod"]}
+        t0 = msk("2026-10-03T19:30")
+        counts, made, saved, fetch = self.run_steps([
+            (t0, live, None),
+            (t0 + timedelta(minutes=9), live, None),
+            (t0 + timedelta(minutes=10), live, None),
+            (t0 + timedelta(minutes=11), live, None),
+            (t0 + timedelta(minutes=40), live, played),     # пришёл протокол
+        ], subs, league)
+        self.assertEqual(counts, [0, 0, 2, 0, 0])
+        self.assertEqual([cid for cid, _ in made], [1, 3])   # болельщику «Самары» — ничего
+        (_, (win, kb)), (_, (loss, _)) = made
+        self.assertIn("Победа!", win)
+        self.assertIn("по данным онлайна лиги", win)
+        self.assertIn("Поражение", loss)
+        self.assertEqual(kb.inline_keyboard[0][0].web_app.url, "https://x.github.io/app/?match=n1")   # «Как это было»
+        self.assertEqual(set(saved), {"n1", self.key})
+        fetch.assert_not_awaited()   # разбора по онлайну нет
+
+    def test_protocol_first_then_live_silent(self):
+        live = {"date": "2026-10-03", "updated": "2026-10-03T19:30:00+03:00", "games": [self.ended()]}
+        played = {"teams": [], "games": [{"id": "n1", "date": "2026-10-03", "home": "ryazan-vdv", "away": "belgorod",
+                                          "score": {"home": 4, "away": 2, "decision": "", "periods": []}}]}
+        t0 = msk("2026-10-03T19:30")
+        counts, made, saved, _ = self.run_steps([(t0, live, None), (t0 + timedelta(minutes=15), live, None)],
+                                                {1: ["ryazan-vdv"]}, played)
+        self.assertEqual(counts, [1, 0])
+        self.assertIn("Камбэк.", made[0][1][0])
+        self.assertNotIn("онлайна", made[0][1][0])
+
+    def test_quiet_night_and_first_run(self):
+        live = {"date": "2026-10-03", "updated": "2026-10-03T23:00:00+03:00", "games": [self.ended()]}
+        league = {"teams": [], "games": []}
+        t0 = msk("2026-10-03T23:10")
+        counts, made, saved, _ = self.run_steps([(t0, live, None), (t0 + timedelta(minutes=20), live, None)],
+                                                {1: ["ryazan-vdv"]}, league)
+        self.assertEqual((counts, made, saved), ([0, 0], [], []))   # ночью молчим, утром уйдёт
+        counts, made, saved, _ = self.run_steps([(t0, live, None)], {1: ["ryazan-vdv"]}, league, announced=None)
+        self.assertEqual((counts, made, saved), ([0], [], [self.key]))   # первый запуск — только запомнили
 
 
 if __name__ == "__main__":

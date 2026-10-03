@@ -1,0 +1,46 @@
+name: Выложить бота на сервер
+
+# После слияния в main сервер подтягивает код и перезапускает бота (deploy/update.sh).
+# Нужны секреты DEPLOY_HOST, DEPLOY_KNOWN_HOSTS, DEPLOY_SSH_KEY — их печатает deploy/setup.sh.
+# Ключ на сервере умеет только запустить обновление, шелла по нему нет.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "webapp/**"
+      - "docs/**"
+      - "art/**"
+      - "stickers/**"
+      - "*.md"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Проверить секреты
+        id: check
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          if [ -z "$HOST" ]; then
+            echo "::warning::Секрет DEPLOY_HOST не задан — выкладка пропущена. Как завести: BOT_README.md."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Выложить
+        if: steps.check.outputs.skip != '1'
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          ssh -i ~/.ssh/deploy -o StrictHostKeyChecking=yes -o ConnectTimeout=20 "root@$HOST"

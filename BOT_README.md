@@ -1,17 +1,27 @@
 # Бот расписания МХК «Рязань-ВДВ»
 
-Деплой на VPS (Ubuntu/Debian):
+Деплой на VPS (Ubuntu 22.04/24.04 или Debian 12), от root на сервере:
 
-    scp ryazan_bot.zip root@IP:/opt/
-    ssh root@IP
-    cd /opt && apt install -y unzip python3-venv && unzip ryazan_bot.zip
-    cd ryazan_bot && python3 -m venv venv && venv/bin/pip install -r requirements.txt
-    cp ryazan-bot.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now ryazan-bot
+    curl -fsSL https://raw.githubusercontent.com/ArPicasso/bogdanov/main/deploy/setup.sh -o setup.sh
+    bash setup.sh
 
-Логи: journalctl -u ryazan-bot -f
-Перезапуск после правок: systemctl restart ryazan-bot
+Скрипт ставит пакеты, открывает наружу только SSH, заводит пользователя `rhl`, клонирует код в
+`/opt/rhl`, спрашивает токен (он живёт только в `/etc/rhl/bot.env`) и запускает службу `bot`.
+Был старый `ryazan-bot` — останавливает его и переносит `subscribers.json` и `announced.json`.
+Повторный запуск безопасен.
+
+Перед запуском останови тестового бота в Actions («Запустить бота» → Cancel): две копии на
+long polling мешают друг другу (`Conflict: terminated by other getUpdates request`).
+
+В конце скрипт печатает три секрета: `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_SSH_KEY`. Заведи их
+в Settings → Secrets and variables → Actions — и после каждого слияния в `main` задание
+«Выложить бота на сервер» само обновит код и перезапустит бота. Ключ умеет только это.
+Руками то же самое: `rhl-update` на сервере.
+
+Логи: journalctl -u bot -f
+Перезапуск: systemctl restart bot
 Время напоминаний — REMIND_TODAY_AT / REMIND_TOMORROW_AT в bot.py.
-Подписчики хранятся в subscribers.json.
+Подписчики хранятся в /opt/rhl/subscribers.json.
 После матча «Рязань-ВДВ» бот сам присылает подписчикам счёт с кнопкой «Как это было» (ADR-008).
 Результаты он берёт из опубликованного мини-аппа (`data/league.json` по адресу WEBAPP_URL)
 раз в 10 минут; с 23:00 до 9:00 МСК молчит. Уже отправленные матчи — в announced.json.

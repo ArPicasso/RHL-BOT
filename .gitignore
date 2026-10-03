@@ -12,3 +12,5 @@ schedule.json
 schedule.tmp
 state.db
 state.db-*
+live/
+probe/

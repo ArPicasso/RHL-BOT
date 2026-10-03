@@ -31,7 +31,7 @@ jobs:
           ua = "ryazan-vdv-schedule-bot (+https://github.com/ArPicasso/bogdanov)"
           seen = {}
           def get(url, name):
-              if url in seen or len(seen) >= 40:
+              if url in seen or len(seen) >= 70:
                   return None
               seen[url] = name
               time.sleep(1)
@@ -70,6 +70,18 @@ jobs:
           for t, g in games[:8]:
               get(f"https://rhl.fhr.ru/matchcenter/{t}/{g}/", f"rhl_mc_{g}")
               get(f"https://rhl.fhr.ru/matchcenter/{t}/{g}/live/", f"rhl_mc_{g}_live")
+          # Вкладки сыгранных матчей: протокол, видео; страница трансляций; скрипты матч-центра; лидеры
+          for t, g in games[:4]:
+              get(f"https://rhl.fhr.ru/matchcenter/{t}/{g}/protocol/", f"rhl_mc_{g}_protocol")
+              get(f"https://rhl.fhr.ru/matchcenter/{t}/{g}/video/", f"rhl_mc_{g}_video")
+          get("https://rhl.fhr.ru/translations/", "rhl_translations")
+          get("https://rhl.fhr.ru/stat/leaders/season/2026-2027/tournament/1432/nomination/scorers/", "rhl_leaders_scorers")
+          mc = (out / f"rhl_mc_{games[0][1]}.html").read_text(encoding="utf-8") if games and (out / f"rhl_mc_{games[0][1]}.html").exists() else ""
+          for i, src in enumerate(dict.fromkeys(re.findall(r'<script[^>]+src="(/local/[^"]+\.js[^"]*)"', mc + home))):
+              get(urljoin("https://rhl.fhr.ru/", src), f"rhl_js_{i}_" + re.sub(r"[^A-Za-z0-9]+", "_", src.split("/")[-1].split("?")[0]))
+          # Каналы клубов в день матча: посты о ходе игры (t.me/s — превью без входа)
+          for ch in ("nmhlpervenstvo", "hcryazan_official", "rostovhc", "HCGvardiaKrd", "mhkbelgorod31"):
+              get(f"https://t.me/s/{ch}", f"tg_{ch}")
           get("https://r-hockey.ru/stat/temp/2027/30904/calendar?month=10", "rhockey_rhl_2026_10")
           get("https://online.khl.ru/online/", "khl_online_day")
           import os

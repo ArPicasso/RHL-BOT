@@ -244,11 +244,24 @@ class BuildStatusTest(unittest.TestCase):
                          pages={"info": {"token": False, "runs": [{"id": "deploy", "conclusion": "failure"}]}})
         texts = [t for _, t in got]
         self.assertIn("Данные мини-аппа (league.json) собраны 3 ч назад", texts)
-        self.assertIn("Источник online.khl.ru: ошибок подряд — 3. HTTP 403 для chat …", texts)
+        self.assertIn("Источник online.khl.ru: ошибок подряд — 3. HTTP 403 для chat … "
+                      "Других живых источников нет — счёта по ходу нет", texts)
         self.assertIn("Зачёт «Раската» выключен: файл дня не читается", texts)
         self.assertIn("На диске меньше 1 ГБ: 300 МБ", texts)
         self.assertIn("Последняя выкладка бота на сервер красная", texts)
         self.assertIn("У службы pages нет PAGES_TOKEN: сборку не будим, за сборками не следим", texts)
+
+    def test_blocked_source_is_a_warning_while_another_works(self):
+        """Онлайн КХЛ закрыт антиботом (ADR-019): пока сайт лиги отвечает, это не авария."""
+        blocked = {"errors": 9, "note": "403, message='Forbidden' — не спрашиваем до 01:57", "ok": None}
+        site = {"ok": ago(hours=2), "errors": 0, "games": 12}
+        got = self.texts(sources={"online.khl.ru": blocked, "rhl.fhr.ru": site})
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0][0], "warn")
+        self.assertTrue(got[0][1].endswith("Живое идёт с rhl.fhr.ru"), got[0][1])
+        got = self.texts(sources={"online.khl.ru": blocked, "rhl.fhr.ru": {**site, "errors": 4}})
+        self.assertEqual([lvl for lvl, _ in got], ["bad", "bad"])
+        self.assertIn("Других живых источников нет", got[0][1])
 
     def test_no_systemctl_is_a_warning_not_a_crash(self):
         st = healthy(services=None, services_note="systemctl: FileNotFoundError")

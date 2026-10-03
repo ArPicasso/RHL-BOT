@@ -454,9 +454,18 @@ def problems(status: dict, now: datetime) -> list[dict]:
         warn("league.json с Pages не прочитался")
     elif age > LEAGUE_STALE and not night:
         bad(f"Данные мини-аппа (league.json) собраны {_mins(age)} назад")
-    for s in (sysm.get("live") or {}).get("sources") or []:
+    # Живой источник молчит — беда, только если живое не идёт ни из одного. Онлайн КХЛ закрыт антиботом
+    # и отвечает 403 (ADR-019, защиту не обходим, ADR-012): пока сайт лиги отвечает, это предупреждение
+    srcs = (sysm.get("live") or {}).get("sources") or []
+    working = [s["name"] for s in srcs if not s.get("errors") and s.get("ok")]
+    for s in srcs:
         if (s.get("errors") or 0) >= SOURCE_ERRORS:
-            bad(f"Источник {s['name']}: ошибок подряд — {s['errors']}. {s.get('note') or 'Без пояснения'}")
+            text = f"Источник {s['name']}: ошибок подряд — {s['errors']}. {s.get('note') or 'Без пояснения'}"
+            text += " " if text.endswith((".", "…")) else ". "
+            if working:
+                warn(f"{text}Живое идёт с {', '.join(working)}")
+            else:
+                bad(f"{text}Других живых источников нет — счёта по ходу нет")
     r = sysm.get("raskat") or {}
     if r and not r.get("on"):
         bad(f"Зачёт «Раската» выключен: {r.get('note')}")

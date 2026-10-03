@@ -772,8 +772,8 @@
    "text": "Данные мини-аппа (league.json) собраны 2 ч 20 мин назад"
   },
   {
-   "level": "bad",
-   "text": "Источник online.khl.ru: ошибок подряд — 4. HTTP 403"
+   "level": "warn",
+   "text": "Источник online.khl.ru: ошибок подряд — 4. HTTP 403. Живое идёт с rhl.fhr.ru"
   }
  ]
 }

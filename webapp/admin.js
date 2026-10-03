@@ -130,8 +130,10 @@ function system(st, now) {
   html += row(minsAgo(s.league_updated, now) > 120 ? "bad" : "ok", "Мини-апп (league.json)", "календарь, результаты, таблица", esc(ago(s.league_updated, now)));
   const live = s.live || {};
   html += row(live.updated ? (minsAgo(live.updated, now) > 20 ? "warn" : "ok") : "", "Живое (live/today.json)", "статусы и счёт по ходу", esc(ago(live.updated, now)));
+  // красным — только если живое не идёт ни из одного источника (как problems в admin.py)
+  const working = (live.sources || []).some((x) => !x.errors && x.ok);
   for (const src of live.sources || []) {
-    const level = src.errors >= 3 ? "bad" : src.errors ? "warn" : src.ok ? "ok" : "";
+    const level = src.errors >= 3 && !working ? "bad" : src.errors ? "warn" : src.ok ? "ok" : "";
     const sub = [src.errors ? `ошибок подряд: ${src.errors}` : `матчей: ${src.games || 0}`, src.note || ""].filter(Boolean).map(esc).join(" · ");
     html += row(level, src.name, sub, esc(ago(src.ok, now)));
   }

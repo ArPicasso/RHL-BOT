@@ -22,7 +22,7 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | --- | --- |
 | `bot.py` | Вся логика: онбординг `/start`, хендлеры, форматирование, `reminder_loop` |
 | `games.json` | Календарь сезона, 48 игр. Правится руками |
-| `subscribers.json` | Подписчики на напоминания. Не в git |
+| `subscribers.json` | Подписчики на напоминания: `{"<chat_id>": [id команд, до трёх]}`, старый список `[chat_id]` бот сам переписывает в «Рязань-ВДВ» (ADR-019). Не в git |
 | `announced.json` | Матчи, о которых бот уже написал после игры (ADR-008). Не в git |
 | `hidden_players.json` | Id игроков на сайте лиги, которых не показываем по просьбе (ADR-007, ADR-008) |
 | `league.py` | Загрузка и разбор протоколов матчей с сайта лиги → `results.json` (ADR-001) |
@@ -42,6 +42,9 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `tg_channels.py` | Посты каналов из `t.me/s` → `channel_posts.json` (не в git): только превью, фильтры рекламы, букмекеров (и по ссылкам), пиратских трансляций, дней рождения и возраста, постов не о молодёжке. Для матч-центра у поста внешние ссылки `links` и строки со временем `times`, короткие посты со ссылкой — в `extra` канала (ADR-019) |
 | `feed.py` | Правила листа дня «Главной» (ADR-015): свои карточки и посты каналов, доли 60/40, лимиты, ротация клубов. `build_data.py` пишет `webapp/data/feed/<клуб>.json` и общую ленту лиги за неделю `feed/stream.json` |
 | `build_data.py` | Собирает `webapp/data/league.json` (команды, матчи, результаты, таблица), `h2h.json`, разборы матчей `matches/<id>.json` (ADR-008) и `leaders.json` (ADR-009). Время матча — московское: `time`, `start`, у арены в другом поясе ещё `local`; источники — `schedule.json`, протокол (в нём местное), пост клуба. Плюс `online` и `watch` (ADR-019) |
+| `khl_online.py` | Разбор онлайна КХЛ без сети (ADR-019): заголовок страницы матча, список дня, статус, счёт и события текстовой трансляции. Вёрстку подтверждает `tools/probe_sources.py` |
+| `live.py` | Служба `live` на VPS: опрос онлайна КХЛ и календаря сайта РХЛ → `live/today.json`, `live/<дата>.json`, `live/schedule.json`, `live/sources.json` (не в git, ADR-019, раздел 5). Ночью и без матчей не опрашивает |
+| `tools/probe_sources.py` | Запустить на VPS руками: сохранить страницы онлайна и `rhl.fhr.ru` в `probe/` (не в git) и показать, что из них разобрано — из этого делаются фикстуры `tests/` |
 | `matchday.py` | «Смотреть» и время начала из постов каналов клубов и лиги в день матча (ADR-019, разделы 2 и 7): привязка поста к матчу, белый список видеохостингов, не больше трёх ссылок. Без сети, его вызывает `build_data.py` |
 | `schedule.json` | Время матчей и ссылки на онлайн на 14 дней — копия `$LIVE_API/live/schedule.json` с сервера (ADR-019, раздел 5). Кладёт шаг Pages, если задана переменная `LIVE_API`. Не в git; нет файла — сборка без него |
 | `history.py` | Матчи пяти прошлых сезонов НМХЛ с сайта лиги → `history.json` для очных встреч (ADR-006) |
@@ -88,6 +91,7 @@ venv/bin/python history.py --protocols           # затем протоколы
 venv/bin/python tg_channels.py                   # посты каналов клубов в channel_posts.json (ADR-015)
 venv/bin/python build_data.py                    # собрать webapp/data/league.json, h2h.json и листы feed/
 venv/bin/python build_raskat.py                  # расклады «Раската» в webapp/data/raskat/ (ADR-018)
+venv/bin/python live.py --once                   # один проход опроса живых источников в live/ (только с VPS в России)
 BOT_TOKEN=... venv/bin/python server.py          # API на 127.0.0.1:8080: /api/health, зачёт, прогнозы
 cd webapp && python3 -m http.server 8000         # мини-апп в браузере: localhost:8000
 ```

@@ -65,7 +65,7 @@ class KickTest(unittest.TestCase):
         s = FakeSession(204)
         self.assertTrue(asyncio.run(pages_kick.kick(s, "tok")))
         url, body, headers = s.calls[0]
-        self.assertEqual(url, "https://api.github.com/repos/ArPicasso/bogdanov/actions/workflows/pages.yml/dispatches")
+        self.assertEqual(url, "https://api.github.com/repos/ArPicasso/RHL-BOT/actions/workflows/pages.yml/dispatches")
         self.assertEqual(body, {"ref": "main"})
         self.assertEqual(headers["Authorization"], "Bearer tok")
 
@@ -89,8 +89,8 @@ class WatchTest(unittest.TestCase):
         path = Path(tempfile.mkdtemp()) / "pages.json"
         track = admin.Tracker("pages", path)
         s = FakeSession(200, json.dumps(runs))
-        asyncio.run(pages_kick.watch(s, "tok", "ArPicasso/bogdanov", track))
-        self.assertEqual(s.calls[0][0], "https://api.github.com/repos/ArPicasso/bogdanov/actions/runs?per_page=100")
+        asyncio.run(pages_kick.watch(s, "tok", "ArPicasso/RHL-BOT", track))
+        self.assertEqual(s.calls[0][0], "https://api.github.com/repos/ArPicasso/RHL-BOT/actions/runs?per_page=100")
         got = json.loads(path.read_text(encoding="utf-8"))["info"]
         pages = next(r for r in got["runs"] if r["id"] == "pages")
         self.assertEqual((pages["conclusion"], pages["last_ok"]), ("success", "2026-10-03T20:03:00+03:00"))
@@ -100,7 +100,7 @@ class WatchTest(unittest.TestCase):
         track = admin.Tracker("pages", path)
         track.info(runs=[{"id": "pages"}])
         with self.assertLogs(level="WARNING") as logs:
-            asyncio.run(pages_kick.watch(FakeSession(403, "{}"), "secret-token", "ArPicasso/bogdanov", track))
+            asyncio.run(pages_kick.watch(FakeSession(403, "{}"), "secret-token", "ArPicasso/RHL-BOT", track))
         self.assertNotIn("secret-token", "\n".join(logs.output))
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["info"]["runs"], [{"id": "pages"}])
 

@@ -38,7 +38,7 @@ WAITLIST_FILE = BASE / "raskat_waitlist.json"   # кого позвать, ко�
 LIVE_DIR = Path(os.environ.get("LIVE_DIR") or BASE / "live")
 STICKERS = BASE / "stickers"          # стикеры бота (ADR-005), 512×512 WEBP
 # мини-апп (ADR-003); переменная окружения — только чтобы подставить тестовый адрес
-WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://arpicasso.github.io/bogdanov/"
+WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://arpicasso.github.io/RHL-BOT/"
 REMIND_TODAY_AT = time(10, 0)      # утром в день игры
 REMIND_TOMORROW_AT = time(19, 0)   # вечером накануне
 REMIND_TEAM = "Рязань-ВДВ"         # её календарь — games.json: запасной путь, если league.json не скачался

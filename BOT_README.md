@@ -2,7 +2,7 @@
 
 Деплой на VPS (Ubuntu 22.04/24.04 или Debian 12), от root на сервере:
 
-    curl -fsSL https://raw.githubusercontent.com/ArPicasso/bogdanov/main/deploy/setup.sh -o setup.sh
+    curl -fsSL https://raw.githubusercontent.com/ArPicasso/RHL-BOT/main/deploy/setup.sh -o setup.sh
     bash setup.sh
 
 Скрипт ставит пакеты, открывает наружу только SSH, заводит пользователя `rhl`, клонирует код в

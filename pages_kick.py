@@ -29,7 +29,7 @@ import aiohttp
 import admin
 
 TZ = ZoneInfo("Europe/Moscow")
-REPO = "ArPicasso/bogdanov"
+REPO = "ArPicasso/RHL-BOT"
 WORKFLOW = "pages.yml"
 EVERY = timedelta(minutes=15)
 NIGHT_START, NIGHT_END = time(2, 0), time(7, 0)

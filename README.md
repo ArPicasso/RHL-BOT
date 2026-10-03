@@ -48,7 +48,7 @@ flowchart LR
 - `zveno/` is the fantasy rules engine, standard library only
 - `tests/` holds about 300 `unittest` cases; fixtures are saved copies of real league pages
 
-Design decisions are written down as ADRs in [`docs/adr/`](docs/adr) (17 so far), and the overall plan is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Both are in Russian.
+Design decisions are written down as ADRs in [`docs/adr/`](docs/adr), and the overall plan is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Both are in Russian.
 
 ## My role
 

@@ -73,6 +73,14 @@ jobs:
         continue-on-error: true
         run: python tg_channels.py
 
+      # Лента матча из постов каналов (ADR-019, раздел 5) копится между запусками в channel_events.json:
+      # t.me/s отдаёт только последние ~20 постов канала, а клуб по ходу матча пишет больше
+      - uses: actions/cache@v4
+        with:
+          path: channel_events.json
+          key: channel-events-${{ github.run_id }}
+          restore-keys: channel-events-
+
       # Адрес API на VPS (ADR-019, раздел 3). Variables LIVE_API и RASKAT_API, а пока их нет — тот адрес,
       # который включает deploy/https.sh без своего домена: https://<ip-через-дефисы>.sslip.io/api по
       # секрету DEPLOY_HOST. Берётся, только если API отвечает: не ответил — мини-апп на часовой сборке,

@@ -7,6 +7,7 @@ results.json
 results.tmp
 webapp/data/
 channel_posts.json
+channel_events.json
 raskat_waitlist.json
 schedule.json
 schedule.tmp

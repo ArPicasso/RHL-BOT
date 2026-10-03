@@ -1,8 +1,9 @@
 """Служба live: опрос сайта РХЛ и онлайна КХЛ → live/*.json (ADR-019, разделы 4–5).
 
 Главный источник с 03.10.2026 — сайт лиги rhl.fhr.ru (rhl_site.py): календарь с временем МСК и лента
-дней со счётом, а у идущего матча — страница матч-центра со счётом и периодом. Онлайн КХЛ ботам
-отвечает 403 даже с российского IP; после 403 служба не спрашивает его час.
+дней со счётом, а у идущего матча — страница матч-центра со счётом и периодом. Лента событий матча —
+по смене счёта и периода между опросами страницы (site_events). Онлайн КХЛ ботам отвечает 403 даже
+с российского IP; после 403 служба не спрашивает его час.
 
     python live.py                                   служба: опрашивает, пока не придёт SIGTERM
     python live.py --once                            один проход и выход
@@ -127,6 +128,79 @@ def mentions_team(names: list[str], text: str) -> bool:
     return any(re.search(rf"(?<![а-я0-9]){re.escape(n)}(?![а-я0-9])", text) for n in names)
 
 
+# ---------- события по ходу матча со страницы сайта лиги (ADR-019, раздел 5) ----------
+
+PERIOD_START = {"1": "Начался 1-й период", "2": "Начался 2-й период", "3": "Начался 3-й период",
+                "ОТ": "Начался овертайм", "РБ": "Серия буллитов"}
+PERIOD_END = {"1": "Конец 1-го периода", "2": "Конец 2-го периода", "3": "Конец 3-го периода", "ОТ": "Конец овертайма"}
+
+
+def site_events(old: dict | None, new: dict, last_period: str | None, at: datetime) -> list[dict]:
+    """События между двумя опросами страницы матча на сайте лиги. По ходу матча сайт даёт только счёт и строку
+    «2-й период» (снимки 03.10.2026), поэтому гол — это смена счёта, начало и конец периода — смена строки.
+    Минуты гола сайт не даёт: `time` — null, `at` — когда служба заметила. Чего не видели, не выдумываем:
+    первый опрос уже идущего матча событий не даёт, после перерыва в опросе дольше STALE — голы без периода и
+    без событий периода, счёт вырос у обеих сторон — голы без счёта (порядок неизвестен)."""
+    if not old or not old.get("seen"):
+        return []
+    gap = at - old["seen"] > STALE
+    o_st, n_st, o_per, n_per = old.get("status"), new.get("status"), old.get("period"), new.get("period")
+    period = n_per or last_period or o_per
+
+    def ev(kind: str, **kw) -> dict:
+        return {"kind": kind, "period": None if gap else period, "time": None, "team": None, "text": None,
+                "score": None, "at": iso(at), "src": "rhl.fhr.ru", **kw}
+    starts, goals, ends = [], [], []
+    base, cur = old.get("score"), new.get("score")
+    if base is None and o_st is None and n_st == "live" and n_per == "1":
+        base = {"home": 0, "away": 0}   # прошлый опрос — до начала: всё, что на табло, забито сейчас
+    if base and cur:
+        dh, da = cur["home"] - base["home"], cur["away"] - base["away"]
+        if dh < 0 or da < 0:
+            goals.append(ev("text", text=f"Счёт на сайте лиги исправлен: {cur['home']}:{cur['away']}"))
+        else:
+            h, a = base["home"], base["away"]
+            for side, n in (("home", dh), ("away", da)):
+                for _ in range(n):
+                    h, a = (h + 1, a) if side == "home" else (h, a + 1)
+                    goals.append(ev("goal", team=side, score=None if dh and da else f"{h}:{a}"))
+    if not gap:
+        if n_st == "live" and n_per and n_per != o_per and (o_st in ("live", "break") or o_st is None and n_per == "1"):
+            starts.append(ev("period", period=n_per, text=PERIOD_START.get(n_per)))
+        ended = last_period or o_per
+        if n_st == "break" and o_st == "live":
+            ends.append(ev("period", period=ended, text=PERIOD_END.get(ended, "Перерыв")))
+        elif n_st == "ended" and o_st in ("live", "break"):
+            ends.append(ev("period", period=ended, text="Матч окончен"))
+    return starts + goals + ends
+
+
+def minute_period(minute: int) -> str:
+    """Период по минуте сайта: 29' — это 29:00–29:59 от начала матча, второй период."""
+    return "1" if minute < 20 else "2" if minute < 40 else "3" if minute < 60 else "ОТ"
+
+
+def with_authors(events: list[dict], goals: dict | None, hidden: set[int] = frozenset()) -> list[dict]:
+    """Авторы и минуты голов из блока авторов страницы матча (matchcenter-hero__composition). 03.10.2026 по
+    ходу матча блок был пуст и заполнился после матча, вместе с протоколом; появится раньше — служба возьмёт.
+    Гол хозяев со счётом «2:1» — второй в списке хозяев. Секунд сайт не даёт: минута — в `minute`, `time`
+    остаётся null. Скрытые по просьбе игроки (ADR-007) — «Игрок скрыт»."""
+    if not goals or not (goals.get("home") or goals.get("away")):
+        return events
+    out = []
+    for e in events:
+        side, score = e.get("team"), e.get("score")
+        rows = (goals.get(side) or []) if side in ("home", "away") else []
+        if e.get("kind") == "goal" and rows and isinstance(score, str) and re.fullmatch(r"\d+:\d+", score):
+            k = int(score.split(":")[0 if side == "home" else 1]) - 1
+            if 0 <= k < len(rows):
+                row = rows[k]
+                e = {**e, "text": build_data.HIDDEN_NAME if row.get("player") in hidden else row["name"],
+                     "minute": row["min"], "period": e.get("period") or minute_period(row["min"])}
+        out.append(e)
+    return out
+
+
 class Live:
     """Состояние службы: матчи дня, календарь, кэш лиг по номеру онлайна, здоровье источников.
 
@@ -153,6 +227,7 @@ class Live:
         self.sources: dict[str, dict] = read_json(self.out / "sources.json", {})
         self.blocked_until: datetime | None = None   # онлайн КХЛ ответил 403: до этого времени не спрашиваем
         self.site_starts: dict[int, datetime | None] = {}   # id матча сайта → начало, со страницы матч-центра
+        self.hidden = build_data.load_hidden()   # авторы голов, которых не показываем (ADR-007)
         self.restore()
 
     # ---------- источники: здоровье ----------
@@ -348,7 +423,12 @@ class Live:
         state = self.site_state(p["status"], p["score"], p.get("status_name"), seen)
         if p["status"] == "final" and p.get("decision") and state.get("score"):
             state["score"]["decision"] = p["decision"]
-        self.apply_page(g, {k: state[k] for k in ("status", "period", "clock", "score")}, seen)
+        old = g.get("page") if (g.get("page") or {}).get("src") == "site" else None
+        events = [*((old or {}).get("events") or []), *site_events(old, state, g.get("site_period"), seen)]
+        events = with_authors(events, p.get("goals"), self.hidden)[-khl_online.MAX_EVENTS:]
+        if state.get("period"):
+            g["site_period"] = state["period"]
+        self.apply_page(g, {**{k: state[k] for k in ("status", "period", "clock", "score")}, "events": events}, seen)
         g["page"]["src"] = "site"
         self.ok(self.site_src, len(self.calendar), self._src(self.site_src).get("note", ""))
 
@@ -623,6 +703,14 @@ class Live:
                 if x.get("src") == SRC_ONLINE and seen and x.get("status") in LIVE_STATUSES:
                     g["page"] = {"seen": seen, "status": x["status"], "period": x.get("period"),
                                  "clock": x.get("clock"), "score": x.get("score"), "events": x.get("events") or []}
+                    g["ended_at"] = seen if x["status"] == "ended" else None
+                elif x.get("src") == self.site_src and seen and x.get("status") in LIVE_STATUSES:
+                    # сайт лиги: последний счёт — точка отсчёта голов, лента событий — не пропадает
+                    events = x.get("events") or []
+                    g["page"] = {"seen": seen, "status": x["status"], "period": x.get("period"), "clock": None,
+                                 "score": x.get("score"), "events": events, "src": "site"}
+                    g["site_period"] = x.get("period") or next((e["period"] for e in reversed(events)
+                                                                if isinstance(e, dict) and e.get("period")), None)
                     g["ended_at"] = seen if x["status"] == "ended" else None
         for x in read_json(self.out / "schedule.json", {}).get("games", []):
             if x.get("src") == self.site_src and x.get("key"):

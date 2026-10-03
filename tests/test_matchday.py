@@ -253,6 +253,111 @@ class Binding(unittest.TestCase):
         self.assertEqual(md.attach(GAMES, TEAMS, CHANNELS, {"hcryazan_official": {"ok": False}}), {})
 
 
+class Feed(unittest.TestCase):
+    """Лента матча из постов каналов (ADR-019, раздел 5) на настоящих постах 03.10.2026: Ростов — Краснодар
+    в 13:00 (начали в 14:07), Тверичи — Металлург в 15:00, Рязань-ВДВ — Белгород в 17:00."""
+
+    HANDLES = ("HCGvardiaKrd", "rostovhc", "nmhlpervenstvo", "mhkbelgorod31", "hcryazan_official")
+    GAMES = [{"id": "a", "date": "2026-10-03", "home": "rostov", "away": "krasnodar", "start": "2026-10-03T13:00:00+03:00"},
+             {"id": "b", "date": "2026-10-03", "home": "tverichi", "away": "metallurg", "start": "2026-10-03T15:00:00+03:00"},
+             {"id": "c", "date": "2026-10-03", "home": "ryazan-vdv", "away": "belgorod", "start": "2026-10-03T17:00:00+03:00"},
+             {"id": "d", "date": "2026-10-04", "home": "rostov", "away": "krasnodar"}]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.channels = [c for c in tg.load_channels(ROOT / "channels.json") if c["handle"] in cls.HANDLES]
+        pages = {c["handle"]: (FIX / f"tg_{c['handle'].lower()}_2026_10_03.html").read_text(encoding="utf-8")
+                 for c in cls.channels}
+        cls.posts = tg.build(cls.channels, pages)["channels"]
+        cls.feed = md.match_events(cls.GAMES, TEAMS, cls.channels, cls.posts)
+
+    def texts(self, gid: str) -> list[str]:
+        return [e["text"] for e in self.feed.get(gid, [])]
+
+    def test_club_posts_during_match(self):
+        texts = self.texts("a")
+        for want in ("0:1 — Счёт открывают гости",                        # цифры-эмодзи «0️⃣*️⃣1️⃣» — счётом
+                     "🥳Шайбу забросил Вячеслав Фурлетов — 🦅 0:3 🏝",
+                     "🥳ГООООЛ!", "Игра 4 на 4",                            # короткие посты — тоже в ленте
+                     "😢За подножку малым штрафом наказан Кузнецов Артём — 🦅 0:4 🏝",
+                     "Перерыв после 40 минут игры, верим в команду и ждём третий период!",
+                     "⭐️ТРЕТИЙ ПЕРИОД ОКОНЧЕН! 🦅 0:6 🏝"):
+            self.assertIn(want, texts)
+        self.assertEqual(texts.index("0:1 — Счёт открывают гости") < texts.index("🥳ГООООЛ!"), True)   # по времени
+        self.assertFalse(any("Первые кадры" in t or "Рябицев «Вырвали" in t for t in texts))   # после окна матча
+        self.assertNotIn("d", self.feed)                                  # завтрашний: без начала ленты нет
+
+    def test_event_fields(self):
+        e = next(x for x in self.feed["a"] if x["text"].startswith("0:1"))
+        self.assertEqual(e, {"kind": "text", "text": "0:1 — Счёт открывают гости", "at": "2026-10-03T14:07+03:00",
+                             "src": "t.me/rostovhc", "from": "канал ХК «Ростов»", "url": "https://t.me/rostovhc/7475"})
+        self.assertNotIn("team", e)   # канал «Ростова» пишет и о голах гостей — сторону не ставим
+
+    def test_league_posts_bound_by_teams(self):
+        self.assertIn("Поехали! 🏒 Стартовое вбрасывание в Ростове ✔️ Первый матч сезона начался — следите за игрой.",
+                      self.texts("a"))                                    # канал лиги: одна команда идущего матча
+        self.assertTrue(any(t.startswith("Первый гол сезона") for t in self.texts("a")))
+        self.assertTrue(any("Тверичи-СШОР" in t for t in self.texts("b")))
+        ryazan = self.feed["c"]
+        self.assertEqual([e["src"] for e in ryazan], ["t.me/hcryazan_official", "t.me/nmhlpervenstvo"])
+        self.assertEqual(ryazan[0]["text"], "Первый период за нами🔥")     # «#РХЛ» в начале срезан
+        # «#ВХЛ Состав на матч» — взрослая команда, не о молодёжке; ссылка на эфир за час до игры — до окна
+        self.assertFalse(any("Состав" in t or "Не попали" in t for t in self.texts("c")))
+
+    def test_rules(self):
+        ch = [{"handle": "rostovhc", "club": "rostov", "kind": "club", "short": "ХК «Ростов»"},
+              {"handle": "nmhlpervenstvo", "club": None, "kind": "league", "title": "РХЛ"}]
+
+        def feed(handle, *texts, at="2026-10-03T15:00+03:00"):
+            data = {"rostovhc": {"ok": True, "posts": []}, "nmhlpervenstvo": {"ok": True, "posts": []}}
+            data[handle]["posts"] = [{**post(t, at=at, links=(), pid=i), "url": f"https://t.me/{handle}/{i}"}
+                                     for i, t in enumerate(texts, 1)]
+            return [e["text"] for e in md.match_events(self.GAMES[:3], TEAMS, ch, data).get("a", [])]
+        self.assertEqual(feed("rostovhc", "Гол! Счёт открыт", "Гол! Счёт открыт"), ["Гол! Счёт открыт"])   # повтор — раз
+        self.assertEqual(feed("rostovhc", "Завтра едем к «Тверичам»"), [])                 # третья команда — не о матче
+        self.assertEqual(feed("rostovhc", "Ставки на матч в Фонбет"), [])                  # букмекер
+        self.assertEqual(feed("nmhlpervenstvo", "Ростов, Тверичи, Рязань — все матчи дня"), [])   # обо всём дне
+        self.assertEqual(feed("rostovhc", "Гол!", at="2026-10-03T12:30+03:00"), [])        # до окна матча
+        self.assertEqual(feed("rostovhc", "💥💥💥"), [])                                     # без слов
+
+    def test_cache_merge(self):
+        ch = [{"handle": "rostovhc", "club": "rostov", "kind": "club"}]
+        old = [{"kind": "text", "text": "Старый гол", "at": "2026-10-03T14:00+03:00", "src": "t.me/rostovhc",
+                "url": "https://t.me/rostovhc/1"},
+               {"kind": "text", "text": "Удалённый пост", "at": "2026-10-03T15:10+03:00", "src": "t.me/rostovhc",
+                "url": "https://t.me/rostovhc/2"}]
+        page = {"rostovhc": {"ok": True, "posts": [{"id": 3, "url": "https://t.me/rostovhc/3", "at": "2026-10-03T15:00+03:00"}]}}
+        new = [{"kind": "text", "text": "Новый гол", "at": "2026-10-03T15:00+03:00", "src": "t.me/rostovhc",
+                "url": "https://t.me/rostovhc/3"}]
+        # пост старше страницы канала остаётся из кэша, пост, который должен быть на странице, но пропал, — нет
+        self.assertEqual([e["text"] for e in md.merge_feed(old, new, ch, page)], ["Старый гол", "Новый гол"])
+        self.assertEqual([e["text"] for e in md.merge_feed(old, [], ch, {"rostovhc": {"ok": False}})],
+                         ["Старый гол", "Удалённый пост"])               # канал не открылся — кэш как есть
+        self.assertEqual(md.merge_feed(old, [], [{**ch[0], "optout": {"level": "all"}}], page), [])   # отказался
+
+    def test_league_json_events_accumulate(self):
+        import build_data
+        teams = build_data.load_teams()
+        now = datetime(2026, 10, 3, 21, 0, tzinfo=TZ)
+        cache = {"games": {"2026-09-29|rostov|krasnodar": [{"kind": "text", "text": "Давний матч", "at": "x"}]}}
+        games = [dict(g) for g in self.GAMES]
+        self.assertEqual(build_data.apply_channel_events(games, teams, self.channels, self.posts, cache, now), 3)
+        self.assertEqual(games[0]["events"], self.feed["a"])
+        self.assertEqual(cache["games"]["2026-10-03|rostov|krasnodar"], self.feed["a"])
+        self.assertNotIn("2026-09-29|rostov|krasnodar", cache["games"])   # старше трёх дней — из кэша вон
+        self.assertNotIn("events", games[3])
+        # следующий запуск: на странице канала «Краснодара» уже другие посты — лента матча не теряется
+        later = {h: ({**v, "posts": [], "extra": []} if h == "HCGvardiaKrd" else v) for h, v in self.posts.items()}
+        again = [dict(g) for g in self.GAMES]
+        build_data.apply_channel_events(again, teams, self.channels, later, cache, now)
+        self.assertEqual(again[0]["events"], games[0]["events"])
+
+    def test_short_posts_kept_aside(self):
+        rostov = self.posts["rostovhc"]
+        self.assertEqual([p["id"] for p in rostov["extra"]], [7475, 7479])   # «коротко» для ленты, но для матча — да
+        self.assertNotIn(7475, [p["id"] for p in rostov["posts"]])
+
+
 class Names(unittest.TestCase):
     pats = md.name_patterns(TEAMS)
 

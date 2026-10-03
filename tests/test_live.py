@@ -501,7 +501,7 @@ class Service(unittest.TestCase):
                 self.assertIn(g["score"]["decision"], {None, "ОТ", "Б"})
             self.assertLessEqual(len(g.get("events") or []), 60)
             for e in g.get("events") or []:
-                self.assertLessEqual(set(e), {"period", "time", "team", "kind", "text", "score"})
+                self.assertLessEqual(set(e), {"period", "time", "team", "kind", "text", "score", "minute", "at", "src"})
                 self.assertIn(e["kind"], {"goal", "penalty", "period", "text"})
                 self.assertIn(e["team"], {"home", "away", None})
             for f in ("start", "seen"):
@@ -600,3 +600,105 @@ class LeagueSite(unittest.TestCase):
                       ["online.khl.ru"]["note"])
         self.now[0] = msk("2026-10-03T18:55:00")
         self.assertFalse(self.lv.online_blocked(self.now[0]))
+
+
+class SiteEvents(unittest.TestCase):
+    """События по ходу матча со страницы сайта лиги. По снимкам 03.10.2026 сайт по ходу матча даёт только счёт и
+    «2-й период»: голы — по смене счёта между опросами, периоды — по смене строки; авторы и минуты — из блока
+    авторов, когда он заполнен (после матча). Страницы — настоящие, счёт и строка подставлены по ходу «матча»."""
+
+    URL = "https://rhl.fhr.ru/matchcenter/1432/905111/"
+    KEY = "2026-10-03|ryazan-vdv|belgorod"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.now = [msk("2026-10-03T18:30:00")]
+        self.site = FakeSite({"https://rhl.fhr.ru/calendar/": fixture("rhl_calendar_2026_10_03.html"),
+                              self.URL: self.live("2:0", "Перерыв"),
+                              "https://rhl.fhr.ru/matchcenter/1432/905113/": fixture("rhl_match_905113_final.html")})
+        self.lv = self.make()
+        asyncio.run(self.lv.step(force=True))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def make(self) -> live.Live:
+        return live.Live(self.dir, TEAMS, self.site, clock=lambda: self.now[0], site="https://rhl.fhr.ru")
+
+    @staticmethod
+    def live(score: str, status: str) -> str:
+        return (fixture("rhl_match_905111_live.html").replace(">2:0<", f">{score}<", 1)
+                .replace(">2-й период<", f">{status}<", 1))
+
+    def poll(self, page: str) -> dict:
+        self.site.pages[self.URL] = page
+        self.now[0] += timedelta(minutes=1)
+        asyncio.run(self.lv.step())
+        games = {g["key"]: g for g in json.loads((self.dir / "today.json").read_text(encoding="utf-8"))["games"]}
+        return games[self.KEY]
+
+    @staticmethod
+    def brief(g: dict) -> list[tuple]:
+        return [(e["kind"], e["period"], e["team"], e["score"], e["text"], e.get("minute")) for e in g["events"]]
+
+    def test_match_by_polls(self):
+        self.assertEqual(self.poll(self.live("2:0", "Перерыв"))["events"], [])   # первый опрос: что было до него, не знаем
+        self.poll(self.live("2:0", "2-й период"))
+        self.poll(self.live("2:1", "2-й период"))
+        self.poll(self.live("2:2", "2-й период"))
+        self.poll(self.live("2:2", "Перерыв"))
+        self.poll(self.live("2:2", "3-й период"))
+        g = self.poll(self.live("4:2", "3-й период"))            # два гола между опросами — оба, со счётом
+        self.assertEqual(self.brief(g)[-2:], [("goal", "3", "home", "3:2", None, None), ("goal", "3", "home", "4:2", None, None)])
+        self.assertTrue(all(e["time"] is None and e["src"] == "rhl.fhr.ru" for e in g["events"]))   # минут нет
+        self.assertEqual(g["events"][-1]["at"], "2026-10-03T18:37:00+03:00")                     # когда заметили
+        g = self.poll(fixture("rhl_match_905111_final.html"))    # сыгран: авторы голов и минуты на странице
+        self.assertEqual((g["status"], g["score"]["home"], g["score"]["away"]), ("ended", 4, 3))
+        self.assertEqual(self.brief(g), [
+            ("period", "2", None, None, "Начался 2-й период", None),
+            ("goal", "2", "away", "2:1", "Мухаметжанов Тимур", 29),
+            ("goal", "2", "away", "2:2", "Целых Сергей", 36),
+            ("period", "2", None, None, "Конец 2-го периода", None),
+            ("period", "3", None, None, "Начался 3-й период", None),
+            ("goal", "3", "home", "3:2", "Аубакиров Ратмир", 44),
+            ("goal", "3", "home", "4:2", "Абашкин Кирилл", 54),
+            ("goal", "3", "away", "4:3", "Малахов Дмитрий", 59),
+            ("period", "3", None, None, "Матч окончен", None)])
+
+    def test_restart_keeps_events_and_score(self):
+        self.poll(self.live("2:0", "2-й период"))
+        self.poll(self.live("2:1", "2-й период"))
+        self.lv = self.make()                                    # перезапуск службы: лента и счёт — из live/
+        g = self.poll(self.live("2:2", "2-й период"))
+        self.assertEqual([e[3] for e in self.brief(g) if e[0] == "goal"], ["2:1", "2:2"])   # без повторов
+
+    def test_unit_rules(self):
+        at = msk("2026-10-03T18:00:00")
+        old = {"seen": at - timedelta(seconds=30), "status": "live", "period": "1", "score": {"home": 1, "away": 0}}
+        both = live.site_events(old, {"status": "live", "period": "1", "score": {"home": 2, "away": 1}}, "1", at)
+        self.assertEqual([(e["team"], e["score"]) for e in both], [("home", None), ("away", None)])   # порядок неизвестен
+        fix = live.site_events(old, {"status": "live", "period": "1", "score": {"home": 0, "away": 0}}, "1", at)
+        self.assertEqual([(e["kind"], e["text"]) for e in fix], [("text", "Счёт на сайте лиги исправлен: 0:0")])
+        late = live.site_events({**old, "seen": at - timedelta(minutes=20)},
+                                {"status": "break", "period": None, "score": {"home": 2, "away": 0}}, "1", at)
+        self.assertEqual([(e["kind"], e["period"]) for e in late], [("goal", None)])   # долго не видели: период неизвестен
+        start = live.site_events({"seen": at - timedelta(seconds=30), "status": None, "period": None, "score": None},
+                                 {"status": "live", "period": "1", "score": {"home": 1, "away": 0}}, None, at)
+        self.assertEqual([(e["kind"], e["text"], e["score"]) for e in start],
+                         [("period", "Начался 1-й период", None), ("goal", None, "1:0")])
+        self.assertEqual(live.site_events(None, {"status": "live", "period": "2", "score": {"home": 3, "away": 0}}, None, at), [])
+        self.assertEqual([live.minute_period(m) for m in (0, 19, 20, 39, 40, 59, 60, 64)],
+                         ["1", "1", "2", "2", "3", "3", "ОТ", "ОТ"])
+
+    def test_hidden_author(self):
+        goals = rhl_site_page_goals()
+        ev = [{"kind": "goal", "period": "2", "team": "away", "score": "2:1", "text": None}]
+        self.assertEqual(live.with_authors(ev, goals, {46927})[0]["text"], build_data.HIDDEN_NAME)
+        self.assertEqual(live.with_authors(ev, goals)[0]["text"], "Мухаметжанов Тимур")
+        self.assertEqual(live.with_authors(ev, {"home": [], "away": []}), ev)   # блок пуст — как по ходу матча
+
+
+def rhl_site_page_goals() -> dict:
+    import rhl_site
+    return rhl_site.parse_match(fixture("rhl_match_905111_final.html"))["goals"]

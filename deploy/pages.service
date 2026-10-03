@@ -21,6 +21,8 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+# только пульс и итоги сборок для пульта админа (ADR-021); каталог создаёт rhl-update
+ReadWritePaths=-/opt/rhl/status
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

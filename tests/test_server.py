@@ -465,5 +465,66 @@ class Salt(Base):
         self.assertIn(D1, h["raskat"]["note"])
 
 
+class AdminPanel(Base):
+    """Пульт (ADR-021): только ADMIN_IDS, открытия мини-аппа — один человек раз в день."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.status = Path(self.tmp.name) / "status"
+        self.status.mkdir()
+        self.subs = Path(self.tmp.name) / "subscribers.json"
+        self.api.cfg.admins = frozenset({1001})
+        self.api.cfg.status_dir = self.status
+        self.api.cfg.subs_file = self.subs
+        self.pub["data/league.json"] = {"updated": "2026-10-03T11:50:00+03:00", "games": []}
+
+        async def services():
+            return {"bot": {"state": "active", "sub": "running", "since": None, "restarts": 0}}, ""
+        self.api.services = services
+
+    async def test_needs_telegram_and_admin(self):
+        await self.call("GET", "/api/admin/status", status=401)
+        d = await self.call("GET", "/api/admin/status", fan(2), status=403)
+        self.assertIn("1002", d["error"])
+        self.api.cfg.admins = frozenset()
+        d = await self.call("GET", "/api/admin/status", fan(1), status=403)
+        self.assertIn("ADMIN_IDS", d["error"])
+
+    async def test_status_for_admin(self):
+        (self.status / "bot.json").write_text(json.dumps({
+            "beat": "2026-10-03T11:59:30+03:00", "info": {"tg_ok": "2026-10-03T11:59:30+03:00"},
+            "days": {D1: {"starts": 4}}, "log": []}), encoding="utf-8")
+        self.subs.write_text(json.dumps({"5": ["tambov"], "6": ["tambov", "sokol"]}), encoding="utf-8")
+        (self.live / "today.json").write_text(json.dumps({"updated": "2026-10-03T11:59:50+03:00"}), encoding="utf-8")
+        await self.call("POST", "/api/seen", fan(3), {"platform": "ios", "fav": "tambov"})
+        await self.call("POST", "/api/seen", fan(3), {"platform": "ios", "fav": "tambov"})
+        await self.call("POST", "/api/seen", fan(4), {"platform": "android", "fav": "нет-такой"})
+        await self.solve_day(fan(3))
+        st = await self.call("GET", "/api/admin/status", fan(1))
+        self.assertEqual(st["now"], "2026-10-03T12:00:00+03:00")
+        self.assertEqual(st["system"]["league_updated"], "2026-10-03T11:50:00+03:00")
+        self.assertEqual(st["system"]["services"][0]["name"], "bot")
+        self.assertEqual(st["audience"]["subscribers"], 2)
+        today = st["days"][0]
+        self.assertEqual((today["date"], today["starts"], today["app_users"], today["raskat"]), (D1, 4, 2, 1))
+        self.assertEqual(st["audience"]["fans"], [{"id": "tambov", "name": "Тамбов", "n": 1}])
+        self.assertEqual({p["id"] for p in st["audience"]["platforms"]}, {"ios", "android"})
+        self.assertIsInstance(st["problems"], list)
+        self.assertNotIn("1003", json.dumps(st))   # на пульте нет id болельщиков
+
+    async def test_seen_needs_login_and_forget_clears_it(self):
+        await self.call("POST", "/api/seen", body={"platform": "ios"}, status=401)
+        await self.call("POST", "/api/seen", fan(3), {"platform": "ios"})
+        await self.call("DELETE", "/api/predict/me", fan(3))
+        with sqlite3.connect(self.db) as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM admin_seen").fetchone()[0], 0)
+            self.assertEqual(c.execute("SELECT n FROM admin_counts WHERE key = 'app_users'").fetchone()[0], 1)
+
+    def test_admin_ids_from_env(self):
+        with self.assertLogs("api", level="WARNING"):
+            self.assertEqual(server.Config.parse_admins("1001, 1002 x"), frozenset({1001, 1002}))
+        self.assertEqual(server.Config.parse_admins(""), frozenset())
+
+
 if __name__ == "__main__":
     unittest.main()

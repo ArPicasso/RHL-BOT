@@ -7,6 +7,8 @@ ADR-019 (раздел 3), ADR-020 (раздел 3), docs/raskat/contract.md (р�
     /api/live/<файл>.json    каталог live/ (пишет служба live.py), без авторизации
     /api/raskat/*            зачёт «Раската»
     /api/predict/*           прогнозы
+    /api/seen                мини-апп открыли: счётчик людей за день для пульта (ADR-021)
+    /api/admin/status        пульт админа: здоровье, аудитория, рассылки, игры — только ADMIN_IDS
 
 Авторизация — `Authorization: tma <initData>`: подпись Telegram WebApp, свежесть 24 часа,
 пользователь только из проверенного initData. CORS — только адрес Pages (`PAGES_ORIGIN`).
@@ -20,6 +22,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import sqlite3
 import time as clock
 from datetime import date, datetime, time, timedelta
@@ -29,6 +32,7 @@ from zoneinfo import ZoneInfo
 
 from aiohttp import ClientSession, ClientTimeout, web
 
+import admin
 import predict
 import raskat
 from raskat import rules
@@ -169,13 +173,29 @@ class Config:
     def __init__(self, token: str = "", live_dir: Path | str = BASE / "live",
                  db_path: Path | str = BASE / "state.db",
                  webapp_url: str = "https://arpicasso.github.io/bogdanov/",
-                 origins=("https://arpicasso.github.io",), teams_file: Path | str = BASE / "teams.json"):
+                 origins=("https://arpicasso.github.io",), teams_file: Path | str = BASE / "teams.json",
+                 admins=(), status_dir: Path | str = admin.STATUS_DIR,
+                 subs_file: Path | str = BASE / "subscribers.json"):
         self.token = token
         self.live_dir = Path(live_dir)
         self.db_path = str(db_path)
         self.pages = pages_base(webapp_url)
         self.origins = frozenset(o.strip().rstrip("/") for o in origins if o.strip())
         self.teams_file = Path(teams_file)
+        self.admins = frozenset(admins)
+        self.status_dir = Path(status_dir)
+        self.subs_file = Path(subs_file)
+
+    @staticmethod
+    def parse_admins(raw: str) -> frozenset[int]:
+        """ADMIN_IDS — Telegram id через запятую или пробел. Не число — пропускаем с предупреждением."""
+        out = set()
+        for part in re.split(r"[,\s]+", raw or ""):
+            if part.isdigit():
+                out.add(int(part))
+            elif part:
+                log.warning("ADMIN_IDS: «%s» — не Telegram id, пропускаю", part)
+        return frozenset(out)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -184,7 +204,9 @@ class Config:
                    live_dir=env("LIVE_DIR") or BASE / "live",
                    db_path=env("STATE_DB") or BASE / "state.db",
                    webapp_url=env("WEBAPP_URL") or "https://arpicasso.github.io/bogdanov/",
-                   origins=(env("PAGES_ORIGIN") or "https://arpicasso.github.io").split(","))
+                   origins=(env("PAGES_ORIGIN") or "https://arpicasso.github.io").split(","),
+                   admins=cls.parse_admins(env("ADMIN_IDS") or ""),
+                   status_dir=env("STATUS_DIR") or admin.STATUS_DIR)
 
 
 def open_db(path: str) -> sqlite3.Connection:
@@ -210,6 +232,7 @@ class Api:
         self.conn: sqlite3.Connection | None = None
         self.rs: RaskatStore | None = None
         self.pr: predict.PredictStore | None = None
+        self.adm: admin.AdminStore | None = None
         teams = json.loads(self.cfg.teams_file.read_text(encoding="utf-8"))
         self.teams = {t["id"]: t["name"] for t in teams}
         # Сверка соли (контракт, раздел 3): None — ещё не сверяли, True — сошлось или не с чем
@@ -221,6 +244,7 @@ class Api:
         self._puzzles: dict[tuple[str, str], raskat.Puzzle] = {}
         self._pub_puzzles: dict[str, raskat.Puzzle] = {}
         self._league: tuple[float, dict] = (0.0, {})
+        self._league_updated: str | None = None
         self._index: tuple[float, str] = (0.0, "")
         self._stand: dict[tuple, object] = {}
         self._loop: asyncio.Task | None = None
@@ -231,6 +255,7 @@ class Api:
         self.conn = open_db(self.cfg.db_path)
         self.rs = RaskatStore(self.conn)
         self.pr = predict.PredictStore(self.conn)
+        self.adm = admin.AdminStore(self.conn)
         if self._fetch is None:
             self.session = ClientSession(timeout=ClientTimeout(total=15),
                                          headers={"User-Agent": "rhl-u21-api"})
@@ -608,6 +633,7 @@ class Api:
     async def rs_forget(self, request):
         user = self.user(request)
         self.rs.forget(user["id"])
+        self.adm.forget(user["id"])
         log.info("raskat: болельщик стёр свои раскаты")
         return reply({})
 
@@ -648,6 +674,7 @@ class Api:
             data = await self.fetch(f"{self.cfg.pages}data/league.json")
             games = {predict.key_of(g): g for g in (data or {}).get("games", []) if predict.key_of(g)}
             self._league = (clock.monotonic(), games)
+            self._league_updated = (data or {}).get("updated") if isinstance(data, dict) else None
         except Exception as e:
             log.warning("league.json не скачался: %s", type(e).__name__)
             # следующая попытка через минуту, а не на каждом запросе
@@ -733,8 +760,76 @@ class Api:
     async def pr_forget(self, request):
         user = self.user(request)
         self.pr.forget(user["id"])
+        self.adm.forget(user["id"])
         log.info("predict: болельщик стёр свои прогнозы")
         return reply({})
+
+    # ---------- пульт админа (ADR-021) ----------
+
+    async def seen(self, request):
+        """Мини-апп открыли в Telegram: человек за день считается один раз. Тело — платформа и клуб."""
+        user = self.user(request)
+        data = await self.body(request)
+        platform = data.get("platform") if isinstance(data.get("platform"), str) else None
+        fav = data.get("fav") if data.get("fav") in self.teams else None
+        self.adm.seen(user["id"], self.now().date(), platform, fav)
+        return reply({})
+
+    def admin_user(self, request) -> dict:
+        user = self.user(request)
+        if not self.cfg.admins:
+            raise Fail(403, f"Список админов пуст. Впиши свой Telegram id {user['id']} в ADMIN_IDS "
+                            "в /etc/rhl/bot.env и перезапусти службу api.")
+        if user["id"] not in self.cfg.admins:
+            raise Fail(403, f"Пульт только для админов. Твой Telegram id {user['id']} — его вписывают "
+                            "в ADMIN_IDS на сервере.")
+        return user
+
+    async def services(self) -> tuple[dict | None, str]:
+        """Состояние служб systemd. Не Linux, нет systemctl или он молчит — (None, почему)."""
+        try:
+            proc = await asyncio.create_subprocess_exec(*admin.systemctl_args(), stdout=asyncio.subprocess.PIPE,
+                                                        stderr=asyncio.subprocess.DEVNULL)
+        except OSError as e:
+            return None, f"systemctl: {type(e).__name__}"
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), 5)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return None, "systemctl не ответил за 5 секунд"
+        parsed = admin.parse_systemctl(out.decode("utf-8", "replace"))
+        return (parsed, "") if parsed else (None, "systemctl ничего не ответил")
+
+    def disk(self) -> dict | None:
+        try:
+            du = shutil.disk_usage(Path(self.cfg.db_path).parent)
+        except OSError:
+            return None
+        db = 0
+        for suffix in ("", "-wal"):
+            try:
+                db += os.path.getsize(self.cfg.db_path + suffix)
+            except OSError:
+                pass
+        return {"free": du.free, "total": du.total, "db": db}
+
+    async def admin_status(self, request):
+        self.admin_user(request)
+        now = self.now()
+        await self.league()   # заодно время сборки league.json
+        services, note = await self.services()
+        since = now.date() - timedelta(days=admin.WEEK - 1)
+        st = admin.build_status(
+            now=now, teams=self.teams, services=services, services_note=note,
+            bot=admin.read_json(self.cfg.status_dir / "bot.json"),
+            pages=admin.read_json(self.cfg.status_dir / "pages.json"),
+            league_updated=self._league_updated, live_today=self.live_file("today"),
+            sources=self.live_file("sources"),
+            raskat={"on": self.salt_ok is not False, "note": self.salt_note},
+            disk=self.disk(), subs=admin.read_json(self.cfg.subs_file),
+            app_counts=self.adm.counts(since), games=admin.game_stats(self.conn, since, now.date()))
+        return reply(st)
 
     # ---------- обвязка ----------
 
@@ -783,6 +878,8 @@ def make_app(config: Config | None = None, fetch=None, now=None) -> web.Applicat
     app.on_cleanup.append(api.cleanup)
     r = app.router
     r.add_get("/api/health", api.health)
+    r.add_post("/api/seen", api.seen)
+    r.add_get("/api/admin/status", api.admin_status)
     r.add_get("/api/live/{name:" + LIVE_NAME + "}.json", api.live)
     rs = "/api/raskat"
     r.add_get(rs + "/me", api.rs_me)

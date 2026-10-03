@@ -1,0 +1,99 @@
+/* Пульт админа (ADR-021). Токены и правила — DESIGN.md → «Пульт админа»: те же цвета, шрифты и контуры,
+   что у мини-аппа. Здесь только то, что пульту нужно, чтобы не тянуть весь style.css */
+:root {
+  --ink: #000000;
+  --paper: #ffffff;
+  --canvas: #ffffff;
+  --mist: #e9e9e9;
+  --muted: #555555;
+  --edge: #000000;
+  --sel: #dceeff;
+  --band-concrete: #cccccc;
+  --mint: #55db9c;
+  --ember: #fb4903;
+  --sun: #ffd731;
+  --ok-bg: var(--mint);   --ok-fg: #000000;   --ok-edge: #000000;
+  --bad-bg: var(--ember); --bad-fg: #000000;  --bad-edge: #000000;
+  --line: 1px solid var(--edge);
+  --display: "Unbounded", "Arial Black", system-ui, sans-serif;
+  --ui: "Onest", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --ink: #e4e8ee;
+  --paper: #1a212c;
+  --canvas: #131922;
+  --mist: #252e3a;
+  --muted: #8e98a8;
+  --edge: #2c3645;
+  --sel: #1f2c3f;
+  --band-concrete: #1c222c;
+  --ok-bg: rgba(85, 219, 156, .14);  --ok-fg: #86ddb3;  --ok-edge: rgba(85, 219, 156, .34);
+  --bad-bg: rgba(251, 73, 3, .18);   --bad-fg: #ff9a70; --bad-edge: rgba(251, 73, 3, .45);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--canvas); color: var(--ink); }
+body { font: 500 15px/1.4 var(--ui); padding: 0 16px calc(32px + env(safe-area-inset-bottom)); max-width: 640px; margin: 0 auto; -webkit-text-size-adjust: 100%; }
+button { font: inherit; color: inherit; }
+
+.band { margin: 0 -16px 16px; padding: 24px 16px 20px; background: var(--band-concrete); border-bottom: var(--line); }
+.head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+h1 { font: 800 28px/0.95 var(--display); letter-spacing: -0.01em; margin: 0; }
+.lede { margin-top: 10px; font-size: 13px; color: var(--muted); }
+.btn-round { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border: var(--line); border-radius: 50%; background: var(--paper); cursor: pointer; }
+.btn-round svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.btn-round.spin svg { animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .btn-round.spin svg { animation: none; } }
+
+.label { margin: 24px 2px 10px; font: 700 12px/1.2 var(--ui); letter-spacing: .04em; text-transform: uppercase; }
+.card { border: var(--line); border-radius: 20px; background: var(--paper); padding: 4px 16px; }
+.card + .card { margin-top: 12px; }
+.card-title { margin: 12px 0 4px; font-size: 12px; color: var(--muted); }
+
+.tag { display: inline-flex; align-items: center; height: 26px; padding: 0 12px; border: 1px solid; border-radius: 9999px; font: 700 13px/1 var(--ui); letter-spacing: .03em; }
+.tag.ok { background: var(--ok-bg); color: var(--ok-fg); border-color: var(--ok-edge); }
+.tag.bad { background: var(--bad-bg); color: var(--bad-fg); border-color: var(--bad-edge); }
+.summary { padding: 16px; }
+.summary ul { list-style: none; margin: 12px 0 0; padding: 0; }
+.summary li { display: grid; grid-template-columns: 10px 1fr; gap: 10px; align-items: baseline; padding: 6px 0; }
+.summary li + li { border-top: 1px solid var(--mist); }
+
+.dot { width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--edge); background: var(--mist); flex: none; }
+.dot.ok { background: var(--mint); }
+.dot.warn { background: var(--sun); }
+.dot.bad { background: var(--ember); }
+
+.row { display: grid; grid-template-columns: 10px 1fr auto; gap: 10px; align-items: center; padding: 11px 0; min-height: 48px; }
+.row + .row { border-top: 1px solid var(--mist); }
+.row b { font-weight: 700; display: block; }
+.row small { display: block; margin-top: 2px; font-size: 13px; line-height: 1.35; color: var(--muted); overflow-wrap: anywhere; }
+.row .aside { font-size: 13px; color: var(--muted); text-align: right; white-space: nowrap; }
+.row a { color: inherit; }
+
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.tile { border: var(--line); border-radius: 20px; background: var(--paper); padding: 14px 16px; min-width: 0; }
+.tile .num { font: 800 26px/1 var(--display); font-feature-settings: "tnum"; }
+.tile .cap { margin-top: 6px; font-size: 13px; line-height: 1.3; color: var(--muted); }
+.tile .diff { margin-left: 6px; font: 700 13px/1 var(--ui); color: var(--ink); vertical-align: 4px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; font-feature-settings: "tnum"; }
+th, td { padding: 9px 3px; text-align: right; border-top: 1px solid var(--mist); white-space: nowrap; }
+th { font-weight: 500; font-size: 12px; color: var(--muted); border-top: 0; }
+th:first-child, td:first-child { text-align: left; }
+tr.today td { font-weight: 700; }
+.table-wrap { overflow-x: auto; margin: 0 -4px; padding: 0 4px; }
+
+.bars .bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 7px 0; font-size: 14px; }
+.bars .bar-row + .bar-row { border-top: 1px solid var(--mist); }
+.bars .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bars .n { font-weight: 700; font-feature-settings: "tnum"; }
+.more { display: block; width: 100%; margin: 4px 0 8px; padding: 8px 0; border: 0; background: none; color: var(--muted); font-size: 13px; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+
+.empty, .gate { text-align: center; padding: 28px 16px; color: var(--muted); border: var(--line); border-radius: 20px; }
+.gate b { display: block; color: var(--ink); font-size: 16px; margin-bottom: 8px; }
+.foot { margin-top: 24px; text-align: center; font-size: 12px; color: var(--muted); }
+
+@media (hover: hover) { .btn-round:hover, .more:hover { background: var(--sel); } }

@@ -2,7 +2,7 @@
 # Выложить свежий main на сервер и перезапустить службы bot, live, api и pages. Ставится как
 # /usr/local/sbin/rhl-update (deploy/setup.sh, deploy/https.sh) и вызывается по ключу GitHub Actions
 # (.github/workflows/deploy.yml) или руками. Файлы состояния (subscribers.json, announced.json,
-# state.db, live/) не в git — git их не трогает.
+# state.db, live/, status/) не в git — git их не трогает.
 set -euo pipefail
 APP=/opt/rhl
 SELF=/usr/local/sbin/rhl-update
@@ -37,6 +37,9 @@ if [ "$before" != "$after" ]; then
     code=0
   fi
 fi
+
+# Счётчики и пульс служб для пульта админа (ADR-021): бот и pages пишут сюда, api читает
+install -d -m 750 -o rhl -g rhl "$APP/status"
 
 restarted=""
 for pair in $SERVICES; do

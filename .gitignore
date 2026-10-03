@@ -14,6 +14,7 @@ schedule.tmp
 state.db
 state.db-*
 live/
+status/
 probe/
 rhl_site.json
 rhl_site.tmp

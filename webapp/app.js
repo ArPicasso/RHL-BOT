@@ -473,7 +473,39 @@ function leagueRowInner(g) {
 function footer() {
   const upd = state.data.updated ? new Date(state.data.updated) : null;
   const when = upd ? upd.toLocaleString("ru-RU", { timeZone: TZ, day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" }) : "";
-  return `<div class="foot">${esc(state.data.league)} · сезон ${esc(state.data.season)}${when ? `<br>Обновлено ${esc(when)} МСК` : ""}</div>`;
+  return `<div class="foot">${esc(state.data.league)} · сезон ${esc(state.data.season)}${when ? `<br>Обновлено ${esc(when)} МСК` : ""}</div>${fanNote()}`;
+}
+
+// ---------- «Сделано болельщиками» (ADR-021) ----------
+// Подвал каждой вкладки и первый экран: мы не лига. Нажатие — лист «О приложении»
+
+const LEAGUE_SITE = "https://rhl.fhr.ru/";
+function fanNote() {
+  return `<button type="button" class="fan-note" data-about>Сделано болельщиками для болельщиков · <u>не официальное приложение РХЛ</u></button>`;
+}
+
+function openAbout() {
+  showSheet(`<div class="grab"></div>
+    <div class="sheet-head"><span class="when">О приложении</span>
+    <button class="btn-round" data-close aria-label="Закрыть">${ICON.close}</button></div>
+    <div class="about">
+      <span class="tag about-tag">От болельщиков</span>
+      <p>Это приложение болельщиков для болельщиков. Его делают люди, которые любят молодёжный хоккей, а не лига.</p>
+      <p>Мы не связаны с РХЛ, Федерацией хоккея России и клубами и не говорим от их имени. Официальные новости, протоколы и билеты — на сайте лиги и у клубов.</p>
+      <p>Откуда данные: календарь, протоколы и лидеры — сайт лиги, счёт по ходу — онлайн лиги, посты — открытые Telegram-каналы клубов и лиги. Если что-то разошлось, права лига: мы поправимся следом.</p>
+      <p>Эмблемы и названия принадлежат клубам и лиге. Мы показываем их только чтобы обозначить команды.</p>
+      <p>Ставок, денег и рекламы букмекеров здесь нет и не будет.</p>
+      <button type="button" class="pill-link" data-out="${LEAGUE_SITE}">Сайт лиги — rhl.fhr.ru</button>
+    </div>`);
+}
+
+// Пульт админа (ADR-021): сколько разных людей открыло мини-апп за день, с какой платформы и за кого
+// болеют. Один раз за открытие, только в Telegram и только с сервером
+let seenSent = false;
+function seenPing() {
+  if (seenSent || liveMock() || !liveApiBase() || !inTelegram || !tg.initData || !state.data) return;
+  seenSent = true;
+  liveApi("POST", "/seen", { platform: String(tg.platform || ""), fav: state.fav || null }, true).catch(() => {});
 }
 
 // ---------- матч-центр дня (ADR-019) и «Кто победит?» (ADR-020) ----------
@@ -2576,7 +2608,7 @@ function renderOnboarding() {
   const chosen = state.draft;
   let html = `<section class="band sky"><h1>За кого<br>болеете?</h1><div class="lede">Главный экран, календарь и таблица подстроятся под команду. Поменять можно в любой момент.</div></section>`;
   html += teamGrid(chosen, "data-pick");
-  return html + `<div style="height:24px"></div>`;
+  return html + `<div class="fan-note-wrap">${fanNote()}</div><div style="height:24px"></div>`;
 }
 
 // ---------- Проводник — талисман клуба (ADR-011) ----------
@@ -4032,6 +4064,7 @@ const ICON_ME = {
   posts: '<svg viewBox="0 0 24 24"><path d="M20 4 3 11l6.5 2.5L12 20z"/><path d="M6 17.5h4M6 20.5h8"/></svg>',
   vote: '<svg viewBox="0 0 24 24"><path d="M4 20.5h16"/><rect x="5" y="11" width="4" height="7" rx="1"/><rect x="10" y="6" width="4" height="12" rx="1"/><rect x="15" y="9" width="4" height="9" rx="1"/></svg>',
   trash: '<svg viewBox="0 0 24 24"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13"/></svg>',
+  about: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.6v.2"/></svg>',
 };
 
 function passport(me) {
@@ -4076,6 +4109,7 @@ function renderMe() {
   loadPredMe();
   html += `<button type="button" class="menu-row" data-switch-open>${ICON_ME.swap}<span><b>Сменить команду</b><small>Сейчас: ${esc(t.name)}</small></span>${ICON_ME.chev}</button>
   <button type="button" class="menu-row" data-feed-rules>${ICON_ME.posts}<span><b>Посты каналов</b><small>${Object.keys(feedHidden()).length ? `Скрыто: ${Object.keys(feedHidden()).length}. ` : ""}Как мы их выбираем</small></span>${ICON_ME.chev}</button>
+  <button type="button" class="menu-row" data-about>${ICON_ME.about}<span><b>О приложении</b><small>Сделано болельщиками, не официальное приложение РХЛ</small></span>${ICON_ME.chev}</button>
   <button type="button" class="menu-row" data-tour-restart>${ICON_ME.help}<span><b>Показать подсказки</b><small>${guideOf(me) ? `${esc(guideOf(me).name)} покажет всё или одну главу` : "Покажем всё или одну главу"}</small></span>${ICON_ME.chev}</button>
   </div>`;
   html += themePills();
@@ -4890,7 +4924,7 @@ function confirmTeam(id = state.draft || state.fav) {
 }
 
 document.addEventListener("click", (e) => {
-  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-home-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],[data-pack],[data-pack-nav],[data-out],[data-vote],[data-md-all],[data-md-cal],[data-ev-all],[data-pred-open],[data-pred-forget],[data-pred-keep],[data-pred-erase],#sheet-backdrop");
+  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-home-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],[data-pack],[data-pack-nav],[data-out],[data-vote],[data-md-all],[data-md-cal],[data-ev-all],[data-pred-open],[data-pred-forget],[data-pred-keep],[data-pred-erase],[data-about],#sheet-backdrop");
   if (!el || el.disabled) return;
   if (el.dataset.guide) return guideHop(el);
   if (el.hasAttribute("data-meet-close") || (el.hasAttribute("data-coach-back") && state.meet)) return closeCoach();
@@ -4960,6 +4994,7 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (el.hasAttribute("data-feed-rules")) return openFeedRules();
+  if (el.hasAttribute("data-about")) { haptic(); return openAbout(); }
   if (el.hasAttribute("data-feed-league")) {
     state.cal = calFor(null);
     return go("calendar");
@@ -5227,6 +5262,7 @@ function initTelegram() {
   tgSwipesApply();   // по ссылке startapp=raskat вкладка «Раскат» открылась раньше, чем пришёл Telegram
   applyTheme();
   dropOldKeys();
+  seenPing();   // вход Telegram пришёл после первой отрисовки — открытие для пульта считаем сейчас
   // вход Telegram пришёл после первой отрисовки — доли трибуны берём заново, уже со своим голосом
   if (state.data && predOn()) {
     Object.values(state.pred.day).forEach((d) => { d.at = 0; });
@@ -5356,6 +5392,7 @@ function boot(d, cached = false) {
   render();
   hideSplash(cached ? SPLASH_REPEAT_MS : SPLASH_MIN_MS);
   liveStart();   // матч-центр дня (ADR-019): часы статусов, а с LIVE_API — живое и доли трибуны
+  seenPing();
   const mid = matchParam();
   if (mid && !state.openedFromLink && (games().some((g) => g.id === mid) || /^h\d+$/.test(mid))) {
     state.openedFromLink = true;

@@ -15,11 +15,34 @@
 
 /* ---------- лёд ---------- */
 
-.rs-ice { padding: 12px; border: var(--line); border-radius: 20px; background: var(--ice); }
-.rs-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 2px 10px; }
-.rs-lede { min-width: 0; font: 500 12px/1.3 var(--ui); color: var(--muted); }
+.rs-ice { position: relative; padding: 12px; border: var(--line); border-radius: 20px; background: var(--ice); }
+/* Таймер и «Пропустить» — справа на первой строке, текст обтекает их: вторая строка во всю ширину */
+.rs-top { display: flow-root; margin: 0 2px 10px; }
+/* Строка над полем — голос игры: куда ехать, почему ход не прошёл, тупик, подсказка, итог.
+   Над полем, а не под ним: рука, которая ведёт шайбу, закрывает низ экрана. Высота — две строки
+   всегда, поэтому поле не прыгает, когда реплика длиннее или короче */
+.rs-say {
+  min-height: calc(2 * 1.3em); margin: 0;
+  font: 500 14px/1.3 var(--ui); color: var(--ink);
+}
+.rs-say > svg { display: inline-block; width: 18px; height: 18px; margin: -3px 5px 0 0; vertical-align: middle; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.rs-say.miss, .rs-say.dead, .rs-say.hint, .rs-say.done, .rs-say.intro { font-weight: 700; }
+/* Звёздочка --sun в чёрном контуре, как в бегущей строке: рядом с текстом, а не под ним */
+.rs-say.done > svg .fill { fill: var(--sun); stroke: var(--ribbon-edge); }
+.rs-step {
+  display: inline-block; margin-right: 4px; padding: 1px 7px; vertical-align: 1px;
+  border: var(--line); border-radius: 9999px; background: var(--paper);
+  font: 700 11px/1.2 var(--ui); font-feature-settings: "tnum";
+}
+@media (max-width: 374px) { .rs-say { font-size: 13px; } }
 /* Таймер не кричит: пока раскат не собран, крупных чисел на экране нет */
-.rs-timer { flex: none; font: 700 13px/1.2 var(--ui); color: var(--muted); }
+.rs-timer { float: right; margin-left: 12px; font: 700 13px/18px var(--ui); color: var(--muted); }
+.rs-timer[hidden] { display: none; }
+.rs-skip {
+  float: right; min-height: 40px; margin: -11px -8px -11px 8px; padding: 0 8px; border: 0; background: none;
+  color: var(--ink); font: 700 13px/1 var(--ui); letter-spacing: .03em; text-decoration: underline; text-underline-offset: 3px; cursor: pointer;
+}
+.rs-lede { margin: 10px 2px 0; font: 500 12px/1.3 var(--ui); color: var(--muted); }
 
 /* Сторона клетки 44–56px: сетка на экране 320px даёт ровно 44px — меньше цели нажатия не бывает */
 .rs-board {
@@ -46,7 +69,10 @@
   transition: background-color .12s;
 }
 .rs-cell.on { background: transparent; }
-.rs-cell.lit { background: var(--sel); border-color: var(--edge-strong); }
+/* Подсказка: следующие клетки пути подложены --sel, поверх — пунктир со стрелкой */
+.rs-cell.lit { background: var(--sel); border-color: var(--ink); }
+/* Тупик: отрезанный лёд или клетка без выхода — серым, видно, что туда уже не попасть */
+.rs-cell.cut { background: var(--mist); }
 
 /* Лента шайбы — «надувная лента»: синяя трубка в контуре, круглые концы и сгибы. Это декор,
    а не кнопка, поэтому правило про --blue не нарушено (DESIGN.md → «Раскат») */
@@ -55,6 +81,18 @@
 .rs-trail { fill: none; stroke-linecap: round; stroke-linejoin: round; }
 .rs-trail.o { stroke: var(--ribbon-edge); }
 .rs-trail.f { stroke: var(--blue); }
+
+/* След подсказки — пунктир --ink со стрелкой; в знакомстве — бледная лента, которую рисует палец */
+.rs-ghost { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.rs-ghost .g { fill: none; stroke: var(--ink); stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 0.01 9; }
+.rs-ghost marker path { fill: var(--ink); }
+.rs-ghost.intro .g { stroke: var(--blue); opacity: .5; stroke-dasharray: none; }
+/* Касание пальца в знакомстве — круг, как у записи экрана */
+.rs-finger { position: absolute; left: 0; top: 0; display: block; pointer-events: none; }
+.rs-finger[hidden] { display: none; }
+.rs-finger svg { display: block; width: 100%; height: 100%; }
+.rs-finger .t-fill { fill: var(--ink); fill-opacity: .22; }
+.rs-finger .t-ring { fill: none; stroke: var(--ink); stroke-width: 3; }
 
 /* Борт толще контура клетки и выходит за него: его надо видеть, не приглядываясь */
 .rs-walls { position: absolute; inset: 0; pointer-events: none; }
@@ -72,7 +110,7 @@
 }
 .rs-num.done { opacity: .55; }
 .rs-num.head { opacity: 1; }
-.rs-num.next { outline: 2px solid var(--ink); outline-offset: 2px; }
+.rs-num.next, .rs-num.call { outline: 2px solid var(--ink); outline-offset: 2px; }
 
 .rs-puck { position: absolute; left: 0; top: 0; display: block; aspect-ratio: 120 / 80; pointer-events: none; transition: transform .09s linear; }
 .rs-puck svg { display: block; width: 100%; height: 100%; }
@@ -84,9 +122,43 @@
 }
 .rs-goal.on { opacity: 1; }
 
+/* ---------- финальное табло поверх поля ---------- */
+
+/* Встаёт поверх льда, когда раскат собран: результат — на первом экране. Закрывается крестиком,
+   «Посмотреть свой путь», Esc или касанием льда вокруг — поле с лентой остаётся, табло под полем тоже */
+.rs-fin { position: absolute; left: 0; right: 0; top: 0; min-height: 100%; z-index: 3; display: grid; place-items: center; padding: 12px; }
+.rs-fin[hidden] { display: none; }
+.rs-fin-veil { position: absolute; inset: 0; border-radius: 20px; background: var(--ice); opacity: .78; cursor: pointer; }
+.rs-fin-card { position: relative; width: 100%; max-width: 420px; padding: 14px 16px 12px; border: var(--line); border-radius: 28px; background: var(--paper); }
+.rs-fin-card:focus { outline: none; }
+.rs-fin-card:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.rs-fin-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.rs-fin-head h2 { margin: 0; font: 800 22px/1 var(--display); letter-spacing: -0.01em; }
+.rs-fin-card.quiet .rs-fin-head h2 { font-size: 18px; }
+.rs-fin-head .btn-round { flex: none; margin: -4px -6px -4px 0; }
+.rs-fin-nums { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-top: 12px; }
+.rs-fin-nums small { display: block; margin-top: 8px; font: 500 12px/1.2 var(--ui); color: var(--muted); }
+.rs-fin-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--mist); }
+.rs-fin-facts small { display: block; font: 500 11px/1.2 var(--ui); color: var(--muted); }
+.rs-fin-facts b { display: block; margin-top: 3px; font: 700 14px/1.2 var(--ui); font-feature-settings: "tnum"; }
+.rs-fin-note { margin: 8px 0 0; font: 500 12px/1.35 var(--ui); color: var(--muted); }
+.rs-fin-main { margin-top: 12px; }
+.rs-fin-main .btn { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.rs-fin-main .btn svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.rs-fin-more { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.rs-fin-more .rs-pill { flex: 1 1 auto; padding: 0 12px; }
+.rs-fin-path { display: block; margin: 4px auto -6px; }
+
 /* ---------- кнопки под полем и табло ---------- */
 
-.rs-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+/* Три кнопки в один ряд и на 320px: на узком экране кегль меньше, а уже 340px — без иконок */
+.rs-acts { display: flex; gap: 8px; margin-top: 12px; }
+.rs-acts .rs-pill { flex: 1 1 auto; min-width: 0; padding: 0 10px; white-space: nowrap; }
+@media (max-width: 374px) {
+  .rs-acts { gap: 6px; }
+  .rs-acts .rs-pill { gap: 5px; padding: 0 8px; font-size: 12px; letter-spacing: .02em; }
+}
+@media (max-width: 339px) { .rs-acts .rs-pill svg { display: none; } }
 .rs-pill {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   min-height: 40px; padding: 0 16px;
@@ -98,6 +170,24 @@
 .rs-pill:disabled { color: var(--muted); border-color: var(--mist); cursor: default; }
 .rs-pill svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .rs-pill.as-tag { pointer-events: none; min-height: 32px; padding: 0 12px; }
+/* Единственное главное действие в эту секунду: «Назад» в тупике, «Показать» в подтверждении */
+.rs-pill.hot { background: var(--act); border-color: var(--act); color: var(--on-act); }
+.rs-pill.hot:active { background: var(--act); }
+/* Подсказка к раскату дня уже была: кнопка тихая, но нажимается — строка скажет почему */
+.rs-pill.spent { color: var(--muted); border-color: var(--mist); }
+
+/* Подтверждение подсказки — одна строка под кнопками, не лист и не окно поверх экрана */
+.rs-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 8px; padding: 8px 8px 8px 16px; border: var(--line); border-radius: 28px; background: var(--paper); }
+.rs-ask p { flex: 1 1 140px; margin: 0; font: 500 14px/1.3 var(--ui); }
+.rs-ask p b { font-weight: 700; }
+.rs-ask-btns { display: flex; gap: 8px; margin-left: auto; }
+
+.rs-more { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 8px; }
+.rs-more:empty { display: none; }
+.rs-link {
+  min-height: 40px; padding: 0 2px; border: 0; background: none; color: var(--ink); cursor: pointer;
+  font: 700 13px/1 var(--ui); letter-spacing: .03em; text-decoration: underline; text-underline-offset: 3px;
+}
 
 #rs-cta .btn { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 12px; }
 #rs-cta:empty { display: none; }
@@ -136,6 +226,8 @@
 .rs-rules { padding: 2px 16px 14px; border: var(--line); border-radius: 20px; background: var(--paper); }
 .rs-rules p { margin: 12px 0 0; font: 500 14px/1.45 var(--ui); }
 .rs-rules p b { font-weight: 700; }
+.rs-rules .rs-pill { margin-top: 14px; }
+.sheet-rules { margin-top: 4px; }
 .rs-note { margin-bottom: 10px; font: 500 13px/1.4 var(--ui); color: var(--muted); }
 
 /* ---------- зачёт ---------- */
@@ -155,6 +247,14 @@
 .rs-row .pts { font: 700 15px/1 var(--ui); font-feature-settings: "tnum"; }
 .rs-row .tm { font: 500 12px/1 var(--ui); color: var(--muted); white-space: nowrap; }
 .rs-row .vs { color: var(--muted); }
+.rs-noclub { width: 24px; }
+/* Личный зачёт без сервера: дата, очки, время — без места и эмблем */
+.rs-row.h { grid-template-columns: 1fr auto auto; }
+.rs-row.h.ranked { grid-template-columns: 26px 1fr auto auto; }
+/* Дуэль: у кого больше — число залито, как победа в форме (заливкой, а не цветом) */
+.rs-row.duel { grid-template-columns: 1fr auto auto auto; gap: 8px; }
+.rs-row.duel b { min-width: 34px; padding: 4px 8px; border-radius: 9999px; text-align: center; font: 700 15px/1 var(--ui); font-feature-settings: "tnum"; }
+.rs-row.duel b.win { background: var(--ink); color: var(--paper); }
 /* Своих нет в десятке — пунктир, как у лидеров лиги */
 .rs-cut { height: 0; margin: 0 12px; border-top: 1px dashed var(--edge-strong); }
 
@@ -166,6 +266,24 @@
 .rs-dayc small { font: 500 11px/1 var(--ui); color: var(--muted); }
 .rs-week-say { margin: 12px 2px 0; font: 500 13px/1.4 var(--ui); color: var(--muted); }
 .rs-week-say b { color: var(--ink); font-weight: 700; }
+
+/* Строка-зов к полю: раскат дня ещё не собран */
+.rs-nudge { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; padding: 8px 8px 8px 16px; border: var(--line); border-radius: 28px; background: var(--paper); font: 500 14px/1.3 var(--ui); }
+.rs-nudge .rs-pill { flex: none; }
+.rs-solo { margin: 0 2px 4px; font: 500 13px/1.4 var(--ui); color: var(--muted); }
+.rs-pad { margin: 0 2px; }
+/* Сегодня в личном зачёте: раскат собран — время и итог крупно, это уже не над полем */
+.rs-today { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; align-items: end; padding: 16px; border: var(--line); border-radius: 28px; background: var(--paper); }
+.rs-today b { display: block; font: 800 26px/0.95 var(--display); }
+.rs-today div + div { text-align: right; }
+.rs-today small { display: block; margin-top: 6px; font: 500 12px/1.2 var(--ui); color: var(--muted); }
+.rs-today p { grid-column: 1 / -1; margin: 8px 0 0; padding-top: 10px; border-top: 1px solid var(--mist); font: 500 13px/1.35 var(--ui); }
+.rs-duel { margin: -8px 0 20px; }
+.rs-duel .label { margin-top: 0; }
+.rs-duel-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin-top: 24px; padding: 12px 12px 12px 16px; border: var(--line); border-radius: 20px; background: var(--paper); }
+.rs-duel-ask > svg { flex: none; width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.rs-duel-ask p { flex: 1 1 180px; margin: 0; font: 500 14px/1.35 var(--ui); }
+.rs-duel-ask .rs-pill { margin-left: auto; }
 
 /* ---------- лист тренировки и настроек ---------- */
 
@@ -192,3 +310,5 @@
 @media (prefers-reduced-motion: reduce) {
   .rs-pill, .rs-cell, .rs-num, .rs-puck, .rs-sw, .rs-sw::after, .rs-goal { transition: none; }
 }
+/* Тёмная тема: финальное табло — на ступень светлее льда, вуаль гуще: лента под ней читается тенью */
+:root[data-theme="dark"] .rs-fin-veil { opacity: .84; }

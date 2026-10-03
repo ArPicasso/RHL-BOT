@@ -8,3 +8,5 @@ results.tmp
 webapp/data/
 channel_posts.json
 raskat_waitlist.json
+live/
+probe/

@@ -14,3 +14,5 @@ state.db
 state.db-*
 live/
 probe/
+rhl_site.json
+rhl_site.tmp

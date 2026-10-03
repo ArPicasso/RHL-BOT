@@ -37,6 +37,8 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `docs/raskat/contract.md` | Контракт частей «Раската»: правила поля, опубликованные данные, функции движка, очки и зачёты, API сервера, бот |
 | `server.py` | API на VPS (ADR-019): `/api/live/*`, зачёт «Раската» `/api/raskat/*`, прогнозы `/api/predict/*`, `/api/health`. aiohttp на `127.0.0.1:8080`, подпись `initData`, CORS для Pages, сверка соли |
 | `raskat_store.py`, `predict.py` | Хранилище зачёта «Раската» и голоса «Кто победит?» (ADR-020) в SQLite `state.db` (не в git); в `predict.py` ещё правила приёма и итога матча |
+| `rhl_site.py` | Сайт лиги `rhl.fhr.ru` (новый движок, открылся 03.10.2026): календарь `/calendar/` и матч-центр `/matchcenter/<турнир>/<id>/` → `rhl_site.json` (не в git, кэш задания Pages). Номер, время МСК, счёт сыгранных, снимок идущих (ADR-019) |
+| `.github/workflows/sources-snapshot.yml` | «Снимок источников»: страницы rhl.fhr.ru, r-hockey и онлайна с раннера GitHub — в ветку `snapshots/sources`, из них фикстуры `tests/` |
 | `rhockey.py` | Календарь всей лиги с r-hockey.ru — временно, до открытия rhl.fhr.ru |
 | `channels.json` | Telegram-каналы клубов и лиги для листа «Главной» (ADR-015): `kind`, `scope`, `markers`, короткое имя `short`, отказ клуба `optout` (`images` — без картинок, `all` — не показываем), дата письма клубу `notified`. Правится руками |
 | `tg_channels.py` | Посты каналов из `t.me/s` → `channel_posts.json` (не в git): только превью, фильтры рекламы, букмекеров (и по ссылкам), пиратских трансляций, дней рождения и возраста, постов не о молодёжке. Для матч-центра у поста внешние ссылки `links` и строки со временем `times`, короткие посты со ссылкой — в `extra` канала (ADR-019) |

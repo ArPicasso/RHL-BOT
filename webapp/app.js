@@ -646,7 +646,8 @@ function localOf(g, start) {
 // Что с матчем сейчас (ADR-012, раздел 1). sched и soon — по своим часам; live, break, ended, final,
 // moved, off — из живого; begun и late — живого нет, а время уже прошло: честно «начался» и «ждём протокол»
 function matchState(g) {
-  const lv = g.season ? null : liveOf(g);
+  // живое с сервера, а нет его — снимок сайта лиги из часовой сборки (g.live, с давностью)
+  const lv = g.season ? null : (liveOf(g) || g.live || null);
   const src = lv && (lv.start || lv.time) ? lv : g;
   const time = hmOf(src);
   let start = Date.parse(src.start || "");

@@ -1,4 +1,8 @@
-"""Служба live: опрос онлайна КХЛ и календаря сайта РХЛ → live/*.json (ADR-019, разделы 4–5).
+"""Служба live: опрос сайта РХЛ и онлайна КХЛ → live/*.json (ADR-019, разделы 4–5).
+
+Главный источник с 03.10.2026 — сайт лиги rhl.fhr.ru (rhl_site.py): календарь с временем МСК и лента
+дней со счётом, а у идущего матча — страница матч-центра со счётом и периодом. Онлайн КХЛ ботам
+отвечает 403 даже с российского IP; после 403 служба не спрашивает его час.
 
     python live.py                                   служба: опрашивает, пока не придёт SIGTERM
     python live.py --once                            один проход и выход
@@ -26,6 +30,7 @@ import aiohttp
 import build_data
 import khl_online
 import league
+import rhl_site
 
 BASE = Path(__file__).parent
 TZ = ZoneInfo("Europe/Moscow")
@@ -46,6 +51,8 @@ STALE = timedelta(minutes=5)                   # живое без обновл�
 LIST_OVER_PAGE = timedelta(seconds=90)         # список свежее страницы на столько — верим списку
 SCHEDULE_DAYS = 14
 TITLE_RETRY = timedelta(hours=1)               # заголовок страницы не разобрался — спросим снова через час
+BLOCKED_PAUSE = timedelta(hours=1)             # онлайн ответил 403 — час его не спрашиваем
+SITE_EVERY = timedelta(minutes=10)             # календарь сайта лиги, когда идёт или скоро матч
 # Предположение до проверки probe-командой: календарь сайта лиги, как и протокол (ADR-001), даёт местное
 # время арены. Переводим по поясу хозяев `tz` из teams.json; пояса нет — считаем московским.
 CALENDAR_LOCAL = True
@@ -144,6 +151,8 @@ class Live:
         self.last_page: dict[str, datetime] = {}
         self.written: dict[str, str] = {}
         self.sources: dict[str, dict] = read_json(self.out / "sources.json", {})
+        self.blocked_until: datetime | None = None   # онлайн КХЛ ответил 403: до этого времени не спрашиваем
+        self.site_starts: dict[int, datetime | None] = {}   # id матча сайта → начало, со страницы матч-центра
         self.restore()
 
     # ---------- источники: здоровье ----------
@@ -158,7 +167,13 @@ class Live:
     def fail(self, name: str, err) -> None:
         s = self._src(name)
         s.update(fail=iso(self.clock()), errors=s.get("errors", 0) + 1, note=str(err)[:300])
+        if name == SRC_ONLINE and "403" in str(err):
+            self.blocked_until = self.clock() + BLOCKED_PAUSE
+            s["note"] = f"{s['note']} — не спрашиваем до {self.blocked_until:%H:%M}"
         logging.warning("%s: %s", name, err)
+
+    def online_blocked(self, now: datetime) -> bool:
+        return self.blocked_until is not None and now < self.blocked_until
 
     def warn_once(self, src: str, text: str) -> None:
         self.notes.setdefault(src, []).append(text)
@@ -172,7 +187,7 @@ class Live:
         key = f"{day}|{home}|{away}"
         return self.games.setdefault(key, {"key": key, "date": day, "home": home, "away": away, "start": None,
                                            "start_src": None, "khl_id": None, "list": None, "page": None,
-                                           "ended_at": None, "cal_seen": None})
+                                           "ended_at": None, "cal_seen": None, "site_t": None})
 
     def team_ids(self, home_raw: str | None, away_raw: str | None, pair: str | None = None):
         home, away = khl_online.match_teams(self.teams, home_raw, away_raw)
@@ -293,6 +308,8 @@ class Live:
 
     async def poll_page(self, g: dict) -> None:
         self.last_page[g["key"]] = self.clock()   # и при ошибке: следующая попытка — через PAGE_EVERY
+        if g.get("site_t"):
+            return await self.poll_site_page(g)
         html = await self.fetch(khl_online.match_url(g["khl_id"]))
         parsed = khl_online.parse_match(html, self.teams, g["khl_id"])
         seen = self.clock()
@@ -302,7 +319,80 @@ class Live:
             self.warn_once(SRC_ONLINE, f"на странице {g['khl_id']} не найден статус матча")
         self.apply_page(g, parsed, seen)
 
-    # ---------- сайт лиги ----------
+    # ---------- сайт лиги: rhl.fhr.ru (rhl_site.py) ----------
+
+    def site_url(self, t: int, gid: int, tab: str = "") -> str:
+        return f"{self.site}/matchcenter/{t}/{gid}/{tab}"
+
+    @staticmethod
+    def site_state(status: str | None, score, status_name: str | None, seen: datetime) -> dict:
+        """Статус и счёт сайта → состояние матча службы. «Сыгран» на сайте — «окончен»: протокол
+        и итог — дело сборки Pages."""
+        st = rhl_site.live_state({"status": "live", "score": score, "status_name": status_name}) \
+            if status == "live" and isinstance(score, list) else None
+        out = {"seen": seen, "status": None, "period": None, "clock": None, "score": None, "src": "site"}
+        if st:
+            out.update(status=st["status"], period=st["period"], score=st["score"])
+        elif status == "final" and isinstance(score, list):
+            out.update(status="ended", score={"home": score[0], "away": score[1], "decision": None})
+        elif status in ("moved", "off"):
+            out["status"] = status
+        return out
+
+    async def poll_site_page(self, g: dict) -> None:
+        html = await self.fetch(self.site_url(g["site_t"], g["khl_id"]))
+        p = rhl_site.parse_match(html)
+        if not p:
+            raise ValueError(f"страница матча {g['khl_id']} на сайте лиги не разобрана")
+        seen = self.clock()
+        state = self.site_state(p["status"], p["score"], p.get("status_name"), seen)
+        if p["status"] == "final" and p.get("decision") and state.get("score"):
+            state["score"]["decision"] = p["decision"]
+        self.apply_page(g, {k: state[k] for k in ("status", "period", "clock", "score")}, seen)
+        g["page"]["src"] = "site"
+        self.ok(self.site_src, len(self.calendar), self._src(self.site_src).get("note", ""))
+
+    async def take_site_calendar(self, rows: list[dict]) -> None:
+        """Календарь и лента дней сайта лиги → календарь службы. У сыгранных и идущих сегодня матчей
+        в ленте нет даты — она берётся со страницы матча, один раз на матч."""
+        fresh, seen = {}, self.clock()
+        asked = 0
+        for r in rows:
+            start = parse_iso(r.get("start"))
+            if start is None and r["id"] in self.site_starts:
+                start = self.site_starts[r["id"]]
+            if start is None and asked < 10 and r.get("status") in ("live", "final"):
+                asked += 1
+                try:
+                    p = rhl_site.parse_match(await self.fetch(self.site_url(r["t"], r["id"])))
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:   # noqa: BLE001 — одна страница не валит календарь
+                    self.warn_once(self.site_src, f"страница матча {r['id']} не открылась: {e}")
+                    p = None
+                else:
+                    self.site_starts[r["id"]] = parse_iso(p.get("start")) if p else None
+                start = parse_iso(p.get("start")) if p else None
+                if p and not r.get("home"):
+                    r = {**r, "home": p["home"], "away": p["away"]}
+            if start is None:
+                continue
+            home, away = self.team_ids(r.get("home"), r.get("away"))
+            if not home or not away:
+                self.warn_once(self.site_src, f"не сопоставлено: {r.get('home')} — {r.get('away')} ({r['id']})")
+                continue
+            start = start.astimezone(TZ)
+            key = f"{start.date().isoformat()}|{home}|{away}"
+            self.tours[r["id"]] = r["t"]
+            fresh[key] = {"key": key, "date": start.date().isoformat(), "home": home, "away": away, "start": start,
+                          "khl_id": r["id"], "t": r["t"], "seen": seen,
+                          "feed": self.site_state(r.get("status"), r.get("score"), None, seen)}
+        if not fresh:
+            raise ValueError("на странице календаря сайта лиги нет матчей")
+        self.calendar = fresh
+        self.ok(self.site_src, len(fresh), "; ".join(self.notes.get(self.site_src, [])) or f"матчей {len(fresh)}")
+
+    # ---------- сайт лиги: старый движок (league.py) ----------
 
     def calendar_start(self, row: dict, home: str) -> datetime | None:
         if not row.get("time"):
@@ -319,6 +409,9 @@ class Live:
     async def poll_calendar(self, now: datetime) -> None:
         self.notes[self.site_src] = []
         html = await self.fetch(f"{self.site}/calendar/")
+        site_rows = rhl_site.parse_calendar(html)
+        if site_rows:
+            return await self.take_site_calendar(site_rows)
         tours = league.parse_tournaments(html)
         regular = [i for i, name in tours if "Регулярный" in name] or [i for i, _ in tours]
         tour = regular[0] if regular else None
@@ -356,11 +449,21 @@ class Live:
                 g["start"], g["start_src"] = c["start"], self.site_src
             g["khl_id"] = g.get("khl_id") or c.get("khl_id")
             g["cal_seen"] = c["seen"] or g.get("cal_seen")
+            if c.get("t"):
+                g["site_t"] = c["t"]
+            feed = c.get("feed")
+            if feed and feed.get("status") and (not g.get("list") or g["list"]["seen"] < feed["seen"]):
+                g["list"] = feed
 
     # ---------- проход ----------
 
     def list_every(self, now: datetime) -> timedelta:
         return LIST_FAST if self.active(now) else LIST_SLOW
+
+    def calendar_every(self, now: datetime) -> timedelta:
+        """Календарь сайта лиги: раз в 6 часов, а в игровой день, пока идёт или скоро матч, — чаще:
+        в его ленте счёт сыгранных матчей и дата идущих."""
+        return SITE_EVERY if self.active(now) else CALENDAR_EVERY
 
     def due(self, last: datetime | None, every: timedelta, now: datetime) -> bool:
         return last is None or now - last >= every
@@ -380,14 +483,14 @@ class Live:
         now = self.clock()
         if quiet(now) and not force and not self.active(now):
             return False
-        if self.site and (force or self.due(self.last_cal, CALENDAR_EVERY, now)):
+        if self.site and (force or self.due(self.last_cal, self.calendar_every(now), now)):
             self.last_cal = now
             await self.guarded(self.site_src, self.poll_calendar(now))
         self.merge_calendar(now)
-        if force or self.due(self.last_list, self.list_every(now), now):
+        if (force or self.due(self.last_list, self.list_every(now), now)) and not self.online_blocked(now):
             self.last_list = now
             await self.guarded(SRC_ONLINE, self.poll_list(khl_online.DAY_URL, now))
-        if self.tomorrow_url and (force or self.due(self.last_tomorrow, LIST_SLOW, now)):
+        if self.tomorrow_url and not self.online_blocked(now) and (force or self.due(self.last_tomorrow, LIST_SLOW, now)):
             self.last_tomorrow = now
             tomorrow = now.date() + timedelta(days=1)
             url = self.tomorrow_url.format(date=tomorrow.isoformat(), dmy=tomorrow.strftime("%d.%m.%Y"))
@@ -395,7 +498,10 @@ class Live:
         for g in sorted(self.games.values(), key=lambda g: g["key"]):
             now = self.clock()
             if self.needs_page(g, now) and self.due(self.last_page.get(g["key"]), PAGE_EVERY, now):
-                await self.guarded(SRC_ONLINE, self.poll_page(g))
+                if g.get("site_t"):
+                    await self.guarded(self.site_src, self.poll_page(g))
+                elif not self.online_blocked(now):
+                    await self.guarded(SRC_ONLINE, self.poll_page(g))
         self.write(self.clock())
         return True
 
@@ -406,7 +512,7 @@ class Live:
             return max(1.0, min((wake - now).total_seconds(), 900.0))
         waits = [(self.last_list + self.list_every(now) - now) if self.last_list else timedelta(0)]
         if self.site:
-            waits.append((self.last_cal + CALENDAR_EVERY - now) if self.last_cal else timedelta(0))
+            waits.append((self.last_cal + self.calendar_every(now) - now) if self.last_cal else timedelta(0))
         for g in self.games.values():
             if self.needs_page(g, now):
                 last = self.last_page.get(g["key"])
@@ -431,19 +537,25 @@ class Live:
             score = (st or {}).get("score") or (g.get("page") or {}).get("score") or (g.get("list") or {}).get("score")
         events = ((g.get("page") or {}).get("events") or [])[-khl_online.MAX_EVENTS:]
         protocol = None
-        if status == "ended" and g.get("khl_id") in self.tours and self.site:
+        site_t = g.get("site_t")
+        if status == "ended" and site_t and self.site:
+            protocol = self.site_url(site_t, g["khl_id"], "protocol/")
+        elif status == "ended" and g.get("khl_id") in self.tours and self.site:
             protocol = f"{self.site}/report/{self.tours[g['khl_id']]}/?idgame={g['khl_id']}"
-        seen = [x for x in ((g.get("page") or {}).get("seen"), (g.get("list") or {}).get("seen")) if x]
-        online = bool(seen)
+        live_parts = [x for x in (g.get("page"), g.get("list")) if x and x.get("seen")]
+        seen = [x["seen"] for x in live_parts]
+        online = any(x.get("src") != "site" for x in live_parts)
         seen = max(seen) if seen else g.get("cal_seen")
         return {"key": g["key"], "date": g["date"], "home": g["home"], "away": g["away"],
                 "start": iso(start), "time": start.strftime("%H:%M") if start else None,
                 "status": status, "period": period, "clock": clock,
                 "score": {"home": score["home"], "away": score["away"], "decision": score.get("decision")} if score else None,
                 "events": events,
-                "online": khl_online.match_url(g["khl_id"]) if g.get("khl_id") else None, "khl_id": g.get("khl_id"),
+                "online": (self.site_url(site_t, g["khl_id"], "live/") if site_t and self.site
+                           else khl_online.match_url(g["khl_id"]) if g.get("khl_id") else None),
+                "khl_id": g.get("khl_id"), "tournament": site_t,
                 "protocol": protocol, "seen": iso(seen),
-                "src": SRC_ONLINE if online else (self.site_src if g.get("cal_seen") else None)}
+                "src": SRC_ONLINE if online else (self.site_src if (g.get("cal_seen") or live_parts) else None)}
 
     def day(self, d: str, now: datetime) -> dict:
         games = [self.render(g, now) for g in self.games.values() if g["date"] == d]
@@ -457,8 +569,9 @@ class Live:
             if first <= c["date"] <= last and (c["start"] or c.get("khl_id")):
                 out[c["key"]] = {"key": c["key"], "date": c["date"], "home": c["home"], "away": c["away"],
                                  "start": iso(c["start"]), "time": c["start"].strftime("%H:%M") if c["start"] else None,
-                                 "online": khl_online.match_url(c["khl_id"]) if c.get("khl_id") else None,
-                                 "khl_id": c.get("khl_id"), "src": self.site_src}
+                                 "online": (self.site_url(c["t"], c["khl_id"], "live/") if c.get("t")
+                                            else khl_online.match_url(c["khl_id"]) if c.get("khl_id") else None),
+                                 "khl_id": c.get("khl_id"), "tournament": c.get("t"), "src": self.site_src}
         for g in self.games.values():
             if not (first <= g["date"] <= last) or g.get("start_src") != SRC_ONLINE and not g.get("list"):
                 continue
@@ -501,6 +614,7 @@ class Live:
                 g["start"] = parse_iso(x.get("start"))
                 g["start_src"] = x.get("src") if g["start"] else None
                 g["khl_id"] = x.get("khl_id")
+                g["site_t"] = x.get("tournament")
                 seen = parse_iso(x.get("seen"))
                 if x.get("src") == SRC_ONLINE and seen:
                     g["list"] = {"seen": seen, "status": None, "score": None}
@@ -513,7 +627,8 @@ class Live:
         for x in read_json(self.out / "schedule.json", {}).get("games", []):
             if x.get("src") == self.site_src and x.get("key"):
                 self.calendar[x["key"]] = {"key": x["key"], "date": x["date"], "home": x["home"], "away": x["away"],
-                                           "start": parse_iso(x.get("start")), "khl_id": x.get("khl_id"), "seen": None}
+                                           "start": parse_iso(x.get("start")), "khl_id": x.get("khl_id"),
+                                           "t": x.get("tournament"), "seen": None}
 
 # ---------- сеть ----------
 

@@ -1343,6 +1343,10 @@ function rsMount() {
     board.addEventListener("pointerup", rsUp);
     board.addEventListener("pointercancel", rsUp);
     board.addEventListener("lostpointercapture", rsUp);
+    // Протяжку пальцем по полю отдаём только шайбе. Без этого Telegram принимает её за свайп
+    // «свернуть», отменяет касание (pointercancel) — и шайба идёт только нажатиями по клеткам.
+    // Страхует disableVerticalSwipes в app.js: на клиентах старше Bot API 7.7 его нет
+    board.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
   }
   rsLayout();
   if (RS.solved) rsGoal(false);

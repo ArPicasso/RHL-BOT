@@ -7,6 +7,8 @@ on:
     branches: [main]
   schedule:
     - cron: "17 * * * *"   # раз в час; GitHub может запускать с опозданием
+    # в часы матчей (12:00–23:00 МСК) ещё каждые 20 минут: счёт и «идёт» с сайта лиги (ADR-019)
+    - cron: "37,57 9-19 * * *"
     - cron: "5 21 * * *"   # 00:05 МСК: расклад нового дня «Раската» (ADR-018) — сразу после полуночи
   workflow_dispatch:
 
@@ -40,7 +42,20 @@ jobs:
           key: results-${{ github.run_id }}
           restore-keys: results-
 
-      # Пока сайт РХЛ закрыт, шаг выключен. Включить: Settings → Variables → LEAGUE_SITE=https://rhl.fhr.ru
+      # Матчи с сайта лиги rhl.fhr.ru (ADR-019): номер, время по Москве, счёт сыгранных, снимок идущих.
+      # Копятся между запусками в rhl_site.json — лента сайта показывает только ближайшие дни
+      - uses: actions/cache@v4
+        with:
+          path: rhl_site.json
+          key: rhl-site-${{ github.run_id }}
+          restore-keys: rhl-site-
+
+      - name: Матчи с сайта РХЛ
+        continue-on-error: true
+        run: python rhl_site.py
+
+      # Протоколы — движок старого nmhl.fhr.ru (league.py). У rhl.fhr.ru движок новый, счёт даёт шаг выше.
+      # Включить для старого сайта: Settings → Variables → LEAGUE_SITE
       - name: Скачать протоколы матчей
         if: vars.LEAGUE_SITE != ''
         continue-on-error: true

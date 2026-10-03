@@ -2,12 +2,15 @@
 // Мок-сервер матч-центра (ADR-019) и прогнозов «Кто победит?» (ADR-020) для разработки мини-аппа.
 // Включается ?live_mock=1 — живое дня в разных статусах; =pre — до матчей, =post — после,
 // =guest — как вне Telegram (голос не принимается), =stale — живое старше 5 минут.
+// =real — настоящий ответ сервера 03.10 в 20:56 (все четыре матча окончены, источник — сайт лиги),
+// =real-live — он же на 17:51: два матча идут во 2-м периоде, у «Рязань-ВДВ» лента, как её строит
+// live.site_events (смена счёта и периода, без минуты). Смотреть со сборкой на те же часы.
 // Отвечает, как server.py и predict.py: те же пути, поля Tally, коды 400/401/404/409 и тексты ошибок.
 // Голоса живут в localStorage этого устройства. Доли трибуны выдуманные: это фикстура разработки,
 // в продакшене файл не грузится.
 (function () {
   const mode = new URLSearchParams(location.search).get("live_mock") || "1";
-  const dir = { pre: "pre/", post: "post/" }[mode] || "";
+  const dir = { pre: "pre/", post: "post/", real: "real/", "real-live": "real-live/" }[mode] || "";
   const KEY = `live_mock_${mode}`;
   const TZ = "Europe/Moscow";
   const sleep = (ms) => new Promise((done) => setTimeout(done, ms));

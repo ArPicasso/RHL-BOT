@@ -1,0 +1,1578 @@
+{
+ "_": "Матчи 03–04.10.2026 из сборки league.json на настоящих страницах rhl.fhr.ru (снимки snapshots/sources): at_1755 — 17:51, два матча идут (снимок live), два сыграны (счёт ленты, протокола нет); evening — 20:56, у всех счёт ленты сайта; evening_protocol — 21:00, протоколы с сайта лиги",
+ "at_1755": [
+  {
+   "id": "n1",
+   "n": 1,
+   "date": "2026-10-03",
+   "home": "ryazan-vdv",
+   "away": "belgorod",
+   "official": true,
+   "time": "17:00",
+   "start": "2026-10-03T17:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905111/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905111/live/",
+   "arena": "ДС «Олимпийский»",
+   "live": {
+    "status": "live",
+    "period": "2",
+    "clock": null,
+    "score": {
+     "home": 2,
+     "away": 0,
+     "decision": null
+    },
+    "seen": "2026-10-03T17:51:00+03:00",
+    "src": "rhl.fhr.ru"
+   },
+   "watch": [
+    {
+     "title": "VK Видео · канал МХК «Белгород»",
+     "url": "https://vkvideo.ru/video-187307324_456239889?list=739326ee597fdde670",
+     "src": "t.me/mhkbelgorod31"
+    }
+   ],
+   "events": [
+    {
+     "kind": "text",
+     "text": "Первый период за нами🔥",
+     "at": "2026-10-03T17:45+03:00",
+     "src": "t.me/hcryazan_official",
+     "from": "канал ХК «Рязань-ВДВ»",
+     "url": "https://t.me/hcryazan_official/22414"
+    }
+   ]
+  },
+  {
+   "id": "rh9319023",
+   "n": 2,
+   "date": "2026-10-03",
+   "home": "proton",
+   "away": "kristall",
+   "official": true,
+   "time": "17:00",
+   "start": "2026-10-03T17:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905112/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905112/live/",
+   "arena": "ЛА «Остальная»",
+   "live": {
+    "status": "live",
+    "period": "2",
+    "clock": null,
+    "score": {
+     "home": 0,
+     "away": 0,
+     "decision": null
+    },
+    "seen": "2026-10-03T17:51:00+03:00",
+    "src": "rhl.fhr.ru"
+   }
+  },
+  {
+   "id": "rh9319024",
+   "n": 3,
+   "date": "2026-10-03",
+   "home": "rostov",
+   "away": "krasnodar",
+   "official": true,
+   "time": "13:00",
+   "start": "2026-10-03T13:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905113/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905113/live/",
+   "arena": "Дворец спорта",
+   "score": {
+    "home": 0,
+    "away": 6,
+    "decision": null,
+    "periods": []
+   },
+   "score_src": "rhl.fhr.ru",
+   "watch": [
+    {
+     "title": "VK Видео · канал «РХЛ»",
+     "url": "https://vkvideo.ru/live-60074608_456240743",
+     "src": "t.me/nmhlpervenstvo"
+    }
+   ],
+   "events": [
+    {
+     "kind": "text",
+     "text": "Совсем скоро откроем сезон — нас ждёт южное дерби между «Ростовом» и «Краснодаром» 🇷🇺 По техническим причинам матч начнётся позже, прямая трансляция будет доступна здесь и на сайте…",
+     "at": "2026-10-03T12:50+03:00",
+     "src": "t.me/nmhlpervenstvo",
+     "from": "канал «РХЛ»",
+     "url": "https://t.me/nmhlpervenstvo/8348"
+    },
+    {
+     "kind": "text",
+     "text": "Поехали! 🏒 Стартовое вбрасывание в Ростове ✔️ Первый матч сезона начался — следите за игрой.",
+     "at": "2026-10-03T14:07+03:00",
+     "src": "t.me/nmhlpervenstvo",
+     "from": "канал «РХЛ»",
+     "url": "https://t.me/nmhlpervenstvo/8349"
+    },
+    {
+     "kind": "text",
+     "text": "0:1 — Счёт открывают гости",
+     "at": "2026-10-03T14:07+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7475"
+    },
+    {
+     "kind": "text",
+     "text": "Первый гол сезона РХЛ 2026/27! 🇷🇺 Капитан «Краснодара» Дмитрий Рябицев открывает счёт в матче в Ростове 🏝",
+     "at": "2026-10-03T14:21+03:00",
+     "src": "t.me/nmhlpervenstvo",
+     "from": "канал «РХЛ»",
+     "url": "https://t.me/nmhlpervenstvo/8350"
+    },
+    {
+     "kind": "text",
+     "text": "Смотрим статистику после первого периода 📊",
+     "at": "2026-10-03T14:35+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7477"
+    },
+    {
+     "kind": "text",
+     "text": "0:2 — Ещё одна шайба от гостей",
+     "at": "2026-10-03T15:06+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7479"
+    },
+    {
+     "kind": "text",
+     "text": "Перерыв после 40 минут игры, верим в команду и ждём третий период!",
+     "at": "2026-10-03T15:22+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7480"
+    },
+    {
+     "kind": "text",
+     "text": "🥳Шайбу забросил Вячеслав Фурлетов — 🦅 0:3 🏝",
+     "at": "2026-10-03T15:40+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10040"
+    },
+    {
+     "kind": "text",
+     "text": "🥳ГООООЛ!",
+     "at": "2026-10-03T15:40+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10041"
+    },
+    {
+     "kind": "text",
+     "text": "🥳Шайбу забросил Иван Седов — 🦅 0:4 🏝",
+     "at": "2026-10-03T15:41+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10042"
+    },
+    {
+     "kind": "text",
+     "text": "Два гола меньше чем за минуту и 0:4 на табло",
+     "at": "2026-10-03T15:43+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7481"
+    },
+    {
+     "kind": "text",
+     "text": "😢За подножку малым штрафом наказан Кузнецов Артём — 🦅 0:4 🏝",
+     "at": "2026-10-03T15:44+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10044"
+    },
+    {
+     "kind": "text",
+     "text": "ХК «Краснодар» играет в полном составе!",
+     "at": "2026-10-03T15:47+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10045"
+    },
+    {
+     "kind": "text",
+     "text": "☹️«Ростов» наказан малым штрафом за нарушение численного состава",
+     "at": "2026-10-03T15:49+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10046"
+    },
+    {
+     "kind": "text",
+     "text": "😟И мы удаляемся… В штрафном боксе Иван Седов",
+     "at": "2026-10-03T15:50+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10047"
+    },
+    {
+     "kind": "text",
+     "text": "Игра 4 на 4",
+     "at": "2026-10-03T15:50+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10048"
+    },
+    {
+     "kind": "text",
+     "text": "🥳Шайбу забросил Владимир Данилов — 🦅 0:5 🏝",
+     "at": "2026-10-03T15:53+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10050"
+    },
+    {
+     "kind": "text",
+     "text": "0:5 — Пятая шайба влетает в наши ворота",
+     "at": "2026-10-03T15:53+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7482"
+    },
+    {
+     "kind": "text",
+     "text": "🔥Замена вратаря! Ворота защищает Курников Владимир",
+     "at": "2026-10-03T15:59+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10051"
+    },
+    {
+     "kind": "text",
+     "text": "🥳Шайбу забросил Григорий Сеснев — 🦅 0:6 🏝",
+     "at": "2026-10-03T16:02+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10053"
+    },
+    {
+     "kind": "text",
+     "text": "0:6 — Гол в раздевалку от гостей",
+     "at": "2026-10-03T16:02+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7483"
+    },
+    {
+     "kind": "text",
+     "text": "⭐️ТРЕТИЙ ПЕРИОД ОКОНЧЕН! 🦅 0:6 🏝",
+     "at": "2026-10-03T16:06+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10054"
+    },
+    {
+     "kind": "text",
+     "text": "🎉С ПОБЕДОЙ!",
+     "at": "2026-10-03T16:08+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10055"
+    },
+    {
+     "kind": "text",
+     "text": "Первый матч остаётся за гостями. Но уже завтра снова встретимся с «Краснодаром». Сегодня не получилось — завтра будет новый шанс! 💪",
+     "at": "2026-10-03T16:13+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7485"
+    }
+   ]
+  },
+  {
+   "id": "rh9319026",
+   "n": 4,
+   "date": "2026-10-03",
+   "home": "tverichi",
+   "away": "metallurg",
+   "official": true,
+   "time": "15:00",
+   "start": "2026-10-03T15:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905114/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905114/live/",
+   "arena": "СК «Юбилейный»",
+   "score": {
+    "home": 3,
+    "away": 1,
+    "decision": null,
+    "periods": []
+   },
+   "score_src": "rhl.fhr.ru"
+  },
+  {
+   "id": "n6",
+   "n": 6,
+   "date": "2026-10-04",
+   "home": "ryazan-vdv",
+   "away": "belgorod",
+   "official": true,
+   "time": "17:00",
+   "start": "2026-10-04T17:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905116/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905116/live/"
+  },
+  {
+   "id": "rh9319022",
+   "n": 7,
+   "date": "2026-10-04",
+   "home": "proton",
+   "away": "kristall",
+   "official": true,
+   "time": "17:00",
+   "start": "2026-10-04T17:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905117/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905117/live/"
+  },
+  {
+   "id": "rh9319025",
+   "n": 8,
+   "date": "2026-10-04",
+   "home": "rostov",
+   "away": "krasnodar",
+   "official": true,
+   "time": "13:00",
+   "start": "2026-10-04T13:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905118/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905118/live/",
+   "arena": "Дворец спорта"
+  },
+  {
+   "id": "rh9319027",
+   "n": 9,
+   "date": "2026-10-04",
+   "home": "tverichi",
+   "away": "metallurg",
+   "official": true,
+   "time": "15:00",
+   "start": "2026-10-04T15:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905119/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905119/live/"
+  },
+  {
+   "id": "rh9319028",
+   "n": 5,
+   "date": "2026-10-04",
+   "home": "kaluga",
+   "away": "dinamo-576",
+   "official": true,
+   "time": "13:00",
+   "start": "2026-10-04T13:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905115/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905115/live/",
+   "arena": "ДС «Центральный»"
+  }
+ ],
+ "evening": [
+  {
+   "id": "n1",
+   "n": 1,
+   "date": "2026-10-03",
+   "home": "ryazan-vdv",
+   "away": "belgorod",
+   "official": true,
+   "time": "17:00",
+   "start": "2026-10-03T17:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905111/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905111/live/",
+   "arena": "ДС «Олимпийский»",
+   "score": {
+    "home": 4,
+    "away": 3,
+    "decision": null,
+    "periods": []
+   },
+   "score_src": "rhl.fhr.ru",
+   "watch": [
+    {
+     "title": "Трансляция лиги · VK Видео",
+     "url": "https://vk.com/video-187307324_456239889",
+     "src": "rhl.fhr.ru"
+    }
+   ],
+   "events": [
+    {
+     "kind": "text",
+     "text": "Первый период за нами🔥",
+     "at": "2026-10-03T17:45+03:00",
+     "src": "t.me/hcryazan_official",
+     "from": "канал ХК «Рязань-ВДВ»",
+     "url": "https://t.me/hcryazan_official/22414"
+    },
+    {
+     "kind": "text",
+     "text": "Прямо сейчас в Рязани! 🇷🇺 Моменты первой игры сезона между командами «Рязань-ВДВ» и «Белгород». Игра, атмосфера на трибунах — в объективе хозяев льда 🪂",
+     "at": "2026-10-03T18:14+03:00",
+     "src": "t.me/nmhlpervenstvo",
+     "from": "канал «РХЛ»",
+     "url": "https://t.me/nmhlpervenstvo/8351"
+    },
+    {
+     "kind": "text",
+     "text": "Всё решится в третьем🤫",
+     "at": "2026-10-03T18:25+03:00",
+     "src": "t.me/hcryazan_official",
+     "from": "канал ХК «Рязань-ВДВ»",
+     "url": "https://t.me/hcryazan_official/22418"
+    },
+    {
+     "kind": "text",
+     "text": "Вырвали победу, но легко не было⚡️",
+     "at": "2026-10-03T19:28+03:00",
+     "src": "t.me/hcryazan_official",
+     "from": "канал ХК «Рязань-ВДВ»",
+     "url": "https://t.me/hcryazan_official/22423"
+    }
+   ]
+  },
+  {
+   "id": "rh9319023",
+   "n": 2,
+   "date": "2026-10-03",
+   "home": "proton",
+   "away": "kristall",
+   "official": true,
+   "time": "17:00",
+   "start": "2026-10-03T17:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905112/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905112/live/",
+   "arena": "ЛА «Остальная»",
+   "score": {
+    "home": 2,
+    "away": 1,
+    "decision": "Б",
+    "periods": []
+   },
+   "score_src": "rhl.fhr.ru",
+   "watch": [
+    {
+     "title": "Трансляция лиги · VK Видео",
+     "url": "https://vk.com/video-214785240_456239601",
+     "src": "rhl.fhr.ru"
+    }
+   ],
+   "events": [
+    {
+     "kind": "text",
+     "text": "У «Кристалла» сегодня самая сильная поддержка болельщиков! 🥁🥁🥁",
+     "at": "2026-10-03T18:31+03:00",
+     "src": "t.me/nmhlpervenstvo",
+     "from": "канал «РХЛ»",
+     "url": "https://t.me/nmhlpervenstvo/8353"
+    }
+   ]
+  },
+  {
+   "id": "rh9319024",
+   "n": 3,
+   "date": "2026-10-03",
+   "home": "rostov",
+   "away": "krasnodar",
+   "official": true,
+   "time": "13:00",
+   "start": "2026-10-03T13:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905113/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905113/live/",
+   "arena": "Дворец спорта",
+   "score": {
+    "home": 0,
+    "away": 6,
+    "decision": null,
+    "periods": []
+   },
+   "score_src": "rhl.fhr.ru",
+   "watch": [
+    {
+     "title": "Трансляция лиги · VK Видео",
+     "url": "https://vk.com/video-60074608_456240743",
+     "src": "rhl.fhr.ru"
+    }
+   ],
+   "events": [
+    {
+     "kind": "text",
+     "text": "Совсем скоро откроем сезон — нас ждёт южное дерби между «Ростовом» и «Краснодаром» 🇷🇺 По техническим причинам матч начнётся позже, прямая трансляция будет доступна здесь и на сайте…",
+     "at": "2026-10-03T12:50+03:00",
+     "src": "t.me/nmhlpervenstvo",
+     "from": "канал «РХЛ»",
+     "url": "https://t.me/nmhlpervenstvo/8348"
+    },
+    {
+     "kind": "text",
+     "text": "Поехали! 🏒 Стартовое вбрасывание в Ростове ✔️ Первый матч сезона начался — следите за игрой.",
+     "at": "2026-10-03T14:07+03:00",
+     "src": "t.me/nmhlpervenstvo",
+     "from": "канал «РХЛ»",
+     "url": "https://t.me/nmhlpervenstvo/8349"
+    },
+    {
+     "kind": "text",
+     "text": "0:1 — Счёт открывают гости",
+     "at": "2026-10-03T14:07+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7475"
+    },
+    {
+     "kind": "text",
+     "text": "Первый гол сезона РХЛ 2026/27! 🇷🇺 Капитан «Краснодара» Дмитрий Рябицев открывает счёт в матче в Ростове 🏝",
+     "at": "2026-10-03T14:21+03:00",
+     "src": "t.me/nmhlpervenstvo",
+     "from": "канал «РХЛ»",
+     "url": "https://t.me/nmhlpervenstvo/8350"
+    },
+    {
+     "kind": "text",
+     "text": "Смотрим статистику после первого периода 📊",
+     "at": "2026-10-03T14:35+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7477"
+    },
+    {
+     "kind": "text",
+     "text": "0:2 — Ещё одна шайба от гостей",
+     "at": "2026-10-03T15:06+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7479"
+    },
+    {
+     "kind": "text",
+     "text": "Перерыв после 40 минут игры, верим в команду и ждём третий период!",
+     "at": "2026-10-03T15:22+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7480"
+    },
+    {
+     "kind": "text",
+     "text": "🥳Шайбу забросил Вячеслав Фурлетов — 🦅 0:3 🏝",
+     "at": "2026-10-03T15:40+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10040"
+    },
+    {
+     "kind": "text",
+     "text": "🥳ГООООЛ!",
+     "at": "2026-10-03T15:40+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10041"
+    },
+    {
+     "kind": "text",
+     "text": "🥳Шайбу забросил Иван Седов — 🦅 0:4 🏝",
+     "at": "2026-10-03T15:41+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10042"
+    },
+    {
+     "kind": "text",
+     "text": "Два гола меньше чем за минуту и 0:4 на табло",
+     "at": "2026-10-03T15:43+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7481"
+    },
+    {
+     "kind": "text",
+     "text": "😢За подножку малым штрафом наказан Кузнецов Артём — 🦅 0:4 🏝",
+     "at": "2026-10-03T15:44+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10044"
+    },
+    {
+     "kind": "text",
+     "text": "ХК «Краснодар» играет в полном составе!",
+     "at": "2026-10-03T15:47+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10045"
+    },
+    {
+     "kind": "text",
+     "text": "☹️«Ростов» наказан малым штрафом за нарушение численного состава",
+     "at": "2026-10-03T15:49+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10046"
+    },
+    {
+     "kind": "text",
+     "text": "😟И мы удаляемся… В штрафном боксе Иван Седов",
+     "at": "2026-10-03T15:50+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10047"
+    },
+    {
+     "kind": "text",
+     "text": "Игра 4 на 4",
+     "at": "2026-10-03T15:50+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10048"
+    },
+    {
+     "kind": "text",
+     "text": "🥳Шайбу забросил Владимир Данилов — 🦅 0:5 🏝",
+     "at": "2026-10-03T15:53+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10050"
+    },
+    {
+     "kind": "text",
+     "text": "0:5 — Пятая шайба влетает в наши ворота",
+     "at": "2026-10-03T15:53+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7482"
+    },
+    {
+     "kind": "text",
+     "text": "🔥Замена вратаря! Ворота защищает Курников Владимир",
+     "at": "2026-10-03T15:59+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10051"
+    },
+    {
+     "kind": "text",
+     "text": "🥳Шайбу забросил Григорий Сеснев — 🦅 0:6 🏝",
+     "at": "2026-10-03T16:02+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10053"
+    },
+    {
+     "kind": "text",
+     "text": "0:6 — Гол в раздевалку от гостей",
+     "at": "2026-10-03T16:02+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7483"
+    },
+    {
+     "kind": "text",
+     "text": "⭐️ТРЕТИЙ ПЕРИОД ОКОНЧЕН! 🦅 0:6 🏝",
+     "at": "2026-10-03T16:06+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10054"
+    },
+    {
+     "kind": "text",
+     "text": "🎉С ПОБЕДОЙ!",
+     "at": "2026-10-03T16:08+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10055"
+    },
+    {
+     "kind": "text",
+     "text": "Первый матч остаётся за гостями. Но уже завтра снова встретимся с «Краснодаром». Сегодня не получилось — завтра будет новый шанс! 💪",
+     "at": "2026-10-03T16:13+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7485"
+    }
+   ]
+  },
+  {
+   "id": "rh9319026",
+   "n": 4,
+   "date": "2026-10-03",
+   "home": "tverichi",
+   "away": "metallurg",
+   "official": true,
+   "time": "15:00",
+   "start": "2026-10-03T15:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905114/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905114/live/",
+   "arena": "СК «Юбилейный»",
+   "score": {
+    "home": 3,
+    "away": 1,
+    "decision": null,
+    "periods": []
+   },
+   "score_src": "rhl.fhr.ru",
+   "watch": [
+    {
+     "title": "Трансляция лиги · VK Видео",
+     "url": "https://vk.com/video-223329867_456240610",
+     "src": "rhl.fhr.ru"
+    }
+   ],
+   "events": [
+    {
+     "kind": "text",
+     "text": "Первый матч = первый гол 🇷🇺 Такой план сегодня выполнил нападающий команды «Тверичи-СШОР» Иван Семёнов🪽 …",
+     "at": "2026-10-03T18:27+03:00",
+     "src": "t.me/nmhlpervenstvo",
+     "from": "канал «РХЛ»",
+     "url": "https://t.me/nmhlpervenstvo/8352"
+    }
+   ]
+  },
+  {
+   "id": "n6",
+   "n": 6,
+   "date": "2026-10-04",
+   "home": "ryazan-vdv",
+   "away": "belgorod",
+   "official": true,
+   "time": "17:00",
+   "start": "2026-10-04T17:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905116/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905116/live/",
+   "watch": [
+    {
+     "title": "Трансляция лиги · сайт РХЛ",
+     "url": "https://rhl.fhr.ru/matchcenter/1432/905116/video/",
+     "src": "rhl.fhr.ru"
+    }
+   ]
+  },
+  {
+   "id": "rh9319022",
+   "n": 7,
+   "date": "2026-10-04",
+   "home": "proton",
+   "away": "kristall",
+   "official": true,
+   "time": "17:00",
+   "start": "2026-10-04T17:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905117/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905117/live/",
+   "watch": [
+    {
+     "title": "Трансляция лиги · сайт РХЛ",
+     "url": "https://rhl.fhr.ru/matchcenter/1432/905117/video/",
+     "src": "rhl.fhr.ru"
+    }
+   ]
+  },
+  {
+   "id": "rh9319025",
+   "n": 8,
+   "date": "2026-10-04",
+   "home": "rostov",
+   "away": "krasnodar",
+   "official": true,
+   "time": "13:00",
+   "start": "2026-10-04T13:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905118/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905118/live/",
+   "arena": "Дворец спорта",
+   "watch": [
+    {
+     "title": "Трансляция лиги · сайт РХЛ",
+     "url": "https://rhl.fhr.ru/matchcenter/1432/905118/video/",
+     "src": "rhl.fhr.ru"
+    }
+   ]
+  },
+  {
+   "id": "rh9319027",
+   "n": 9,
+   "date": "2026-10-04",
+   "home": "tverichi",
+   "away": "metallurg",
+   "official": true,
+   "time": "15:00",
+   "start": "2026-10-04T15:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905119/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905119/live/",
+   "watch": [
+    {
+     "title": "Трансляция лиги · сайт РХЛ",
+     "url": "https://rhl.fhr.ru/matchcenter/1432/905119/video/",
+     "src": "rhl.fhr.ru"
+    }
+   ]
+  },
+  {
+   "id": "rh9319028",
+   "n": 5,
+   "date": "2026-10-04",
+   "home": "kaluga",
+   "away": "dinamo-576",
+   "official": true,
+   "time": "13:00",
+   "start": "2026-10-04T13:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905115/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905115/live/",
+   "arena": "ДС «Центральный»"
+  }
+ ],
+ "evening_protocol": [
+  {
+   "id": "n1",
+   "n": 1,
+   "date": "2026-10-03",
+   "home": "ryazan-vdv",
+   "away": "belgorod",
+   "official": true,
+   "time": "17:00",
+   "start": "2026-10-03T17:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905111/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905111/live/",
+   "arena": "ДС «Олимпийский»",
+   "attendance": null,
+   "score": {
+    "home": 4,
+    "away": 3,
+    "decision": "",
+    "periods": [
+     [
+      2,
+      0
+     ],
+     [
+      0,
+      2
+     ],
+     [
+      2,
+      1
+     ]
+    ]
+   },
+   "goals": [
+    {
+     "period": "1",
+     "time": "05:26",
+     "team": "home",
+     "score": "1:0",
+     "strength": "бол.",
+     "author": "Абашкин Кирилл",
+     "assists": [
+      "Будуев Роман",
+      "Скачков Евгений А."
+     ],
+     "no": 5
+    },
+    {
+     "period": "1",
+     "time": "18:23",
+     "team": "home",
+     "score": "2:0",
+     "strength": "рав.",
+     "author": "Скачков Евгений А.",
+     "assists": [
+      "Абашкин Кирилл",
+      "Аубакиров Ратмир"
+     ],
+     "no": 96
+    },
+    {
+     "period": "2",
+     "time": "29:30",
+     "team": "away",
+     "score": "2:1",
+     "strength": "рав.",
+     "author": "Мухаметжанов Тимур",
+     "assists": [],
+     "no": 15
+    },
+    {
+     "period": "2",
+     "time": "36:50",
+     "team": "away",
+     "score": "2:2",
+     "strength": "рав.",
+     "author": "Целых Сергей",
+     "assists": [],
+     "no": 9
+    },
+    {
+     "period": "3",
+     "time": "44:10",
+     "team": "home",
+     "score": "3:2",
+     "strength": "рав.",
+     "author": "Аубакиров Ратмир",
+     "assists": [
+      "Будуев Роман",
+      "Абашкин Кирилл"
+     ],
+     "no": 21
+    },
+    {
+     "period": "3",
+     "time": "54:47",
+     "team": "home",
+     "score": "4:2",
+     "strength": "рав.",
+     "author": "Абашкин Кирилл",
+     "assists": [
+      "Аубакиров Ратмир",
+      "Тимошенко Сергей"
+     ],
+     "no": 5
+    },
+    {
+     "period": "3",
+     "time": "59:33",
+     "team": "away",
+     "score": "4:3",
+     "strength": "бол.",
+     "author": "Малахов Дмитрий",
+     "assists": [
+      "Бородин Арсений",
+      "Мусрепов Евгений"
+     ],
+     "no": 89
+    }
+   ],
+   "watch": [
+    {
+     "title": "Трансляция лиги · VK Видео",
+     "url": "https://vk.com/video-187307324_456239889",
+     "src": "rhl.fhr.ru"
+    }
+   ],
+   "events": [
+    {
+     "kind": "text",
+     "text": "Первый период за нами🔥",
+     "at": "2026-10-03T17:45+03:00",
+     "src": "t.me/hcryazan_official",
+     "from": "канал ХК «Рязань-ВДВ»",
+     "url": "https://t.me/hcryazan_official/22414"
+    },
+    {
+     "kind": "text",
+     "text": "Прямо сейчас в Рязани! 🇷🇺 Моменты первой игры сезона между командами «Рязань-ВДВ» и «Белгород». Игра, атмосфера на трибунах — в объективе хозяев льда 🪂",
+     "at": "2026-10-03T18:14+03:00",
+     "src": "t.me/nmhlpervenstvo",
+     "from": "канал «РХЛ»",
+     "url": "https://t.me/nmhlpervenstvo/8351"
+    },
+    {
+     "kind": "text",
+     "text": "Всё решится в третьем🤫",
+     "at": "2026-10-03T18:25+03:00",
+     "src": "t.me/hcryazan_official",
+     "from": "канал ХК «Рязань-ВДВ»",
+     "url": "https://t.me/hcryazan_official/22418"
+    },
+    {
+     "kind": "text",
+     "text": "Вырвали победу, но легко не было⚡️",
+     "at": "2026-10-03T19:28+03:00",
+     "src": "t.me/hcryazan_official",
+     "from": "канал ХК «Рязань-ВДВ»",
+     "url": "https://t.me/hcryazan_official/22423"
+    }
+   ]
+  },
+  {
+   "id": "rh9319023",
+   "n": 2,
+   "date": "2026-10-03",
+   "home": "proton",
+   "away": "kristall",
+   "official": true,
+   "time": "17:00",
+   "start": "2026-10-03T17:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905112/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905112/live/",
+   "arena": "ЛА «Остальная»",
+   "attendance": null,
+   "score": {
+    "home": 2,
+    "away": 1,
+    "decision": "Б",
+    "periods": [
+     [
+      0,
+      0
+     ],
+     [
+      0,
+      0
+     ],
+     [
+      1,
+      1
+     ],
+     [
+      0,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ]
+   },
+   "goals": [
+    {
+     "period": "3",
+     "time": "51:20",
+     "team": "away",
+     "score": "0:1",
+     "strength": "рав.",
+     "author": "Коннов Саит",
+     "assists": [
+      "Курусь Дмитрий",
+      "Семёнов Тимур"
+     ],
+     "no": 15
+    },
+    {
+     "period": "3",
+     "time": "53:11",
+     "team": "home",
+     "score": "1:1",
+     "strength": "рав.",
+     "author": "Мишуков Владислав",
+     "assists": [],
+     "no": 27
+    },
+    {
+     "period": "РБ",
+     "time": "65:00",
+     "team": "home",
+     "score": "2:1",
+     "strength": "",
+     "author": "Литвинцев Степан",
+     "assists": [],
+     "no": 72
+    }
+   ],
+   "watch": [
+    {
+     "title": "Трансляция лиги · VK Видео",
+     "url": "https://vk.com/video-214785240_456239601",
+     "src": "rhl.fhr.ru"
+    }
+   ],
+   "events": [
+    {
+     "kind": "text",
+     "text": "У «Кристалла» сегодня самая сильная поддержка болельщиков! 🥁🥁🥁",
+     "at": "2026-10-03T18:31+03:00",
+     "src": "t.me/nmhlpervenstvo",
+     "from": "канал «РХЛ»",
+     "url": "https://t.me/nmhlpervenstvo/8353"
+    }
+   ]
+  },
+  {
+   "id": "rh9319024",
+   "n": 3,
+   "date": "2026-10-03",
+   "home": "rostov",
+   "away": "krasnodar",
+   "official": true,
+   "time": "13:00",
+   "start": "2026-10-03T13:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905113/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905113/live/",
+   "arena": "Дворец спорта",
+   "attendance": null,
+   "score": {
+    "home": 0,
+    "away": 6,
+    "decision": "",
+    "periods": [
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      4
+     ]
+    ]
+   },
+   "goals": [
+    {
+     "period": "1",
+     "time": "03:10",
+     "team": "away",
+     "score": "0:1",
+     "strength": "рав.",
+     "author": "Рябицев Дмитрий",
+     "assists": [
+      "Новиков Денис"
+     ],
+     "no": 74
+    },
+    {
+     "period": "2",
+     "time": "34:52",
+     "team": "away",
+     "score": "0:2",
+     "strength": "рав.",
+     "author": "Дурдин Дмитрий",
+     "assists": [
+      "Рябицев Дмитрий"
+     ],
+     "no": 18
+    },
+    {
+     "period": "3",
+     "time": "46:48",
+     "team": "away",
+     "score": "0:3",
+     "strength": "рав.",
+     "author": "Фурлетов Вячеслав",
+     "assists": [
+      "Чайкин Никита",
+      "Нуреев Даниил"
+     ],
+     "no": 13
+    },
+    {
+     "period": "3",
+     "time": "47:25",
+     "team": "away",
+     "score": "0:4",
+     "strength": "рав.",
+     "author": "Седов Иван",
+     "assists": [
+      "Биктагиров Амир"
+     ],
+     "no": 17
+    },
+    {
+     "period": "3",
+     "time": "54:17",
+     "team": "away",
+     "score": "0:5",
+     "strength": "рав.",
+     "author": "Данилов Владимир",
+     "assists": [
+      "Новиков Денис",
+      "Дурдин Дмитрий"
+     ],
+     "no": 39
+    },
+    {
+     "period": "3",
+     "time": "59:24",
+     "team": "away",
+     "score": "0:6",
+     "strength": "рав.",
+     "author": "Сеснев Григорий",
+     "assists": [],
+     "no": 47
+    }
+   ],
+   "watch": [
+    {
+     "title": "Трансляция лиги · VK Видео",
+     "url": "https://vk.com/video-60074608_456240743",
+     "src": "rhl.fhr.ru"
+    }
+   ],
+   "events": [
+    {
+     "kind": "text",
+     "text": "Совсем скоро откроем сезон — нас ждёт южное дерби между «Ростовом» и «Краснодаром» 🇷🇺 По техническим причинам матч начнётся позже, прямая трансляция будет доступна здесь и на сайте…",
+     "at": "2026-10-03T12:50+03:00",
+     "src": "t.me/nmhlpervenstvo",
+     "from": "канал «РХЛ»",
+     "url": "https://t.me/nmhlpervenstvo/8348"
+    },
+    {
+     "kind": "text",
+     "text": "Поехали! 🏒 Стартовое вбрасывание в Ростове ✔️ Первый матч сезона начался — следите за игрой.",
+     "at": "2026-10-03T14:07+03:00",
+     "src": "t.me/nmhlpervenstvo",
+     "from": "канал «РХЛ»",
+     "url": "https://t.me/nmhlpervenstvo/8349"
+    },
+    {
+     "kind": "text",
+     "text": "0:1 — Счёт открывают гости",
+     "at": "2026-10-03T14:07+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7475"
+    },
+    {
+     "kind": "text",
+     "text": "Первый гол сезона РХЛ 2026/27! 🇷🇺 Капитан «Краснодара» Дмитрий Рябицев открывает счёт в матче в Ростове 🏝",
+     "at": "2026-10-03T14:21+03:00",
+     "src": "t.me/nmhlpervenstvo",
+     "from": "канал «РХЛ»",
+     "url": "https://t.me/nmhlpervenstvo/8350"
+    },
+    {
+     "kind": "text",
+     "text": "Смотрим статистику после первого периода 📊",
+     "at": "2026-10-03T14:35+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7477"
+    },
+    {
+     "kind": "text",
+     "text": "0:2 — Ещё одна шайба от гостей",
+     "at": "2026-10-03T15:06+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7479"
+    },
+    {
+     "kind": "text",
+     "text": "Перерыв после 40 минут игры, верим в команду и ждём третий период!",
+     "at": "2026-10-03T15:22+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7480"
+    },
+    {
+     "kind": "text",
+     "text": "🥳Шайбу забросил Вячеслав Фурлетов — 🦅 0:3 🏝",
+     "at": "2026-10-03T15:40+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10040"
+    },
+    {
+     "kind": "text",
+     "text": "🥳ГООООЛ!",
+     "at": "2026-10-03T15:40+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10041"
+    },
+    {
+     "kind": "text",
+     "text": "🥳Шайбу забросил Иван Седов — 🦅 0:4 🏝",
+     "at": "2026-10-03T15:41+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10042"
+    },
+    {
+     "kind": "text",
+     "text": "Два гола меньше чем за минуту и 0:4 на табло",
+     "at": "2026-10-03T15:43+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7481"
+    },
+    {
+     "kind": "text",
+     "text": "😢За подножку малым штрафом наказан Кузнецов Артём — 🦅 0:4 🏝",
+     "at": "2026-10-03T15:44+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10044"
+    },
+    {
+     "kind": "text",
+     "text": "ХК «Краснодар» играет в полном составе!",
+     "at": "2026-10-03T15:47+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10045"
+    },
+    {
+     "kind": "text",
+     "text": "☹️«Ростов» наказан малым штрафом за нарушение численного состава",
+     "at": "2026-10-03T15:49+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10046"
+    },
+    {
+     "kind": "text",
+     "text": "😟И мы удаляемся… В штрафном боксе Иван Седов",
+     "at": "2026-10-03T15:50+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10047"
+    },
+    {
+     "kind": "text",
+     "text": "Игра 4 на 4",
+     "at": "2026-10-03T15:50+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10048"
+    },
+    {
+     "kind": "text",
+     "text": "🥳Шайбу забросил Владимир Данилов — 🦅 0:5 🏝",
+     "at": "2026-10-03T15:53+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10050"
+    },
+    {
+     "kind": "text",
+     "text": "0:5 — Пятая шайба влетает в наши ворота",
+     "at": "2026-10-03T15:53+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7482"
+    },
+    {
+     "kind": "text",
+     "text": "🔥Замена вратаря! Ворота защищает Курников Владимир",
+     "at": "2026-10-03T15:59+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10051"
+    },
+    {
+     "kind": "text",
+     "text": "🥳Шайбу забросил Григорий Сеснев — 🦅 0:6 🏝",
+     "at": "2026-10-03T16:02+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10053"
+    },
+    {
+     "kind": "text",
+     "text": "0:6 — Гол в раздевалку от гостей",
+     "at": "2026-10-03T16:02+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7483"
+    },
+    {
+     "kind": "text",
+     "text": "⭐️ТРЕТИЙ ПЕРИОД ОКОНЧЕН! 🦅 0:6 🏝",
+     "at": "2026-10-03T16:06+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10054"
+    },
+    {
+     "kind": "text",
+     "text": "🎉С ПОБЕДОЙ!",
+     "at": "2026-10-03T16:08+03:00",
+     "src": "t.me/HCGvardiaKrd",
+     "from": "канал ХК «Краснодар»",
+     "url": "https://t.me/HCGvardiaKrd/10055"
+    },
+    {
+     "kind": "text",
+     "text": "Первый матч остаётся за гостями. Но уже завтра снова встретимся с «Краснодаром». Сегодня не получилось — завтра будет новый шанс! 💪",
+     "at": "2026-10-03T16:13+03:00",
+     "src": "t.me/rostovhc",
+     "from": "канал ХК «Ростов»",
+     "url": "https://t.me/rostovhc/7485"
+    }
+   ]
+  },
+  {
+   "id": "rh9319026",
+   "n": 4,
+   "date": "2026-10-03",
+   "home": "tverichi",
+   "away": "metallurg",
+   "official": true,
+   "time": "15:00",
+   "start": "2026-10-03T15:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905114/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905114/live/",
+   "arena": "СК «Юбилейный»",
+   "attendance": null,
+   "score": {
+    "home": 3,
+    "away": 1,
+    "decision": "",
+    "periods": [
+     [
+      0,
+      0
+     ],
+     [
+      1,
+      1
+     ],
+     [
+      2,
+      0
+     ]
+    ]
+   },
+   "goals": [
+    {
+     "period": "2",
+     "time": "29:00",
+     "team": "home",
+     "score": "1:0",
+     "strength": "бол.",
+     "author": "Семёнов Иван",
+     "assists": [
+      "Денисов Данил",
+      "Пудовников Никита"
+     ],
+     "no": 47
+    },
+    {
+     "period": "2",
+     "time": "29:53",
+     "team": "away",
+     "score": "1:1",
+     "strength": "бол.",
+     "author": "Кузнецов Егор",
+     "assists": [
+      "Кушнир Захар"
+     ],
+     "no": 97
+    },
+    {
+     "period": "3",
+     "time": "46:24",
+     "team": "home",
+     "score": "2:1",
+     "strength": "рав.",
+     "author": "Авдонкин Матвей",
+     "assists": [
+      "Денисов Данил"
+     ],
+     "no": 92
+    },
+    {
+     "period": "3",
+     "time": "51:01",
+     "team": "home",
+     "score": "3:1",
+     "strength": "рав.",
+     "author": "Авдонкин Матвей",
+     "assists": [
+      "Маркеев Юрий"
+     ],
+     "no": 92
+    }
+   ],
+   "watch": [
+    {
+     "title": "Трансляция лиги · VK Видео",
+     "url": "https://vk.com/video-223329867_456240610",
+     "src": "rhl.fhr.ru"
+    }
+   ],
+   "events": [
+    {
+     "kind": "text",
+     "text": "Первый матч = первый гол 🇷🇺 Такой план сегодня выполнил нападающий команды «Тверичи-СШОР» Иван Семёнов🪽 …",
+     "at": "2026-10-03T18:27+03:00",
+     "src": "t.me/nmhlpervenstvo",
+     "from": "канал «РХЛ»",
+     "url": "https://t.me/nmhlpervenstvo/8352"
+    }
+   ]
+  },
+  {
+   "id": "n6",
+   "n": 6,
+   "date": "2026-10-04",
+   "home": "ryazan-vdv",
+   "away": "belgorod",
+   "official": true,
+   "time": "17:00",
+   "start": "2026-10-04T17:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905116/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905116/live/",
+   "watch": [
+    {
+     "title": "Трансляция лиги · сайт РХЛ",
+     "url": "https://rhl.fhr.ru/matchcenter/1432/905116/video/",
+     "src": "rhl.fhr.ru"
+    }
+   ]
+  },
+  {
+   "id": "rh9319022",
+   "n": 7,
+   "date": "2026-10-04",
+   "home": "proton",
+   "away": "kristall",
+   "official": true,
+   "time": "17:00",
+   "start": "2026-10-04T17:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905117/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905117/live/",
+   "watch": [
+    {
+     "title": "Трансляция лиги · сайт РХЛ",
+     "url": "https://rhl.fhr.ru/matchcenter/1432/905117/video/",
+     "src": "rhl.fhr.ru"
+    }
+   ]
+  },
+  {
+   "id": "rh9319025",
+   "n": 8,
+   "date": "2026-10-04",
+   "home": "rostov",
+   "away": "krasnodar",
+   "official": true,
+   "time": "13:00",
+   "start": "2026-10-04T13:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905118/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905118/live/",
+   "arena": "Дворец спорта",
+   "watch": [
+    {
+     "title": "Трансляция лиги · сайт РХЛ",
+     "url": "https://rhl.fhr.ru/matchcenter/1432/905118/video/",
+     "src": "rhl.fhr.ru"
+    }
+   ]
+  },
+  {
+   "id": "rh9319027",
+   "n": 9,
+   "date": "2026-10-04",
+   "home": "tverichi",
+   "away": "metallurg",
+   "official": true,
+   "time": "15:00",
+   "start": "2026-10-04T15:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905119/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905119/live/",
+   "watch": [
+    {
+     "title": "Трансляция лиги · сайт РХЛ",
+     "url": "https://rhl.fhr.ru/matchcenter/1432/905119/video/",
+     "src": "rhl.fhr.ru"
+    }
+   ]
+  },
+  {
+   "id": "rh9319028",
+   "n": 5,
+   "date": "2026-10-04",
+   "home": "kaluga",
+   "away": "dinamo-576",
+   "official": true,
+   "time": "13:00",
+   "start": "2026-10-04T13:00:00+03:00",
+   "league_url": "https://rhl.fhr.ru/matchcenter/1432/905115/",
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905115/live/",
+   "arena": "ДС «Центральный»"
+  }
+ ]
+}

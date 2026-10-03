@@ -1,0 +1,149 @@
+{
+ "date": "2026-10-03",
+ "updated": "2026-10-03T17:51:20+03:00",
+ "games": [
+  {
+   "key": "2026-10-03|rostov|krasnodar",
+   "date": "2026-10-03",
+   "home": "rostov",
+   "away": "krasnodar",
+   "start": "2026-10-03T13:00:00+03:00",
+   "time": "13:00",
+   "status": "ended",
+   "period": null,
+   "clock": null,
+   "score": {
+    "home": 0,
+    "away": 6,
+    "decision": null
+   },
+   "events": [],
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905113/live/",
+   "khl_id": 905113,
+   "tournament": 1432,
+   "protocol": "https://rhl.fhr.ru/matchcenter/1432/905113/protocol/",
+   "seen": "2026-10-03T17:51:14+03:00",
+   "src": "rhl.fhr.ru"
+  },
+  {
+   "key": "2026-10-03|tverichi|metallurg",
+   "date": "2026-10-03",
+   "home": "tverichi",
+   "away": "metallurg",
+   "start": "2026-10-03T15:00:00+03:00",
+   "time": "15:00",
+   "status": "ended",
+   "period": null,
+   "clock": null,
+   "score": {
+    "home": 3,
+    "away": 1,
+    "decision": null
+   },
+   "events": [],
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905114/live/",
+   "khl_id": 905114,
+   "tournament": 1432,
+   "protocol": "https://rhl.fhr.ru/matchcenter/1432/905114/protocol/",
+   "seen": "2026-10-03T17:51:14+03:00",
+   "src": "rhl.fhr.ru"
+  },
+  {
+   "key": "2026-10-03|proton|kristall",
+   "date": "2026-10-03",
+   "home": "proton",
+   "away": "kristall",
+   "start": "2026-10-03T17:00:00+03:00",
+   "time": "17:00",
+   "status": "live",
+   "period": "2",
+   "clock": null,
+   "score": {
+    "home": 0,
+    "away": 0,
+    "decision": null
+   },
+   "events": [],
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905112/live/",
+   "khl_id": 905112,
+   "tournament": 1432,
+   "protocol": null,
+   "seen": "2026-10-03T17:51:14+03:00",
+   "src": "rhl.fhr.ru"
+  },
+  {
+   "key": "2026-10-03|ryazan-vdv|belgorod",
+   "date": "2026-10-03",
+   "home": "ryazan-vdv",
+   "away": "belgorod",
+   "start": "2026-10-03T17:00:00+03:00",
+   "time": "17:00",
+   "status": "live",
+   "period": "2",
+   "clock": null,
+   "score": {
+    "home": 2,
+    "away": 0,
+    "decision": null
+   },
+   "events": [
+    {
+     "kind": "period",
+     "period": "1",
+     "time": null,
+     "team": null,
+     "text": "Начался 1-й период",
+     "score": null,
+     "at": "2026-10-03T17:02:00+03:00",
+     "src": "rhl.fhr.ru"
+    },
+    {
+     "kind": "goal",
+     "period": "1",
+     "time": null,
+     "team": "home",
+     "text": null,
+     "score": "1:0",
+     "at": "2026-10-03T17:08:00+03:00",
+     "src": "rhl.fhr.ru"
+    },
+    {
+     "kind": "goal",
+     "period": "1",
+     "time": null,
+     "team": "home",
+     "text": null,
+     "score": "2:0",
+     "at": "2026-10-03T17:22:00+03:00",
+     "src": "rhl.fhr.ru"
+    },
+    {
+     "kind": "period",
+     "period": "1",
+     "time": null,
+     "team": null,
+     "text": "Конец 1-го периода",
+     "score": null,
+     "at": "2026-10-03T17:27:00+03:00",
+     "src": "rhl.fhr.ru"
+    },
+    {
+     "kind": "period",
+     "period": "2",
+     "time": null,
+     "team": null,
+     "text": "Начался 2-й период",
+     "score": null,
+     "at": "2026-10-03T17:45:00+03:00",
+     "src": "rhl.fhr.ru"
+    }
+   ],
+   "online": "https://rhl.fhr.ru/matchcenter/1432/905111/live/",
+   "khl_id": 905111,
+   "tournament": 1432,
+   "protocol": null,
+   "seen": "2026-10-03T17:51:14+03:00",
+   "src": "rhl.fhr.ru"
+  }
+ ]
+}

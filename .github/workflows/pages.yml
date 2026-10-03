@@ -42,30 +42,34 @@ jobs:
           key: results-${{ github.run_id }}
           restore-keys: results-
 
-      # Матчи с сайта лиги rhl.fhr.ru (ADR-019): номер, время по Москве, счёт сыгранных, снимок идущих.
-      # Копятся между запусками в rhl_site.json — лента сайта показывает только ближайшие дни
+      # Матчи с сайта лиги rhl.fhr.ru (ADR-019): номер, время по Москве, счёт сыгранных, снимок идущих,
+      # протоколы и лидеры сезона. Копятся между запусками в rhl_site.json — лента сайта показывает только
+      # ближайшие дни, а протокол сыгранного матча качается один раз и перечитывается три дня
       - uses: actions/cache@v4
         with:
           path: rhl_site.json
           key: rhl-site-${{ github.run_id }}
           restore-keys: rhl-site-
 
-      - name: Матчи с сайта РХЛ
-        continue-on-error: true
-        run: python rhl_site.py
-
-      # Протоколы — движок старого nmhl.fhr.ru (league.py). У rhl.fhr.ru движок новый, счёт даёт шаг выше.
-      # Включить для старого сайта: Settings → Variables → LEAGUE_SITE
+      # Протоколы — движок старого nmhl.fhr.ru (league.py). У rhl.fhr.ru движок новый, его читает rhl_site.py
+      # ниже. Включить для старого сайта: Settings → Variables → LEAGUE_SITE
       - name: Скачать протоколы матчей
         if: vars.LEAGUE_SITE != ''
         continue-on-error: true
         run: python league.py --site "${{ vars.LEAGUE_SITE }}"
 
-      # Лидеры лиги (ADR-009). Пока у нового сезона нет статистики, остаётся прошлый из leaders.json в git
+      # Лидеры лиги (ADR-009) со старого движка. Пока у нового сезона нет статистики, остаётся прошлый из
+      # leaders.json в git
       - name: Скачать лидеров лиги
         if: vars.LEAGUE_SITE != ''
         continue-on-error: true
         run: python league.py --leaders --site "${{ vars.LEAGUE_SITE }}"
+
+      # После league.py: протоколы сыгранных матчей и лидеры сезона с rhl.fhr.ru главнее старого сайта.
+      # Лидеров на сайте ещё нет — leaders.json не трогает
+      - name: Матчи, протоколы и лидеры с сайта РХЛ
+        continue-on-error: true
+        run: python rhl_site.py
 
       # Посты каналов клубов для листа «Главной» (ADR-015): превью с t.me/s, по одному запросу в секунду.
       # Упадёт или половина каналов не откроется — лист соберётся из своих данных, шаг станет красным

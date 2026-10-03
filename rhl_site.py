@@ -6,7 +6,10 @@
 - `/calendar/` — будущие матчи целиком (`calendar__match`: id, время МСК, №, город, команды) и лента
   дней сверху (`matches-feed__match`): статус, счёт сыгранных и идущих, команды — только эмблемами;
 - `/matchcenter/<турнир>/<id>/` — счёт, «2-й период» по ходу, номер, дата и арена, авторы голов;
-- `/matchcenter/<турнир>/<id>/video/` и `/translations/` — видео матча для «Смотреть» (разбор — rhl_media.py).
+- `/matchcenter/<турнир>/<id>/protocol/` — протокол сыгранного матча (rhl_protocol.py): голы, удаления,
+  составы, судьи. Лежит в хранилище у матча в `report` в формате `league.Protocol.to_json()`;
+- `/matchcenter/<турнир>/<id>/video/` и `/translations/` — видео матча для «Смотреть» (разбор — rhl_media.py);
+- `/stat/leaders/…/nomination/<номинация>/` — лидеры сезона (ADR-009) → leaders.json.
 
 Разбор — регулярками по классам вёрстки, как rhockey.py: вложенность div неровная. Снимок страниц —
 задание «Снимок источников», фикстуры — tests/fixtures/rhl_*.html. Сайт отвечает и зарубежным IP,
@@ -22,14 +25,15 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import aiohttp
 
 import rhl_media
-from league import PAUSE, USER_AGENT
+import rhl_protocol
+from league import LEADERS_FILE, PAUSE, SETTLE_DAYS, USER_AGENT
 
 BASE = Path(__file__).parent
 TZ = ZoneInfo("Europe/Moscow")
@@ -37,6 +41,9 @@ SITE = "https://rhl.fhr.ru"
 STORE = BASE / "rhl_site.json"
 MAX_PAGES = 24          # страниц матч-центра за запуск, не больше: остальные — в следующий час
 MAX_VIDEO = 12          # вкладок «Видео» за запуск (rhl_media.py, ADR-019, раздел 7)
+REPORT_EVERY = timedelta(hours=3)   # протокол перечитываем не чаще, пока лига может его поправить (SETTLE_DAYS)
+REPORT_DAYS = 7         # протокола всё нет — ищем его столько дней после матча, каждый запуск
+LEADERS_EVERY = timedelta(hours=6)  # лидеров перечитываем не чаще, если за запуск не пришло новых протоколов
 
 # статус карточки на сайте → статус матча (ADR-012, раздел 1)
 STATUS = {"not-started": "sched", "started": "live", "finished": "final",
@@ -133,7 +140,8 @@ def parse_match(page: str) -> dict | None:
     status_name = re.search(r'matchcenter-hero__status-name">(.*?)</div>', page, re.S)
     status_name = _text(status_name.group(1)) if status_name else ""
     winner = re.search(r'class="matchcenter-hero\s+matchcenter-hero--winner-(home|guest)', page)
-    tail = f"{pair.group(3) if pair else ''} {status_name}".lower()
+    kind = re.search(r'matchcenter-hero__score-type">(.*?)</div>', page, re.S)   # «Б» или «ОТ» под счётом
+    tail = f"{pair.group(3) if pair else ''} {_text(kind.group(1)) if kind else ''} {status_name}".lower()
     decision = "Б" if re.search(r"\bб\b|буллит", tail) else "ОТ" if re.search(r"\bот\b|овертайм", tail) else None
     day = re.search(r'param-day">\s*(\d{1,2})\s+(\S+)\s*<', page)
     date_line = re.search(r'param-date">[^<]*?(\d{4}),\s*(\d{1,2}):(\d{2})', page)
@@ -233,31 +241,120 @@ def live_state(g: dict) -> dict | None:
             "seen": g.get("seen"), "src": "rhl.fhr.ru"}
 
 
-async def update(path: Path = STORE, site: str = SITE, now: datetime | None = None) -> dict:
+def need_report(g: dict, now: datetime) -> bool:
+    """Протокол сыгранного матча качаем, как только сайт сказал «сыгран», потом перечитываем раз в
+    REPORT_EVERY, пока лига может его поправить (SETTLE_DAYS, как league.py). Нет протокола — ищем
+    каждый запуск REPORT_DAYS дней."""
+    if g.get("status") != "final" or not g.get("t") or not g.get("start"):
+        return False
+    age = now - datetime.fromisoformat(g["start"])
+    if not g.get("report"):
+        return age <= timedelta(days=REPORT_DAYS)
+    at = g.get("report_at")
+    return age <= timedelta(days=SETTLE_DAYS) and (not at or now - datetime.fromisoformat(at) >= REPORT_EVERY)
+
+
+def season_code(start: datetime) -> str:
+    """Сезон в адресе статистики: матч октября 2026 → «2026-2027», марта 2027 — тоже."""
+    y = start.year if start.month >= 7 else start.year - 1
+    return f"{y}-{y + 1}"
+
+
+def write_leaders(store: dict, path: Path = LEADERS_FILE) -> bool:
+    """Лидеры сезона из хранилища → leaders.json для build_data.leaders() (ADR-009). Пусто (первый день,
+    сайт ещё не посчитал) — файл не трогаем: остаётся прошлый сезон из git."""
+    top = store.get("leaders") or {}
+    if not any((top.get("categories") or {}).values()):
+        return False
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(top, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+    return True
+
+
+async def _get(s: aiohttp.ClientSession, url: str) -> str:
+    async with s.get(url) as r:
+        r.raise_for_status()
+        return await r.text()
+
+
+async def fetch_reports(s: aiohttp.ClientSession, site: str, store: dict, now: datetime, budget: int) -> int:
+    """Протоколы сыгранных матчей (вкладка «Протокол») → games[id]["report"]. Сначала те, у кого протокола
+    ещё нет, потом давно перечитанные. Возвращает, у скольких матчей протокол появился впервые."""
+    todo = sorted((g for g in store["games"].values() if need_report(g, now)),
+                  key=lambda g: (bool(g.get("report")), g.get("report_at") or "", g["start"]))
+    fresh = 0
+    for g in todo[:max(budget, 0)]:
+        await asyncio.sleep(PAUSE)
+        try:
+            html = await _get(s, f"{site}/matchcenter/{g['t']}/{g['id']}/protocol/")
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            logging.warning("протокол %s не скачался: %s", g["id"], e)
+            continue
+        g["report_at"] = now.isoformat(timespec="minutes")
+        p = rhl_protocol.parse_protocol(html, int(g["id"]))
+        if p:
+            fresh += not g.get("report")
+            g["report"] = p.to_json()
+        else:
+            logging.warning("протокол %s не разобран: страница незнакомая или матч не окончен", g["id"])
+    return fresh
+
+
+async def fetch_leaders(s: aiohttp.ClientSession, site: str, store: dict, now: datetime, fresh: int) -> None:
+    """Лидеры сезона по показателям league.LEADER_CATS → store["leaders"]: после новых протоколов или раз
+    в LEADERS_EVERY. Турнир и сезон — последнего сыгранного матча: в плей-офф это турнир плей-офф."""
+    played = sorted((g for g in store["games"].values() if g.get("status") == "final" and g.get("start")),
+                    key=lambda g: g["start"])
+    if not played:
+        return
+    old = store.get("leaders") or {}
+    if not fresh and old.get("updated") and now - datetime.fromisoformat(old["updated"]) < LEADERS_EVERY:
+        return
+    t, season = played[-1]["t"], season_code(datetime.fromisoformat(played[-1]["start"]))
+    cats, name = {}, ""
+    try:
+        for cat in rhl_protocol.NOMINATIONS:
+            await asyncio.sleep(PAUSE)
+            html = await _get(s, rhl_protocol.leaders_url(site, season, t, cat))
+            cats[cat] = rhl_protocol.parse_leaders(html)
+            name = name or rhl_protocol.leaders_name(html)
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        logging.warning("лидеры не скачались: %s", e)
+        return
+    if any(cats.values()):
+        store["leaders"] = {"site": site, "tournament": t, "name": name,
+                            "updated": now.isoformat(timespec="minutes"), "categories": cats}
+
+
+async def update(path: Path = STORE, site: str = SITE, now: datetime | None = None,
+                 leaders_path: Path | None = LEADERS_FILE) -> dict:
     now = now or datetime.now(TZ)
     store = load_store(path)
     headers = {"User-Agent": USER_AGENT}
     async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=60),
                                      trust_env=True) as s:
-        async with s.get(f"{site}/calendar/") as r:
-            r.raise_for_status()
-            rows = parse_calendar(await r.text())
+        rows = parse_calendar(await _get(s, f"{site}/calendar/"))
         merge(store, rows)
         todo = [g for g in store["games"].values() if need_page(g, now)]
-        for g in sorted(todo, key=lambda g: g.get("start") or "")[:MAX_PAGES]:
+        pages = sorted(todo, key=lambda g: g.get("start") or "")[:MAX_PAGES]
+        for g in pages:
             await asyncio.sleep(PAUSE)
             try:
-                async with s.get(f"{site}/matchcenter/{g['t']}/{g['id']}/") as r:
-                    r.raise_for_status()
-                    p = parse_match(await r.text())
+                p = parse_match(await _get(s, f"{site}/matchcenter/{g['t']}/{g['id']}/"))
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 logging.warning("матч %s не скачался: %s", g["id"], e)
                 continue
             if p:
                 apply_page(g, p, datetime.now(TZ))
+        # протоколы — в остаток лимита страниц: счёт и «идёт» важнее
+        fresh = await fetch_reports(s, site, store, now, MAX_PAGES - len(pages))
+        await fetch_leaders(s, site, store, now, fresh)
         await update_media(s, store, site, now)
     store["updated"] = now.isoformat(timespec="minutes")
     save_store(store, path)
+    if leaders_path:
+        write_leaders(store, leaders_path)
     return store
 
 
@@ -267,9 +364,7 @@ async def update_media(s: aiohttp.ClientSession, store: dict, site: str, now: da
     games = store["games"]
     await asyncio.sleep(PAUSE)
     try:
-        async with s.get(f"{site}/translations/") as r:
-            r.raise_for_status()
-            cards = rhl_media.parse_translations(await r.text())
+        cards = rhl_media.parse_translations(await _get(s, f"{site}/translations/"))
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         logging.warning("страница трансляций не скачалась: %s", e)
         cards = []
@@ -282,9 +377,7 @@ async def update_media(s: aiohttp.ClientSession, store: dict, site: str, now: da
         if g.get("status") == "final":
             g["video_tries"] = g.get("video_tries", 0) + 1
         try:
-            async with s.get(f"{site}/matchcenter/{g['t']}/{g['id']}/video/") as r:
-                r.raise_for_status()
-                v = rhl_media.parse_video(await r.text())
+            v = rhl_media.parse_video(await _get(s, f"{site}/matchcenter/{g['t']}/{g['id']}/video/"))
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             logging.warning("видео матча %s не скачалось: %s", g["id"], e)
             continue
@@ -297,13 +390,21 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Матчи с сайта РХЛ → rhl_site.json (ADR-019)")
     ap.add_argument("--out", type=Path, default=STORE)
     ap.add_argument("--site", default=SITE)
+    ap.add_argument("--leaders-out", type=Path, default=LEADERS_FILE, help="куда писать лидеров сезона (ADR-009)")
     args = ap.parse_args()
-    store = asyncio.run(update(args.out, args.site.rstrip("/")))
+    store = asyncio.run(update(args.out, args.site.rstrip("/"), leaders_path=args.leaders_out))
     games = store["games"].values()
     done = [g for g in games if g.get("status") == "final" and g.get("score")]
     print(f"Сайт РХЛ: матчей {len(store['games'])}, сыграно со счётом {len(done)}, "
+          f"с протоколом {sum(bool(g.get('report')) for g in games)}, "
           f"идёт {sum(g.get('status') == 'live' for g in games)}, с видео лиги {sum(bool(g.get('video')) for g in games)} "
           f"→ {args.out}")
+    top = store.get("leaders") or {}
+    if any((top.get("categories") or {}).values()):
+        counts = ", ".join(f"{k} {len(v)}" for k, v in top["categories"].items())
+        print(f"Лидеры «{top.get('name')}» на {top.get('updated')}: {counts} → {args.leaders_out}")
+    else:
+        print("У сезона на сайте ещё нет лидеров — leaders.json не тронут")
     for g in sorted(done, key=lambda g: g.get("start") or "")[-8:]:
         print(f"  {g.get('start', '')[:16]} №{g.get('n')} {g.get('home')} — {g.get('away')} "
               f"{g['score'][0]}:{g['score'][1]}{' ' + g['decision'] if g.get('decision') else ''}")

@@ -84,6 +84,9 @@ jobs:
               get(f"https://t.me/s/{ch}", f"tg_{ch}")
           get("https://r-hockey.ru/stat/temp/2027/30904/calendar?month=10", "rhockey_rhl_2026_10")
           get("https://online.khl.ru/online/", "khl_online_day")
+          # Что опубликовано в мини-аппе: адреса API в index.html и данные league.json
+          get("https://arpicasso.github.io/bogdanov/", "pages_index")
+          get("https://arpicasso.github.io/bogdanov/data/league.json", "pages_league")
           import os
           host = os.environ.get("HOST", "")
           if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):

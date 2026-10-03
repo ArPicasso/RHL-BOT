@@ -159,7 +159,7 @@ class Protocol:
     game_id: int
     n: int             # номер матча в календаре лиги, он же ключ в games.json
     date: date
-    time: str          # местное время арены, не МСК
+    time: str          # начало: местное время арены, не МСК, если zone не задан
     attendance: int | None
     home: str
     away: str
@@ -173,6 +173,7 @@ class Protocol:
     referees: tuple[str, ...] = ()
     linesmen: tuple[str, ...] = ()
     coaches: tuple[str, str] = ("", "")   # хозяев и гостей
+    zone: str = ""     # пояс date и time: пусто — местное время арены (nmhl.fhr.ru), у rhl.fhr.ru — Europe/Moscow
 
     def to_json(self) -> dict:
         d = asdict(self)

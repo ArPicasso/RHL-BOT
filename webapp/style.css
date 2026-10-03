@@ -1360,6 +1360,8 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 .md-when { display: grid; justify-items: start; gap: 4px; min-width: 0; }
 .md-when b { font: 700 15px/1.1 var(--ui); }
 .md-when small { font-size: 11px; line-height: 1.2; color: var(--muted); }
+/* «Окончен» — самый длинный чип: плотнее, чтобы не наезжал на эмблемы и на 320px */
+.md-when .lv { padding: 0 5px; letter-spacing: .02em; }
 .md-teams { display: grid; gap: 6px; min-width: 0; }
 .md-tm { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .md-tm .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1391,10 +1393,30 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 /* Карточка матча: строка статуса, лента событий, источник счёта */
 .mc-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 2px 0; font-size: 14px; line-height: 1.35; }
 .sheet .links-box .go-row { margin-top: 12px; }
+/* в карточке три полные подписи: перенос ряда — ровными пилюлями во всю ширину, а не одной сиротой слева */
+.sheet .links-box .go { flex: 1 1 auto; justify-content: center; }
+/* сыгранный матч без протокола: авторы голов с сайта лиги и где протокол */
+.site-goals .goal { align-items: center; }
+.site-goals .goal .tm, .site-goals .goal .sc { padding-top: 0; }
+.site-note { padding: 14px 16px 6px; border: var(--line); border-radius: 20px; font-size: 14px; line-height: 1.4; color: var(--muted); }
+.site-note p { margin: 0; }
+.site-note .fc-link { margin-top: 2px; }
+.site-note.small { margin-top: 8px; padding: 0 2px; border: 0; font-size: 12px; }
 .ev-list .ev-em { display: grid; place-items: center; width: 36px; height: 36px; }
 .goal.ev .tm { min-width: 0; }
 .ev-line { display: flex; gap: 10px; padding: 10px 12px; font-size: 13px; line-height: 1.35; color: var(--muted); }
-.ev-line b { flex: none; min-width: 42px; color: var(--ink); }
+.ev-line > .tm { flex: none; min-width: 42px; font-weight: 700; color: var(--ink); }
+/* время по часам (служба заметила, пост вышел) — серым: это не табло */
+.ev-list .tm.wall { font-weight: 500; color: var(--muted); }
+/* пост канала по ходу матча: превью и канал, нажатие — пост в Telegram */
+.ev-post { width: 100%; border: 0; background: none; font: 500 13px/1.35 var(--ui); text-align: left; cursor: pointer; transition: background-color .12s; }
+.ev-post .ev-body { min-width: 0; }
+.ev-post .ev-txt {
+  color: var(--ink); font-size: 14px; line-height: 1.4; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
+}
+.ev-post .ev-body small { display: block; margin-top: 2px; font-size: 12px; line-height: 1.3; color: var(--muted); }
+.ev-post:active { background: var(--sel); }
 .goal + .ev-line, .ev-line + .goal, .ev-line + .ev-line, .ev-line + .period { border-top: 1px solid var(--mist); }
 .ev-empty { padding: 14px 16px; border: var(--line); border-radius: 20px; font-size: 14px; line-height: 1.4; color: var(--muted); }
 .ev-src { margin: 8px 2px 0; font-size: 12px; color: var(--muted); }
@@ -1438,15 +1460,17 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 .pred-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 
 @media (hover: hover) and (pointer: fine) {
-  .md-list .md-row:hover, .md-next:hover, .go:hover, .md-more:hover, .vote-b:not(:disabled):not(.on):hover { background: var(--sel); }
+  .md-list .md-row:hover, .md-next:hover, .go:hover, .md-more:hover, .vote-b:not(:disabled):not(.on):hover, .ev-post:hover { background: var(--sel); }
   .md-row.mine:hover { background: var(--mist); }
 }
 @media (max-width: 359px) {
   /* середина табло не отнимает у названий место: отсчёт переносится по словам, «Белгород» — целиком */
   .bmid .score.pending { max-width: 84px; }
   .bmid .score .dec { font-size: 11px; line-height: 1.2; }
-  .md-main { grid-template-columns: 64px minmax(0, 1fr); gap: 8px; }
-  /* «Онлайн» и «Смотреть» под командами в одну строку уже не влезают — ряд начинается от края строки */
+  .md-main { grid-template-columns: 66px minmax(0, 1fr); gap: 8px; }
+}
+@media (max-width: 374px) {
+  /* «Протокол» и «Смотреть» под командами на 360px в одну строку уже не влезают — ряд от края строки */
   .go-row.short { padding-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) {

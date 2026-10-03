@@ -669,6 +669,91 @@ class Today(unittest.TestCase):
         self.assertFalse(bot.TODAY_WORDS.search("привет"))
 
 
+class RealDay(unittest.TestCase):
+    """03.10.2026 на настоящих данных: сборка league.json по страницам rhl.fhr.ru и ответ сервера в 20:56.
+    Владелец в 20:50: «время уточняется», «ждём протокол» и ни одного счёта, хотя на сайте лиги всё есть."""
+
+    FIX = ROOT / "tests" / "fixtures"
+    days = json.loads((FIX / "league_2026_10_03.json").read_text(encoding="utf-8"))
+    live = json.loads((FIX / "live_today_2026_10_03_2056.json").read_text(encoding="utf-8"))
+    PROTO = "https://rhl.fhr.ru/matchcenter/1432/{}/protocol/"
+
+    def league(self, name):
+        return {"teams": [], "games": self.days[name]}
+
+    def lines(self, text):
+        """«время · команды» → строка под ней."""
+        rows = text.split("\n")
+        return {rows[i].split(" · ", 1)[1]: rows[i + 1] for i in range(len(rows) - 1) if " — " in rows[i] and " · " in rows[i]}
+
+    def test_evening_all_scores_and_protocols(self):
+        text = bot.today_text(self.league("evening"), self.live, None, ["ryazan-vdv"], msk("2026-10-03T21:00"))
+        self.assertNotIn("уточняется", text)
+        self.assertNotIn("ждём протокол", text)
+        self.assertNotIn("текстовая трансляция", text)   # после игры — протокол, а не трансляция
+        self.assertIn("⭐ <b>17:00</b> · Рязань-ВДВ — Белгород", text)
+        rows = self.lines(text)
+        # видео — трансляция лиги с вкладки «Видео» матч-центра (rhl_media.py)
+        self.assertEqual(rows["Рязань-ВДВ — Белгород"],
+                         f'окончен <b>4:3</b> · <a href="{self.PROTO.format(905111)}">протокол</a>'
+                         ' · <a href="https://vk.com/video-187307324_456239889">смотреть</a>')
+        self.assertTrue(rows["Ростов — Краснодар"].startswith(
+            f'окончен <b>0:6</b> · <a href="{self.PROTO.format(905113)}">протокол</a>'))
+        self.assertIn("окончен <b>3:1</b>", rows["Тверичи-СШОР — Металлург"])
+        self.assertIn("окончен <b>2:1</b>", rows["Протон — Кристалл"])
+        order = [text.index(x) for x in ("Рязань-ВДВ — Белгород", "<b>13:00</b> · Ростов", "<b>15:00</b> · Тверичи",
+                                         "<b>17:00</b> · Протон")]
+        self.assertEqual(order, sorted(order))
+        self.assertTrue(tags_balanced(text))
+
+    def test_pages_lag_live_has_final(self):
+        # часовая сборка ещё 17:55, а служба live в 20:56 уже знает итог и страницу протокола
+        text = bot.today_text(self.league("at_1755"), self.live, None, [], msk("2026-10-03T21:00"))
+        rows = self.lines(text)
+        self.assertTrue(rows["Рязань-ВДВ — Белгород"].startswith(
+            f'окончен <b>4:3</b> · <a href="{self.PROTO.format(905111)}">протокол</a>'))
+        self.assertIn("Счёт — по сайту лиги на 20:56.", text)
+        self.assertNotIn("онлайну", text)
+
+    def test_live_from_site_snapshot(self):
+        # служба live молчит — идущие матчи из снимка сайта лиги в league.json (17:51)
+        text = bot.today_text(self.league("at_1755"), None, None, ["ryazan-vdv"], msk("2026-10-03T17:55"))
+        rows = self.lines(text)
+        self.assertTrue(rows["Рязань-ВДВ — Белгород"].startswith(
+            'идёт · 2-й период · <b>2:0</b> · '
+            '<a href="https://rhl.fhr.ru/matchcenter/1432/905111/live/">текстовая трансляция</a>'))
+        self.assertTrue(rows["Протон — Кристалл"].startswith("идёт · 2-й период · <b>0:0</b>"))
+        self.assertIn("Счёт по ходу — по сайту лиги на 17:51.", text)
+        self.assertTrue(rows["Ростов — Краснодар"].startswith(
+            f'окончен <b>0:6</b> · <a href="{self.PROTO.format(905113)}">протокол</a>'))
+        # снимок старше 20 минут — хода матча не выдумываем
+        late = bot.today_text(self.league("at_1755"), None, None, [], msk("2026-10-03T18:30"))
+        self.assertNotIn("идёт", late)
+
+    def test_final_by_site_without_protocol(self):
+        out = bot.pending_results(self.league("evening"), [], set(), date(2026, 10, 3))
+        g = next(x for x in out if x["id"] == "n1")
+        self.assertEqual((g["live"], g["src"], g["protocol"]), (True, "rhl.fhr.ru", self.PROTO.format(905111)))
+        text = bot.result_text(g, {}, team="ryazan-vdv", live=g["live"], src=g["src"], protocol=g["protocol"])
+        self.assertIn("Победа!", text)
+        self.assertIn("Рязань-ВДВ <b>4:3</b> Белгород\n<i>по данным сайта лиги</i>", text)
+        self.assertIn(f'Протокол — <a href="{self.PROTO.format(905111)}">на сайте лиги</a>', text)
+        self.assertNotIn("онлайна", text)
+        self.assertTrue(tags_balanced(text))
+        with mock.patch.object(bot, "WEBAPP_URL", "https://x.github.io/app/"):
+            self.assertIn("Матч в приложении", bot.recap_kb("n1", recap=False).inline_keyboard[0][0].text)
+
+    def test_final_with_site_protocol(self):
+        out = bot.pending_results(self.league("evening_protocol"), [], set(), date(2026, 10, 3))
+        g = next(x for x in out if x["id"] == "rh9319023")
+        self.assertFalse(g["live"])
+        text = bot.result_text(g, {}, team="kristall", live=g["live"], src=g["src"], protocol=g["protocol"])
+        self.assertIn("Поражение по буллитам", text)
+        self.assertIn("Протон <b>2:1</b> (Б) Кристалл", text)
+        self.assertIn("Голы, ход матча и составы — по кнопке", text)
+        self.assertNotIn("по данным", text)
+
+
 class Reminder(unittest.TestCase):
     """Напоминание о матче (ADR-019, раздел 8; ADR-020, раздел 2): время, где, где смотреть, кнопки."""
 

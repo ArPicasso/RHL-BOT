@@ -355,10 +355,11 @@ function standingOf(id) {
   return null;
 }
 
-function outcomeFor(g, me) {
-  if (!g.score || (g.home !== me && g.away !== me)) return "";
-  const mine = g.home === me ? g.score.home : g.score.away;
-  const their = g.home === me ? g.score.away : g.score.home;
+// sc — счёт, если его нет в g.score: итог по живому, протокола и сборки ещё нет
+function outcomeFor(g, me, sc = g.score) {
+  if (!sc || (g.home !== me && g.away !== me) || sc.home === sc.away) return "";
+  const mine = g.home === me ? sc.home : sc.away;
+  const their = g.home === me ? sc.away : sc.home;
   return mine > their ? "w" : "l";
 }
 
@@ -371,10 +372,10 @@ function emblem(id, size) {
   return `<span class="${cls} ab" aria-hidden="true">${esc(t.abbr)}</span>`;
 }
 
-function resultPill(g) {
-  const res = outcomeFor(g, state.fav);
-  if (!res) return g.score && g.score.decision ? `<span class="res l">${esc(g.score.decision)}</span>` : "";
-  const dec = g.score.decision ? `<small>${esc(g.score.decision)}</small>` : "";
+function resultPill(g, sc = g.score) {
+  const res = outcomeFor(g, state.fav, sc);
+  if (!res) return sc && sc.decision ? `<span class="res l">${esc(sc.decision)}</span>` : "";
+  const dec = sc.decision ? `<small>${esc(sc.decision)}</small>` : "";
   return `<span class="res ${res}" title="${res === "w" ? "Победа" : "Поражение"}">${res === "w" ? "В" : "П"}${dec}</span>`;
 }
 
@@ -501,6 +502,9 @@ const PER_LONG = { "1": "1-й период", "2": "2-й период", "3": "3-�
 const PER_SHORT = { "1": "1-й", "2": "2-й", "3": "3-й", "ОТ": "ОТ", "РБ": "буллиты" };
 const PER_AFTER = { "1": "после 1-го", "2": "после 2-го", "3": "перед овертаймом", "ОТ": "перед буллитами" };
 const SRC_NAME = { "online.khl.ru": "онлайн лиги", "rhl.fhr.ru": "сайт лиги" };
+const SRC_GEN = { "online.khl.ru": "онлайна лиги", "rhl.fhr.ru": "сайта лиги" };   // «по данным сайта лиги»
+const DEC_WORDS = { "ОТ": "в овертайме", "Б": "по буллитам" };
+const SITE_MC = /^https:\/\/rhl\.fhr\.ru\/matchcenter\/\d+\/\d+\/$/;   // матч-центр матча на сайте лиги
 const LV_ICON = {
   online: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="3"/><path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4"/></svg>',
   watch: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 5.8v12.4L18.5 12z"/></svg>',
@@ -644,8 +648,14 @@ function localOf(g, start) {
   }
 }
 
+// Счёт сыгранного матча есть только с сайта лиги (score_src, ADR-019, вечер 03.10): периодов, голов
+// с передачами и разбора у нас ещё нет. Матч окончен — так и пишем, протокол открывается на сайте лиги
+const siteOnly = (g) => !!g.score && g.score_src === "rhl.fhr.ru" && !(Array.isArray(g.score.periods) && g.score.periods.length) && !recaps[g.id];
+const isDone = (st) => st.status === "final" || st.status === "ended";
+const srcGen = (lv) => SRC_GEN[(lv && lv.src) || ""] || "онлайна лиги";
+
 // Что с матчем сейчас (ADR-012, раздел 1). sched и soon — по своим часам; live, break, ended, final,
-// moved, off — из живого; begun и late — живого нет, а время уже прошло: честно «начался» и «ждём протокол»
+// moved, off — из живого; begun и late — живого нет, а время уже прошло: честно «начался» и «ждём счёт»
 function matchState(g) {
   // живое с сервера, а нет его — снимок сайта лиги из часовой сборки (g.live, с давностью)
   const lv = g.season ? null : (liveOf(g) || g.live || null);
@@ -654,7 +664,7 @@ function matchState(g) {
   let start = Date.parse(src.start || "");
   if (isNaN(start)) start = time ? Date.parse(`${g.date}T${time}:00+03:00`) : null;
   const st = { lv, start, time, status: "sched", period: null, clock: null, score: null, stale: false, seen: null, proto: false };
-  if (g.score) return Object.assign(st, { status: "final", score: g.score, proto: true });
+  if (g.score) return Object.assign(st, { status: "final", score: g.score, proto: !siteOnly(g) });
   const now = Date.now();
   if (lv && LIVE_STATES.has(lv.status)) {
     const seen = Date.parse(lv.seen || (state.live && state.live.updated) || "");
@@ -716,12 +726,22 @@ function statusParts(g, st) {
     };
     case "break": return st.stale ? { chip: ["live", "Идёт"], text: stale, short: "" }
       : { chip: ["brk", "Перерыв"], text: PER_AFTER[st.period] || "", short: PER_AFTER[st.period] || "" };
-    case "ended": return { chip: ["end", "Окончен"], text: "ждём протокол", short: "ждём протокол" };
-    case "final": return { chip: null, text: st.proto ? "" : "Окончен", short: "" };
+    // Счёт есть — матч окончен, без «ждём протокол»: протокол открывается на сайте лиги, а откуда
+    // счёт — мелко рядом. С протоколом чипа нет вовсе: счёт говорит сам (DESIGN.md → «Матч-центр дня»)
+    // «овертайм» / «буллиты» уже под счётом на табло — в строке статуса только источник, в строке списка — решение
+    case "ended": {
+      const dec = st.score && DEC_WORDS[st.score.decision];
+      return { chip: ["end", "Окончен"], text: `по данным ${srcGen(st.lv)}`, short: dec || "" };
+    }
+    case "final": {
+      if (st.proto) return { chip: null, text: "", short: "" };
+      return { chip: ["end", "Окончен"], text: "по данным сайта лиги", short: DEC_WORDS[st.score.decision] || "" };
+    }
     case "moved": return { chip: ["off", "Перенесён"], text: "новую дату объявит лига", short: "" };
     case "off": return { chip: ["off", "Отменён"], text: "", short: "" };
-    case "begun": return { chip: null, text: `Начался в ${st.time} МСК${liveOn() ? "" : " · счёт — после протокола"}`, short: "начался" };
-    case "late": return { chip: null, text: "Ждём протокол лиги", short: "ждём протокол" };
+    case "begun": return { chip: null, text: `Начался в ${st.time} МСК`, short: "начался" };
+    // время прошло, а счёта нет ни в сборке, ни в живом: не выдумываем итог
+    case "late": return { chip: null, text: "Счёт ещё не пришёл — он на сайте лиги", short: "ждём счёт" };
     default: {
       const day = daysFromToday(g.date) === 0 ? "Сегодня" : fmtLong(g.date);
       return { chip: null, text: [day, timeWords(g, st) || "время уточняется", cd].filter(Boolean).join(" · "), short: "" };
@@ -736,9 +756,9 @@ function matchSpeech(g, st = matchState(g)) {
   const sc = shownScore(st);
   const parts = [`${team(g.home).name} — ${team(g.away).name}`];
   if (p.chip) parts.push(p.chip[1].toLowerCase());
-  else if (st.status === "final" && !p.text) parts.push("окончен");
+  else if (st.status === "final") parts.push("окончен");
   if (p.text) parts.push(p.text);
-  if (sc) parts.push(`счёт ${sc.home}:${sc.away}`);
+  if (sc) parts.push(`счёт ${sc.home}:${sc.away}${DEC_WORDS[sc.decision] ? ` ${DEC_WORDS[sc.decision]}` : ""}`);
   return parts.join(", ");
 }
 
@@ -759,48 +779,66 @@ function boardMid(g, st = matchState(g)) {
 }
 
 // Шапка табло своего матча: во время матча чип встаёт на место стикера «Сегодня» — один --ember на карточку
+// После финальной сирены — пилюля исхода «В» / «П», как у последнего результата: матч уже не «сейчас»
 function boardTopHTML(g, me) {
   const st = matchState(g);
   const p = statusParts(g, st);
-  const now = p.chip && p.chip[0] !== "soon" ? chipHTML(p.chip, true) : daysFromToday(g.date) === 0 ? '<span class="tag today">Сегодня</span>' : "";
+  const now = isDone(st) ? resultPill(g, st.score)
+    : p.chip && p.chip[0] !== "soon" ? chipHTML(p.chip, true) : daysFromToday(g.date) === 0 ? '<span class="tag today">Сегодня</span>' : "";
   return `<span class="tags">${whereTag(g, me)}${now}${g.official ? "" : '<span class="tag soft">предварительно</span>'}</span><span class="when">${esc(fmtLong(g.date))}</span>`;
 }
-// Строка подробностей под табло своего матча: «2-й период · 12:34 · онлайн лиги». До начала её нет —
-// время и отсчёт уже в середине табло
+// Строка подробностей под табло своего матча. Период уже под счётом — здесь откуда счёт и когда:
+// «12:34 · по данным онлайна лиги · 30 с назад». После игры без протокола — «Матч окончен · по данным
+// сайта лиги». До начала строки нет — время и отсчёт уже в середине табло
 function mlineHTML(g) {
   const st = matchState(g);
   if (st.status === "sched" || st.status === "soon" || (st.status === "final" && st.proto)) return "";
   const p = statusParts(g, st);
+  if (isDone(st)) return esc(`Матч окончен · ${p.text}`);
+  if ((st.status === "live" || st.status === "break") && !st.stale && st.lv && shownScore(st)) {
+    return esc([st.status === "live" ? st.clock : "", `по данным ${srcGen(st.lv)}`, agoLive(st.seen)].filter(Boolean).join(" · "));
+  }
   const src = st.lv && shownScore(st) ? ` · ${SRC_NAME[st.lv.src] || "онлайн лиги"}` : "";
   return p.text ? esc(p.text + src) : "";
 }
 
 // Ссылки матча: текстовая трансляция (онлайн лиги), «Смотреть» (пост клуба, ADR-019, раздел 7), протокол.
 // Только https из данных. Нет ссылки — нет кнопки
+// До и во время матча — текстовая трансляция и видео, после — протокол и видео (запись), трансляция
+// остаётся только в карточке матча. Трансляция — со дня матча: раньше на её странице ещё пусто.
+// Протокол — из живого, а нет его — вкладка «Протокол» матч-центра лиги (league_url)
 function linksOf(g, st) {
   const lv = st.lv || {};
+  const ok = (u) => typeof u === "string" && HTTPS.test(u);
+  const done = isDone(st) || st.status === "late";
   const out = [];
-  const online = [lv.online, g.online].find((u) => typeof u === "string" && HTTPS.test(u));
-  if (online) out.push({ kind: "online", url: online });
+  const online = daysFromToday(g.date) <= 0 ? [lv.online, g.online].find(ok) : null;
   // «Смотреть» собирает сборка из постов клубов (league.json); живое может принести ссылку раньше часовой сборки
   const watch = Array.isArray(g.watch) && g.watch.length ? g.watch : Array.isArray(lv.watch) ? lv.watch : [];
-  const w = watch.find((x) => x && typeof x.url === "string" && HTTPS.test(x.url));
+  const w = watch.find((x) => x && ok(x.url));
+  const doc = ok(lv.protocol) ? lv.protocol : done && ok(g.protocol) ? g.protocol
+    : done && typeof g.league_url === "string" && SITE_MC.test(g.league_url) ? `${g.league_url}protocol/` : null;
+  if (doc && done) out.push({ kind: "doc", url: doc });
+  if (online && !done) out.push({ kind: "online", url: online });
   if (w) out.push({ kind: "watch", url: w.url, title: typeof w.title === "string" ? w.title : "" });
-  if (typeof lv.protocol === "string" && HTTPS.test(lv.protocol)) out.push({ kind: "doc", url: lv.protocol });
+  if (online && done) out.push({ kind: "online", url: online, late: true });
   return out;
 }
 // mode: full — карточка матча, полные подписи; board — табло своего матча, коротко, чтобы ряд влез
-// в одну строку на 320px; short — строка матча дня, 32px. Полное название — всегда в aria-label
+// в одну строку на 320px; short — строка матча дня, 32px. Полное название — всегда в aria-label.
+// После игры трансляция в карточке — коротко «Трансляция», как вкладка сайта: «Протокол · Трансляция» в одну строку
 const GO_NAME = { online: "Текстовая трансляция", watch: "Смотреть", doc: "Протокол" };
-const GO_SHORT = { online: "Онлайн", watch: "Смотреть" };
+const GO_SHORT = { online: "Трансляция", watch: "Смотреть", doc: "Протокол" };
+const GO_SAY = { online: "Текстовая трансляция на сайте лиги", watch: "Смотреть видео", doc: "Протокол на сайте лиги" };
 function linksHTML(g, mode = "full", st = matchState(g)) {
   const short = mode !== "full";
-  const list = linksOf(g, st).filter((x) => !short || GO_SHORT[x.kind]);
+  const list = linksOf(g, st).filter((x) => !short || !x.late);
   if (!list.length) return "";
   const pair = `${team(g.home).name} — ${team(g.away).name}`;
   return `<div class="go-row${mode === "short" ? " short" : ""}">${list.map((x) => {
-    const label = `${GO_NAME[x.kind]}: ${x.kind === "watch" && x.title ? x.title : pair}`;
-    return `<button type="button" class="go" data-out="${esc(x.url)}" data-fk="o:${esc(g.id)}:${x.kind}" aria-label="${esc(label)}">${LV_ICON[x.kind]}<span>${(short ? GO_SHORT : GO_NAME)[x.kind]}</span></button>`;
+    const say = x.kind === "online" && /^https:\/\/online\.khl\.ru\//.test(x.url) ? "Текстовая трансляция онлайна лиги" : GO_SAY[x.kind];
+    const label = `${say}: ${x.kind === "watch" && x.title ? x.title : pair}`;
+    return `<button type="button" class="go" data-out="${esc(x.url)}" data-fk="o:${esc(g.id)}:${x.kind}" aria-label="${esc(label)}">${LV_ICON[x.kind]}<span>${(short || x.late ? GO_SHORT : GO_NAME)[x.kind]}</span></button>`;
   }).join("")}</div>`;
 }
 function openOut(url) {
@@ -821,7 +859,7 @@ function nextCard(g, me) {
     <div class="board-card tap mine-card" data-game="${esc(g.id)}">
       <div class="board-hit" role="button" tabindex="0" aria-label="${esc(`Открыть матч: ${matchSpeech(g, st)}`)}">
         ${lv("btop", "board-top", boardTopHTML(g, me))}
-        ${board(g, st)}
+        ${board(g, st)}${isDone(st) ? periodsLine(g) : ""}
         ${lv("mline", "mline", mlineHTML(g))}
       </div>
       ${lv("links", "links-box", linksHTML(g, "board", st))}
@@ -831,12 +869,18 @@ function nextCard(g, me) {
 
 // ---------- «Матчи дня в РХЛ» ----------
 
-// Матчи лиги в день: свой — первым, остальные по времени начала, без времени — в конце
+// Матчи лиги в день: свой — первым, дальше идущие, потом впереди, потом сыгранные. Внутри — по времени
+// начала, без времени — в конце. Что происходит сейчас, видно без прокрутки (DESIGN.md → «Матчи дня»)
+const MD_STAGE = { live: 0, break: 0, begun: 0, soon: 1, sched: 1, final: 2, ended: 2, late: 2, moved: 3, off: 3 };
 function mdGames(day) {
   const me = state.fav;
   return games().filter((g) => g.date === day)
-    .map((g) => ({ g, mine: g.home === me || g.away === me, t: matchState(g).start }))
-    .sort((a, b) => (b.mine - a.mine) || ((a.t == null ? Infinity : a.t) - (b.t == null ? Infinity : b.t)) || (a.g.id < b.g.id ? -1 : 1))
+    .map((g) => {
+      const st = matchState(g);
+      return { g, mine: g.home === me || g.away === me, stage: MD_STAGE[st.status] ?? 1, t: st.start };
+    })
+    .sort((a, b) => (b.mine - a.mine) || (a.stage - b.stage)
+      || ((a.t == null ? Infinity : a.t) - (b.t == null ? Infinity : b.t)) || (a.g.id < b.g.id ? -1 : 1))
     .map((x) => x.g);
 }
 function mdView() {
@@ -872,10 +916,13 @@ function mdRowInner(g) {
   const win = winnerOf(sc);
   const line = (id, side) => `<span class="md-tm">${emblem(id)}<span class="nm${id === state.fav ? " me" : ""}">${esc(team(id).name)}</span>${sc ? `<b class="gl num${win === side ? " lead" : ""}">${sc[side]}</b>` : ""}</span>`;
   const p = statusParts(g, st);
+  // сыгранный — чип «Окончен» у всех одинаково, с протоколом или без: болельщику важен итог, не источник
+  const chip = st.status === "final" ? ["end", "Окончен"] : p.chip;
+  const dec = isDone(st) && sc ? DEC_WORDS[sc.decision] || "" : "";
+  const cd = st.status === "sched" && st.start != null ? countdown(st.start) : "";
   let when;
-  if (p.chip) when = `${chipHTML(p.chip)}${p.short ? `<small>${esc(p.short)}</small>` : ""}`;
-  else if (st.status === "final") when = `<small>Окончен</small>${sc && sc.decision ? `<small>${sc.decision === "ОТ" ? "в овертайме" : "по буллитам"}</small>` : ""}`;
-  else if (st.time) when = `<b class="num">${esc(st.time)}</b>${p.short ? `<small>${esc(p.short)}</small>` : ""}`;
+  if (chip) when = `${chipHTML(chip)}${dec || p.short ? `<small>${esc(dec || p.short)}</small>` : ""}`;
+  else if (st.time) when = `<b class="num">${esc(st.time)}</b>${p.short || cd ? `<small>${esc(p.short || cd)}</small>` : ""}`;
   else when = "<small>время уточняется</small>";
   return `<button type="button" class="md-main" data-fk="g:${esc(g.id)}" aria-label="${esc(matchSpeech(g, st))}"><span class="md-when">${when}</span><span class="md-teams">${line(g.home, "home")}${line(g.away, "away")}</span></button>${linksHTML(g, "short", st)}`;
 }
@@ -898,20 +945,47 @@ function statusLineHTML(g) {
   if (!p.chip && !p.text) return "";
   return `${chipHTML(p.chip)}${p.text ? `<span>${esc(p.text)}</span>` : ""}`;
 }
+// Лента матча: события живого (служба live — онлайн или сайт лиги) и посты каналов клубов и лиги по ходу
+// матча (g.events из сборки, ADR-019, раздел 5). Новое сверху, по времени: когда служба заметила событие (at)
+// или когда вышел пост. Событие без at встаёт за предыдущим живым — порядок источника не ломаем
+function feedEvents(g, st) {
+  const ok = (e) => e && typeof e === "object";
+  const live = st.lv && Array.isArray(st.lv.events) ? st.lv.events.filter(ok).slice(-60) : [];
+  const posts = Array.isArray(g.events) ? g.events.filter((e) => ok(e) && typeof e.text === "string" && e.text).slice(-60) : [];
+  const items = [];
+  let last = -Infinity;
+  live.forEach((e, i) => {
+    const t = Date.parse(e.at || "");
+    if (!isNaN(t)) last = t;
+    items.push({ e, t: isNaN(t) ? last : t, i });
+  });
+  posts.forEach((e, i) => {
+    const t = Date.parse(e.at || "");
+    if (!isNaN(t)) items.push({ e, t, i: 1000 + i, post: true });
+  });
+  return items.sort((a, b) => a.t - b.t || a.i - b.i).reverse();
+}
 function eventsHTML(g) {
   const st = matchState(g);
   if (st.proto) return "";
-  const evs = st.lv && Array.isArray(st.lv.events) ? st.lv.events.filter((e) => e && typeof e === "object").slice(-60) : [];
+  const evs = feedEvents(g, st);
   const label = (aside) => `<div class="label" role="heading" aria-level="2">Лента матча${aside ? `<span class="aside">${aside}</span>` : ""}</div>`;
   if (!evs.length) {
-    return st.lv && (st.status === "live" || st.status === "break")
-      ? `${label("")}<div class="ev-empty">Онлайн лиги пока не передал событий. Счёт выше обновляется сам.</div>` : "";
+    // сайт лиги по ходу даёт только счёт и период; события — у онлайна лиги, его страница — «Текстовая трансляция»
+    const say = st.lv && st.lv.src === "rhl.fhr.ru"
+      ? `Сайт лиги по ходу матча даёт счёт и период. ${linksOf(g, st).some((x) => x.kind === "online") ? "Голы и удаления — в текстовой трансляции выше." : "Голы и удаления будут в протоколе."}`
+      : "Онлайн лиги пока не передал событий. Счёт выше обновляется сам.";
+    return st.lv && (st.status === "live" || st.status === "break") ? `${label("")}<div class="ev-empty">${say}</div>` : "";
   }
   const key = gameKey(g);
-  const list = evs.slice().reverse();
+  const list = evs;
   const shown = state.evAll === key ? list : list.slice(0, EV_SHOW);
   let html = "", per = null;
-  for (const e of shown) {
+  for (const { e, post } of shown) {
+    if (post) {
+      html += postEvRow(g, e);
+      continue;
+    }
     const p = e.period != null ? String(e.period) : "";
     if (p && p !== per) {
       per = p;
@@ -923,24 +997,44 @@ function eventsHTML(g) {
   return `${label("новое сверху")}<div class="goals ev-list">${html}</div>${more > 0
     ? `<button type="button" class="md-more" data-ev-all="${esc(key)}">Показать все ${list.length} ${plural(list.length, "событие", "события", "событий")}</button>` : ""}`;
 }
+// Время события: часы периода «12:34» (онлайн), минута сайта «29′» (29:00–29:59 от начала матча), а нет ни
+// того ни другого — когда служба его заметила, «17:42» серым: это время по часам, не по табло
+function evTime(e) {
+  if (typeof e.time === "string" && /^\d{1,3}:\d{2}$/.test(e.time)) return `<span class="tm num">${esc(e.time)}</span>`;
+  if (Number.isInteger(e.minute) && e.minute >= 0 && e.minute < 200) return `<span class="tm num" aria-label="${e.minute} мин">${e.minute}′</span>`;
+  const t = Date.parse(e.at || "");
+  return isNaN(t) ? '<span class="tm"></span>' : `<span class="tm num wall">${fmtHM(t)}</span>`;
+}
 function evRow(g, e) {
   const side = e.team === "home" || e.team === "away" ? e.team : null;
   const id = side ? sideTeam(g, side) : null;
-  const tm = typeof e.time === "string" && /^\d{1,3}:\d{2}$/.test(e.time) ? e.time : "";
   const text = typeof e.text === "string" ? e.text : "";
   if ((e.kind === "goal" || e.kind === "penalty") && id) {
     const what = e.kind === "goal" ? "гол" : "удаление";
     const sc = e.kind === "goal" && typeof e.score === "string" && /^\d{1,2}:\d{1,2}$/.test(e.score) ? e.score : "";
-    return `<div class="goal ev${e.kind === "penalty" ? " pen" : ""}"><span class="tm num">${esc(tm)}</span><span class="ev-em">${emblem(id)}</span>
-      <div class="who">${esc(text || team(id).name)}<div class="as">${what} · ${esc(team(id).name)}</div></div><span class="sc num">${esc(sc)}</span></div>`;
+    // автора сайт по ходу матча не даёт: тогда крупно «Гол», а команда — под ним, без повтора названия
+    const head = text || (e.kind === "goal" ? "Гол" : "Удаление");
+    const sub = text ? `${what} · ${team(id).name}` : team(id).name;
+    return `<div class="goal ev${e.kind === "penalty" ? " pen" : ""}">${evTime(e)}<span class="ev-em">${emblem(id)}</span>
+      <div class="who">${esc(head)}<div class="as">${esc(sub)}</div></div><span class="sc num">${esc(sc)}</span></div>`;
   }
   if (!text) return "";
-  return `<div class="ev-line">${tm ? `<b class="num">${esc(tm)}</b>` : ""}<span>${esc(text)}</span></div>`;
+  return `<div class="ev-line">${evTime(e)}<span>${esc(text)}</span></div>`;
+}
+// Пост канала по ходу матча: время выхода, превью и канал. Нажатие — сам пост в Telegram (openTelegramLink)
+function postEvRow(g, e) {
+  const url = typeof e.url === "string" && POST_URL.test(e.url) ? e.url : "";
+  const from = typeof e.from === "string" ? e.from : "канал";
+  const inner = `${evTime({ at: e.at })}<span class="ev-body"><span class="ev-txt">${esc(e.text)}</span><small>${esc(from)}${url ? " ›" : ""}</small></span>`;
+  return url
+    ? `<button type="button" class="ev-line ev-post" data-out="${esc(url)}" data-fk="e:${esc(url)}" aria-label="${esc(`${from}: ${e.text}. Открыть пост`)}">${inner}</button>`
+    : `<div class="ev-line ev-post">${inner}</div>`;
 }
 // «Счёт по ходу — онлайн лиги, 30 с назад» — внизу ленты. Пришёл протокол — источник в «О матче»
 function srcLineHTML(g) {
   const st = matchState(g);
-  if (st.proto || !st.lv || !shownScore(st)) return "";
+  // после игры откуда счёт — уже в строке статуса
+  if (st.proto || !st.lv || !shownScore(st) || isDone(st)) return "";
   return `Счёт по ходу — ${esc(SRC_NAME[st.lv.src] || "онлайн лиги")}, ${esc(agoLive(st.seen))}`;
 }
 
@@ -1303,9 +1397,19 @@ function refreshHome() {
 // «Матчи дня в РХЛ», последний результат, лист дня и отметка «Ты в курсе за сутки» в его конце.
 // Матчи дня вытеснили цифры сезона — они на паспорте в «Я». Новый блок не добавляется, а вытесняет
 // старый. Секция — свой <section>: её заголовок прилипает, пока она на экране, и уходит вместе с ней
+// Табло «Сегодня»: в день матча — сегодняшний матч до конца дня, и после сирены: счёт, «В» / «П»,
+// «Протокол» и «Смотреть» (ADR-019, раздел 1). Тогда следующий матч встаёт на место последнего результата
+function homeBoards(me) {
+  const today = gamesOf(me).find((g) => g.date === todayISO());
+  if (today && isDone(matchState(today))) {
+    return { main: today, after: gamesOf(me).find((g) => isUpcoming(g) && g.id !== today.id) || null };
+  }
+  return { main: today || nextGame(me), after: null };
+}
+
 function homeToday() {
   const me = state.fav;
-  const next = nextGame(me);
+  const { main: next, after } = homeBoards(me);
   const last = lastPlayed(me);
 
   let html = "";
@@ -1317,7 +1421,9 @@ function homeToday() {
   // все матчи лиги сегодня — под своим (ADR-019, раздел 1); список перерисовывает живое
   const md = mdView();
   html += `<section class="part md-part" id="md" data-sig="${esc(md.sig)}">${mdHTML(md)}</section>`;
-  if (last) {
+  if (after) {
+    html += nextCard(after, me);
+  } else if (last && (!next || last.id !== next.id)) {
     html += `<section class="part"><div class="label">Последний результат</div>
       <div class="board-card tap" data-game="${esc(last.id)}" role="button" tabindex="0">
         <div class="board-top"><span class="tags">${whereTag(last, me)}${resultPill(last)}</span><span class="when">${esc(fmtLong(last.date))}</span></div>
@@ -1536,13 +1642,22 @@ function feedEndSay(f) {
   const g = f.next && findGame(f.next);
   // сыграли вчера, а следующий матч уже завтра — важнее, что впереди
   const soon = g ? daysFromToday(g.date) : null;
-  const st = soon === 0 ? "match" : soon === 1 ? "eve" : f.state;
+  // лист собран утром, а матч уже сыгран: не зовём на трибуну после сирены
+  const gs = soon === 0 ? matchState(g) : null;
+  const played = gs && (isDone(gs) || gs.status === "late");
+  const going = gs && ["live", "break", "begun"].includes(gs.status);
+  const st = soon === 0 ? (played ? "today-done" : going ? "now" : "match") : soon === 1 ? "eve" : f.state;
   switch (st) {
     case "match": return `Сегодня играем${g && g.time ? ` в ${g.time} МСК` : ""} — до встречи на трибуне!`;
+    case "now": return "Матч уже идёт — счёт наверху.";
+    case "today-done": return gs.proto ? "Сегодня сыграли — разбор уже в карточке." : "Сегодня сыграли — счёт и протокол в карточке матча.";
     case "eve": return "Завтра играем — не пропусти!";
     case "start": return g ? `Сезон стартует ${fmtLong(g.date).replace(/ (?=\S+$)/, "\u00a0")}.` : "Скоро сезон.";
     case "over": return "Сезон окончен — спасибо, что болел!";
-    case "after": return "Матч позади — разбор уже в карточке.";
+    case "after": {
+      const last = state.fav && lastPlayed(state.fav);
+      return last && siteOnly(last) ? "Матч позади — счёт и протокол в карточке." : "Матч позади — разбор уже в карточке.";
+    }
     case "pause": return "На этой неделе не играем.";
     default: return "До следующего матча ещё есть время.";
   }
@@ -2096,7 +2211,9 @@ function calendarList() {
   let list = teamId ? gamesOf(teamId) : games();
   if (teamId && side !== "all") list = list.filter((g) => (side === "home" ? g.home === teamId : g.away === teamId));
   if (!teamId && conf !== "all") list = list.filter((g) => team(g.home).conf === conf || team(g.away).conf === conf);
-  return list;
+  // внутри дня — по времени начала, как «Матчи дня»; без времени — в конце дня
+  const at = (g) => hmOf(g) || "99:99";
+  return list.slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : at(a) < at(b) ? -1 : at(a) > at(b) ? 1 : 0));
 }
 
 // Полоса фильтров Календаря: обновляется на месте, бегунки перетекают к новому выбору
@@ -2166,7 +2283,9 @@ function renderCalendar() {
   let html = `<section class="band lavender split"><h1>Календарь</h1></section>
     <div class="filterbar">${filterbarInner()}</div>`;
   html += `<div id="cal-list">${calendarMonths(calendarList())}</div>`;
-  html += `<div class="foot">Официальный календарь ФХР пока есть только у «Рязань-ВДВ». Остальные даты — предварительные, уточним после открытия сайта РХЛ.</div>`;
+  // с 03.10 календарь и время — с сайта лиги; «предварительно» остаётся только у того, чего там нет
+  const rough = games().filter((g) => !g.official).length;
+  html += `<div class="foot">Календарь и время начала — с сайта лиги rhl.fhr.ru, время московское.${rough ? " Матчи, которых на сайте лиги ещё нет, — предварительно, по r-hockey." : ""}</div>`;
   return html;
 }
 
@@ -2580,7 +2699,8 @@ function pickMeeting(rows, me) {
 function tourRoute() {
   const me = state.fav;
   const next = nextGame(me) || null;
-  const last = lastPlayed(me) || null;
+  // разбор есть только у матча с протоколом: счёт с сайта лиги без него разбора не даст
+  const last = gamesOf(me).filter((g) => g.score && !siteOnly(g)).pop() || null;
   if (last) return { kind: "season", next, card: last, via: last, meet: null, id: last.id };
   const route = { kind: state.h2h ? "none" : "nodata", next, card: next, via: null, meet: null, id: null };
   if (!state.h2h || !next) return route;
@@ -4104,6 +4224,9 @@ function fillRecap(id) {
   loadRecap(id).then((d) => {
     const box = $("#recap");
     if (recapView.id !== id || !box || $("#sheet").hidden) return;
+    // счёт с сайта лиги уже на экране: нет разбора (или сети) — ничего не меняем, не мигаем
+    const g = findGame(id);
+    if (!d && g && siteOnly(g)) return;
     if (d === false) {
       box.innerHTML = failBlock("Разбор матча", "recap");
       return fadeIn(box);
@@ -4111,7 +4234,59 @@ function fillRecap(id) {
     if (d && d.gw != null) recapView.pick = d.gw;
     rerenderRecap();
     fadeIn(box);
+    paintLive();   // разбор пришёл — у статуса и ссылок теперь протокол
   });
+}
+
+// Авторы голов без протокола — с матч-центра сайта лиги: минута и фамилия, без передач (ADR-019).
+// Поле site_goals [{team, min, name, no}], а нет его — goals любой из двух форм: списком
+// с team или {home: [...], away: [...]}. Список не сходится со счётом — не показываем: не выдумываем
+function siteGoals(g) {
+  const raw = Array.isArray(g.site_goals) || (g.site_goals && typeof g.site_goals === "object") ? g.site_goals : g.goals;
+  const rows = [];
+  const push = (x, side) => {
+    if (!x || typeof x !== "object" || (side !== "home" && side !== "away")) return;
+    const name = typeof x.author === "string" ? x.author : typeof x.name === "string" ? x.name : "";
+    let sec = null, tm = "", min = null;
+    // минута сайта «29′» — это 29:00–29:59 от начала матча, как у службы live (live.minute_period)
+    if (typeof x.time === "string" && /^\d{1,3}:\d{2}$/.test(x.time)) { sec = secs(x.time); tm = x.time; min = Math.floor(sec / 60); }
+    else if (Number.isInteger(x.min) && x.min >= 0 && x.min < 200) { min = x.min; sec = x.min * 60 + 30; tm = `${x.min}′`; }
+    if (!name || min == null) return;
+    rows.push({ team: side, name, no: Number.isInteger(x.no) ? x.no : null, gk: !!x.gk, tm, sec, min,
+      period: typeof x.period === "string" && PERIOD_NAMES[x.period] ? x.period : null });
+  };
+  if (Array.isArray(raw)) raw.forEach((x) => push(x, x && (x.team || x.side)));
+  else if (raw && typeof raw === "object") ["home", "away"].forEach((s) => (Array.isArray(raw[s]) ? raw[s] : []).forEach((x) => push(x, s)));
+  const sc = g.score;
+  if (!sc || rows.filter((x) => x.team === "home").length !== sc.home || rows.filter((x) => x.team === "away").length !== sc.away) return [];
+  // после 60-й минуты: при «Б» — победный буллит, при «ОТ» — овертайм, решения не знаем — честно «после основного»
+  const extra = sc.decision === "Б" ? "РБ" : sc.decision === "ОТ" ? "ОТ" : "extra";
+  rows.forEach((x) => { if (!x.period) x.period = x.min < 20 ? "1" : x.min < 40 ? "2" : x.min < 60 ? "3" : extra; });
+  return rows.sort((a, b) => a.sec - b.sec);
+}
+// Сыгранный матч без протокола: авторы голов, если сайт лиги их дал, и протокол на сайте лиги
+function siteResultHTML(g) {
+  const st = matchState(g);
+  const doc = linksOf(g, st).find((x) => x.kind === "doc");
+  const go = doc ? `<button type="button" class="fc-link" data-out="${esc(doc.url)}" data-fk="o:${esc(g.id)}:doc2" aria-label="${esc(`Протокол на сайте лиги: ${team(g.home).name} — ${team(g.away).name}`)}">Протокол на сайте лиги ›</button>` : "";
+  const goals = siteGoals(g);
+  if (!goals.length) {
+    return `<div class="label">Голы</div><div class="site-note"><p>Авторы голов, передачи и статистика — в протоколе на сайте лиги. Разбор матча появится здесь, когда протокол придёт к нам.</p>${go}</div>`;
+  }
+  const names = { ...PERIOD_NAMES, extra: "После основного времени" };
+  let html = `<div class="label">Голы<span class="aside">по данным сайта лиги</span></div><div class="goals site-goals">`;
+  let period = null;
+  for (const x of goals) {
+    if (x.period !== period) {
+      period = x.period;
+      html += `<div class="period"><span class="tag">${esc(names[period] || period)}</span></div>`;
+    }
+    const tm = x.period === "РБ" ? "Б" : x.tm;
+    html += `<div class="goal"><div class="tm num" aria-label="${esc(x.period === "РБ" ? "победный буллит" : `${x.min} мин`)}">${esc(tm)}</div>
+      ${matchSticker(g, x.team, x.no, x.gk)}
+      <div class="who">${esc(x.name)}<div class="as">${esc(team(sideTeam(g, x.team)).name)}</div></div><div class="sc"></div></div>`;
+  }
+  return `${html}</div><div class="site-note small"><p>Передачи, удаления и статистика — в протоколе на сайте лиги. Здесь разбор появится, когда протокол придёт к нам.</p>${go}</div>`;
 }
 
 // Матч этого сезона — из league.json, прошлого — целиком из своего файла разбора
@@ -4330,6 +4505,7 @@ function rosterTab(g, d) {
 
 function recapHTML(g) {
   const d = recaps[g.id];
+  if (!d && siteOnly(g)) return siteResultHTML(g);
   let html = "";
   if (d && d.story) {
     html += `<div class="story"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5l2.6 6.2 6.7.5-5.1 4.4 1.6 6.5L12 16.6l-5.8 3.5 1.6-6.5L2.7 9.2l6.7-.5z"/></svg><p>${esc(d.story)}</p></div>`;
@@ -4354,6 +4530,7 @@ function factsHTML(g) {
   let html = `<div class="label">О матче</div><div class="facts-card"><dl class="facts">`;
   if (g.n) html += `<dt>Номер</dt><dd>№ ${esc(g.n)}</dd>`;
   html += `<dt>Город</dt><dd>${esc(team(g.home).city)}</dd>`;
+  if (typeof g.arena === "string" && g.arena) html += `<dt>Арена</dt><dd>${esc(g.arena)}</dd>`;
   // время в данных московское (ADR-019, раздел 2), у арены в другом поясе — ещё и местное
   const st = matchState(g);
   if (st.time) html += `<dt>Начало</dt><dd>${esc(timeWords(g, st))}</dd>`;
@@ -4364,9 +4541,9 @@ function factsHTML(g) {
     for (const s of ["home", "away"]) if (d.coaches[s]) html += `<dt>Тренер ${esc(team(sideTeam(g, s)).name)}</dt><dd>${esc(d.coaches[s])}</dd>`;
   }
   if (g.season) html += `<dt>Турнир</dt><dd>НМХЛ ${esc(g.season)}, ${esc(STAGE[g.stage] || g.stage)}</dd>`;
-  else html += `<dt>Календарь</dt><dd>${g.official ? "ФХР, официальный" : '<span class="tag soft">предварительно</span>'}</dd>`;
-  if (g.score) html += `<dt>Источник счёта</dt><dd>протокол лиги</dd>`;
-  else if (shownScore(st) && st.lv) html += `<dt>Источник счёта</dt><dd>${esc(SRC_NAME[st.lv.src] || "онлайн лиги")}, по ходу</dd>`;
+  else html += `<dt>Календарь</dt><dd>${g.league_url ? "сайт лиги" : g.official ? "ФХР, официальный" : '<span class="tag soft">предварительно</span>'}</dd>`;
+  if (g.score) html += `<dt>Источник счёта</dt><dd>${siteOnly(g) ? "сайт лиги" : "протокол лиги"}</dd>`;
+  else if (shownScore(st) && st.lv) html += `<dt>Источник счёта</dt><dd>${esc(SRC_NAME[st.lv.src] || "онлайн лиги")}${isDone(st) ? "" : ", по ходу"}</dd>`;
   return html + `</dl></div>`;
 }
 
@@ -4418,22 +4595,27 @@ function openMatch(id, from = null, dir = 0) {
     <button class="btn-round" data-close aria-label="Закрыть">${ICON.close}</button></div>
     <div class="board-card">${board(g, st)}${periodsLine(g)}</div>`;
   // матч-центр (ADR-019): статус, ссылки, «Кто победит?» (ADR-020) — сверху, до разбора; лента событий по ходу
+  // лента матча по ходу игры — сразу под ссылками; после сирены сначала итог (голы), лента — под ним
+  const lvBox = (kind, cls, inner) => `<div class="${cls}" data-lv="${kind}" data-g="${esc(g.id)}">${inner}</div>`;
+  const feed = g.season ? "" : lvBox("events", "mc-events", eventsHTML(g)) + lvBox("src", "ev-src", srcLineHTML(g));
   if (!g.season) {
-    const lv = (kind, cls, inner) => `<div class="${cls}" data-lv="${kind}" data-g="${esc(g.id)}">${inner}</div>`;
-    html += lv("mstat", "mc-status", statusLineHTML(g)) + lv("links", "links-box", linksHTML(g, "full", st));
-    if (predOn()) html += lv("vote", "vote-box", voteHTML(g));
-    html += lv("events", "mc-events", eventsHTML(g)) + lv("src", "ev-src", srcLineHTML(g));
+    html += lvBox("mstat", "mc-status", statusLineHTML(g)) + lvBox("links", "links-box", linksHTML(g, "full", st));
+    if (predOn()) html += lvBox("vote", "vote-box", voteHTML(g));
+    if (!g.score) html += feed;
   }
 
-  const recapReady = !!recaps[id] || recapMissing.has(id);
-  if (g.score) html += `<div id="recap">${recapReady ? recapHTML(g) : recapSkeleton(g)}</div>`;
+  // счёт только с сайта лиги — голы и протокол сразу, без скелетона
+  const recapKnown = !!recaps[id] || recapMissing.has(id);
+  const recapReady = recapKnown || siteOnly(g);
+  if (g.score) html += `<div id="recap">${recapReady ? recapHTML(g) : recapSkeleton(g)}</div>${feed}`;
   if (!g.season) html += `<div id="h2h" data-pair="${esc(pairKey(g.home, g.away))}">${state.h2h ? h2hBlock(g) : h2hSkeleton()}</div>`;
   html += `<div id="facts">${factsHTML(g)}</div>`;
 
   showSheet(html, dir);
   primeLive($("#sheet"));
   predTick();
-  if (g.score && !recapReady) fillRecap(id);
+  // счёт с ленты сайта — разбора нет по построению (сборка пишет его только из протокола): не спрашиваем
+  if (g.score && !recapKnown && !siteOnly(g)) fillRecap(id);
   if (!state.h2h && !g.season) fillH2H(g);
 }
 

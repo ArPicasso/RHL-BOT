@@ -32,11 +32,13 @@
   и раз в час, а с сервера ещё каждые 15 минут: служба `pages` (`pages_kick.py`) зовёт
   `workflow_dispatch`, потому что cron GitHub теряет запуски (ADR-015, дополнение 03.10). Нужен токен
   `PAGES_TOKEN` в `/etc/rhl/bot.env`. Шаги задания:
-  1. `league.py` — протоколы и лидеры. Включится, когда откроется сайт РХЛ (переменная `LEAGUE_SITE`).
-  2. `tg_channels.py` — посты каналов клубов.
-  3. `build_data.py` — `league.json`, `h2h.json`, `matches/`, `feed/`. Календарь пока берётся с r-hockey.ru.
-  4. `build_raskat.py` — расклады «Раската» в `data/raskat/`.
-  5. Метка версии для кэша и публикация.
+  1. `league.py` — протоколы и лидеры со старого движка `nmhl.fhr.ru`, только если задана `LEAGUE_SITE`.
+  2. `rhl_site.py` — матчи, протоколы сыгранных и лидеры сезона с `rhl.fhr.ru` (кэш `rhl_site.json`,
+     лидеры — в `leaders.json`).
+  3. `tg_channels.py` — посты каналов клубов.
+  4. `build_data.py` — `league.json`, `h2h.json`, `matches/`, `feed/`. Календарь пока берётся с r-hockey.ru.
+  5. `build_raskat.py` — расклады «Раската» в `data/raskat/`.
+  6. Метка версии для кэша и публикация.
 - Если r-hockey не ответил, падает всё задание. Pages тогда остаётся на прошлой сборке до
   следующего часа. 03.10 такое было один раз за 25 запусков.
 
@@ -115,7 +117,7 @@
 | `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_SSH_KEY` | Secrets | Выкладка на сервер. Печатает `setup.sh` |
 | `RASKAT_SALT` | Secrets | Соль раскладов. Без неё берётся соль из `raskat/rules.py`. На сервере — то же значение в `/etc/rhl/bot.env` |
 | `BOT_TOKEN` | Secrets | Только для стенда «Запустить бота». На сервере токен — в `/etc/rhl/bot.env` |
-| `LEAGUE_SITE` | Variables | Сайт лиги для протоколов. Пусто до открытия `rhl.fhr.ru` |
+| `LEAGUE_SITE` | Variables | Сайт лиги на старом движке (`nmhl.fhr.ru`) для `league.py`. Для `rhl.fhr.ru` не нужна: его читает `rhl_site.py` |
 | `RASKAT_API` | Variables | `https://<хост>/api/raskat` — зачёт «Раската». Пусто — задание «Мини-апп» берёт `https://<ip-через-дефисы>.sslip.io/api/raskat` по `DEPLOY_HOST`, если API отвечает и зачёт включён |
 | `LIVE_API` | Variables | `https://<хост>/api` — матч-центр и прогнозы. Пусто — тот же адрес sslip.io по `DEPLOY_HOST`, если API отвечает; не отвечает — без живого и без «Кто победит?». Нужна, только если у API свой домен |
 | `BOT_LINK`, `APP_LINK`, `WEBAPP_URL` | Variables | Ссылки, если отличаются от зашитых в код |

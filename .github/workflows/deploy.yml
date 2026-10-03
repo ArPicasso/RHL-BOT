@@ -42,5 +42,11 @@ jobs:
         run: |
           install -d -m 700 ~/.ssh
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          printf '%s\n' "$KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          # Ключ из секрета часто портится при вставке: \r из Windows, пробелы по краям строк
+          printf '%s\n' "$KEY" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          if ! ssh-keygen -y -f ~/.ssh/deploy >/dev/null; then
+            echo "::error::DEPLOY_SSH_KEY не читается: нужен весь блок от -----BEGIN OPENSSH PRIVATE KEY----- до -----END OPENSSH PRIVATE KEY----- включительно, без лишнего. Его печатает deploy/setup.sh."
+            exit 1
+          fi
           ssh -i ~/.ssh/deploy -o StrictHostKeyChecking=yes -o ConnectTimeout=20 "root@$HOST"

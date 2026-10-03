@@ -214,10 +214,13 @@ def site_rows(store: dict, teams: "Teams") -> list[dict]:
     return rows
 
 
-def apply_site(games: list[dict], store: dict, teams: "Teams") -> int:
+def apply_site(games: list[dict], store: dict, teams: "Teams", protocols: dict[str, dict] | None = None,
+               hidden: set[int] = frozenset()) -> int:
     """Сайт лиги (ADR-019, раздел 2): номер матча, начало по Москве, ссылки матч-центра и счёт
-    сыгранного матча, если протокола ещё нет. Матч сайта, которого нет в календаре r-hockey, добавляется:
-    лига — источник истины по календарю (CLAUDE.md). Возвращает число матчей с сайта."""
+    сыгранного матча. Протокол с сайта (`report`, rhl_protocol.py) главнее счёта ленты: счёт с периодами
+    и решением, голы и разбор — как у протокола results.json (ADR-008); protocols, если передан, собирает
+    его по id матча. Нет протокола — счёт из ленты. Матч сайта, которого нет в календаре r-hockey,
+    добавляется: лига — источник истины по календарю (CLAUDE.md). Возвращает число матчей с сайта."""
     by_key = {(g["date"], g["home"], g["away"]): g for g in games}
     by_pair: dict[tuple[str, str], list[dict]] = {}
     for g in games:
@@ -247,6 +250,12 @@ def apply_site(games: list[dict], store: dict, teams: "Teams") -> int:
         g.setdefault("online", base + "live/")
         if r.get("arena"):
             g["arena"] = r["arena"]
+        report = r.get("report")
+        if isinstance(report, dict) and "home_score" in report:
+            fill_result(g, report, hidden, teams.tz, timed=False)   # начало уже по календарю сайта или schedule
+            g.pop("score_src", None)
+            if protocols is not None:
+                protocols[g["id"]] = report
         score = r.get("score")
         if r.get("status") == "final" and isinstance(score, list) and len(score) == 2 and not g.get("score"):
             g["score"] = {"home": int(score[0]), "away": int(score[1]), "decision": r.get("decision"),
@@ -293,12 +302,15 @@ def sticker(player: dict | None, team: str, goalies: set[tuple[str, int]], hidde
     return out
 
 
-def fill_result(g: dict, p: dict, hidden: set[int] = frozenset(), zones: dict[str, str] | None = None) -> None:
-    """Счёт, голы и сведения из протокола — в матч, как их ждёт мини-апп. Время в протоколе — местное
-    время арены (ADR-001): по поясу хозяев из zones оно становится московским."""
+def fill_result(g: dict, p: dict, hidden: set[int] = frozenset(), zones: dict[str, str] | None = None,
+                *, timed: bool = True) -> None:
+    """Счёт, голы и сведения из протокола — в матч, как их ждёт мини-апп. Время в протоколе nmhl.fhr.ru —
+    местное время арены (ADR-001): по поясу хозяев из zones оно становится московским. У протокола
+    rhl.fhr.ru пояс записан в `zone` (Москва) — время не сдвигается второй раз. timed=False — начало не
+    трогаем: его уже поставил источник главнее протокола (schedule.json, календарь сайта лиги)."""
     g["n"] = g.get("n") or p.get("n")
     zone = (zones or {}).get(g.get("home"), MOSCOW)
-    start = local_start(p.get("date") or g.get("date"), p.get("time"), zone)
+    start = local_start(p.get("date") or g.get("date"), p.get("time"), p.get("zone") or zone) if timed else None
     if start:
         set_start(g, start, zone)
     else:
@@ -805,7 +817,7 @@ def build(teams: Teams, raw: list[rhockey.RawGame], results: league.Results,
     protocols: dict[str, dict] = {}
     unmatched = attach_results(games, teams, results, protocols, hidden)
     apply_schedule(games, list(schedule), teams.tz)        # главнее протокола: онлайн лиги, время по Москве
-    apply_site(games, site or {}, teams)                   # сайт лиги: номер, время, счёт до протокола
+    apply_site(games, site or {}, teams, protocols, hidden)   # сайт лиги: номер, время, протокол или счёт ленты
     for g in games:
         g.pop("src_time", None)
     apply_matchday(games, teams, list(channels), posts or {})

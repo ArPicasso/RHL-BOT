@@ -52,7 +52,7 @@ Design decisions are written down as ADRs in [`docs/adr/`](docs/adr) (17 so far)
 
 ## My role
 
-I own the product: what the app should do for fans, which data sources to trust, and the architecture decisions recorded in the ADRs. Most of the code was written with Claude Code as a coding agent, and every change went through a pull request that I reviewed and merged.
+I own the product: what the app should do for fans, which data sources to trust, and the architecture decisions recorded in the ADRs. Most of the code was written with Claude Code as a coding agent, and changes land through pull requests that I merge.
 
 ## Stack
 
@@ -67,7 +67,8 @@ python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 
 venv/bin/python -m unittest discover -s tests    # tests
-venv/bin/python build_data.py                    # build webapp/data/ from the league site
+venv/bin/python league.py                        # download match protocols from the league site
+venv/bin/python build_data.py                    # build webapp/data/ from them
 cd webapp && python3 -m http.server 8000         # Mini App at localhost:8000
 ```
 

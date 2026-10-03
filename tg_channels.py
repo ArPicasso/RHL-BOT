@@ -4,6 +4,8 @@
 Из поста берём только превью: до 180 знаков, одну картинку и ссылку на сам пост. Всё, что не
 подходит ленте (реклама, букмекеры, дни рождения, трансляция матча по минутам, посты не о
 молодёжке в канале взрослого клуба), отбрасывается здесь, полный текст дальше не уходит.
+Для матч-центра (ADR-019, `matchday.py`) к превью добавлены внешние ссылки поста (`links`) и
+строки со временем (`times`); короткие посты со ссылкой, которые лента не берёт, — в `extra` канала.
 
     python tg_channels.py            # все каналы из channels.json → channel_posts.json
     python tg_channels.py samara     # только каналы одного клуба, для проверки
@@ -16,6 +18,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -70,6 +73,21 @@ THUMB_RE = re.compile(r"tgme_widget_message_video_thumb\"[^>]*background-image:u
 VIDEO_RE = re.compile(r"tgme_widget_message_video_player|tgme_widget_message_roundvideo_player")
 TITLE_RE = re.compile(r'<div class="tgme_channel_info_header_title"><span dir="auto">(.*?)</span>', re.S)
 SPOILER_RE = re.compile(r"<tg-spoiler>.*?</tg-spoiler>|<span class=\"tg-spoiler\">.*?</span>", re.S)
+HREF_RE = re.compile(r'href="([^"]+)"')
+TEXT_URL_RE = re.compile(r"https?://[^\s<>\"«»]+|\b(?:[\w-]+\.)+(?:ru|com|be|рф|tv)/[^\s<>\"«»]+", re.I)
+LINKS_MAX = 8
+TIME_LINE_RE = re.compile(r"\d[:.]\d\d")   # строка со временем «17:00» или «17.00» — для matchday.py
+TIMES_MAX, TIME_LINE_MAX = 4, 140
+# Ссылки, с которыми пост не берём ни в ленту, ни в «Смотреть» (ADR-019, раздел 7): букмекеры и сайты
+# прогнозов — по корню в имени хоста, пиратские агрегаторы трансляций — списком
+BET_HOST_RE = re.compile(r"bet|ligastavok|(^|[.-])stavk|casino|kazino|prognoz|bookmaker|winline|parimatch|pin-?up"
+                         r"|vulkan|(^|\.)(pari|leon|tennisi)\.ru$", re.I)
+PIRATE_HOST_RE = re.compile(r"livetv|livesport\.ws|sport365|crackstreams|streameast|buffstreams|methstreams|hesgoal"
+                            r"|vipleague|vipbox|sportsurge|totalsportek|rojadirecta|batmanstream|strims|footybite"
+                            r"|myfootball|sportlemon|allsport-?live|smotrisport|hockey-?live|livehockey|sportsonline"
+                            r"|streamonsport|freestreams|720pstream|nhl66|sportplus\.live", re.I)
+# Посты, которые лента не берёт только за вид (короткие, без текста): со ссылкой они нужны «Смотреть»
+QUIET = ("коротко", "без текста")
 
 
 def plain(fragment: str) -> str:
@@ -79,6 +97,61 @@ def plain(fragment: str) -> str:
     s = re.sub(r"<[^>]+>", "", s)
     s = html.unescape(s).replace("\xa0", " ")
     return "\n".join(line.strip() for line in s.split("\n")).strip()
+
+
+def host(url: str) -> str:
+    """Имя хоста без www., в нижнем регистре; адрес не разобрался — пусто."""
+    try:
+        h = urlsplit(url).hostname or ""
+    except ValueError:
+        return ""
+    return h.lower().removeprefix("www.")
+
+
+def unwrap(url: str) -> str:
+    """Переход ВК `vk.com/away.php?to=…` — сразу на адрес назначения: проверять надо его."""
+    parts = urlsplit(url)
+    if host(url) in ("vk.com", "vk.ru", "m.vk.com", "m.vk.ru") and parts.path == "/away.php":
+        to = parse_qs(parts.query).get("to")
+        if to:
+            return to[0]
+    return url
+
+
+def link_reason(url: str) -> str | None:
+    """Почему ссылку нельзя показывать: букмекер или пиратская трансляция. Можно — None."""
+    h = host(unwrap(url))
+    if BET_HOST_RE.search(h):
+        return "букмекер"
+    if PIRATE_HOST_RE.search(h):
+        return "пиратская трансляция"
+    return None
+
+
+def post_links(block: str, text: str) -> list[str]:
+    """Внешние ссылки поста по порядку: из текста, превью ссылки и кнопок. Переход ВК раскрываем, ссылки
+    на сам Telegram отбрасываем, кроме прямого эфира канала (`t.me/<канал>?livestream`)."""
+    hrefs = [html.unescape(u) for u in HREF_RE.findall(block)]
+    bare = [u if re.match(r"https?://", u, re.I) else "https://" + u for u in TEXT_URL_RE.findall(text)]
+    out = []
+    for u in hrefs + bare:
+        u = unwrap(u.rstrip(".,;:!?)»…"))
+        if not re.match(r"https?://", u, re.I):
+            continue   # «?q=#хэштег», «/s/канал?before=…», tg://
+        h = host(u)
+        if not h or h.endswith(("telegram.org", "telesco.pe")):
+            continue
+        if h in ("t.me", "telegram.me") and "livestream" not in urlsplit(u).query:
+            continue   # сам пост, канал, репост
+        if u not in out:
+            out.append(u)
+    return out[:LINKS_MAX]
+
+
+def time_lines(text: str) -> list[str]:
+    """Строки поста со временем («Начало в 17:00 по местному»): по ним matchday.py ищет время начала."""
+    lines = [re.sub(r"\s+", " ", URL_RE.sub("", x)).strip() for x in text.split("\n") if TIME_LINE_RE.search(x)]
+    return [cut(x, TIME_LINE_MAX) for x in lines if x][:TIMES_MAX]
 
 
 def parse_page(page: str, handle: str) -> dict:
@@ -95,11 +168,13 @@ def parse_page(page: str, handle: str) -> dict:
         thumbs = THUMB_RE.findall(block)
         videos = len(VIDEO_RE.findall(block))
         image = next((u for u in photos + thumbs if IMG_RE.match(u)), None)
+        body = plain(text.group(1)) if text else ""
         posts.append({
             "id": int(pm.group(2)),
             "url": f"https://t.me/{pm.group(1)}/{pm.group(2)}",
             "at": datetime.fromisoformat(tm.group(1)).astimezone(TZ).isoformat(timespec="minutes"),
-            "text": plain(text.group(1)) if text else "",
+            "text": body,
+            "links": post_links(block, body),
             "image": image,
             "media": len(photos) + videos,
             "video": videos > 0,
@@ -187,6 +262,9 @@ def skip_reason(post: dict, channel: dict, hidden_names: list[str] = ()) -> str 
         return "реклама"
     if BET_RE.search(text):
         return "букмекер"
+    bad = next((r for r in map(link_reason, post.get("links", ())) if r), None)
+    if bad:
+        return bad   # ссылка на букмекера или пиратскую трансляцию — даже под безобидным текстом
     if BIRTHDAY_RE.search(text):
         return "день рождения"
     if AGE_RE.search(text):
@@ -209,7 +287,8 @@ def skip_reason(post: dict, channel: dict, hidden_names: list[str] = ()) -> str 
 
 
 def entry(post: dict, channel: dict) -> dict:
-    """Пост в кэше сборки: только превью, картинка и ссылка на сам пост."""
+    """Пост в кэше сборки: превью, картинка и ссылка на сам пост. Для матч-центра (ADR-019) — внешние
+    ссылки и строки со временем; лента их не читает."""
     title, text = preview(post["text"])
     images = (channel.get("optout") or {}).get("level") != "images"
     out = {"id": post["id"], "url": post["url"], "at": post["at"], "title": title, "text": text,
@@ -218,6 +297,11 @@ def entry(post: dict, channel: dict) -> dict:
         out["image"] = post["image"]
     if is_live(post["text"]):
         out["live"] = True
+    if post.get("links"):
+        out["links"] = post["links"]
+    times = time_lines(post["text"])
+    if times:
+        out["times"] = times
     return out
 
 
@@ -240,6 +324,13 @@ def collect(parsed: dict, channel: dict, hidden_names: list[str] = ()) -> tuple[
         else:
             keep.append(entry(p, channel))
     return keep, dropped
+
+
+def extras(parsed: dict, channel: dict, hidden_names: list[str] = ()) -> list[dict]:
+    """Посты со ссылками, которые лента не берёт только за вид («Трансляция 👇» и ссылка): для «Смотреть»
+    в матч-центре (ADR-019). Остальные фильтры — те же, что у ленты."""
+    return [entry(p, channel) for p in parsed["posts"]
+            if p.get("links") and skip_reason(p, channel, hidden_names) in QUIET]
 
 
 async def fetch_all(channels: list[dict]) -> dict[str, str | None]:
@@ -271,6 +362,9 @@ def build(channels: list[dict], pages: dict[str, str | None], hidden_names: list
         posts, dropped = collect(parsed, c, hidden_names)
         out["channels"][c["handle"]] = {"ok": True, "title": parsed["title"], "posts": posts,
                                         "last": parsed["posts"][-1]["at"], "dropped": dropped}
+        extra = extras(parsed, c, hidden_names)
+        if extra:
+            out["channels"][c["handle"]]["extra"] = extra
     return out
 
 

@@ -1,16 +1,21 @@
-"""Собирает webapp/data/league.json для мини-аппа: команды, матчи, результаты, таблица (ADR-002)."""
+"""Собирает webapp/data/league.json для мини-аппа: команды, матчи, результаты, таблица (ADR-002).
+
+Время матча — всегда московское (ADR-019, раздел 2): `time` «HH:MM», `start` ISO с +03:00, `local` —
+местное время арены, если её пояс (`tz` хозяев в teams.json) не московский. Источники по старшинству:
+schedule.json сервера, протокол лиги (в нём местное время), пост клуба в день игры (matchday.py)."""
 import argparse
 import asyncio
 import json
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import feed
 import league
+import matchday
 import rhockey
 
 BASE = Path(__file__).parent
@@ -26,6 +31,8 @@ PAST_CLUBS_FILE = BASE / "past_clubs.json"   # клубы прошлых сез�
 OUT = BASE / "webapp" / "data" / "league.json"
 CHANNELS_FILE = BASE / "channels.json"       # каналы клубов для листа «Главной» (ADR-015)
 POSTS_FILE = BASE / "channel_posts.json"     # их посты: собирает tg_channels.py перед этим шагом
+SCHEDULE_FILE = BASE / "schedule.json"       # время матчей с сервера (ADR-019, раздел 5), кладёт шаг Pages
+MOSCOW = "Europe/Moscow"
 HIDDEN_NAME = "Игрок скрыт"
 H2H_LAST = 5
 
@@ -43,6 +50,7 @@ class Teams:
         self.by_rh = {t["rhockey"]: t["id"] for t in teams}
         self.by_name = {norm(n): t["id"] for t in teams for n in [t["name"], *t["aliases"]]}
         self.by_former = {norm(n): t["id"] for t in teams for n in t.get("former", [])}
+        self.tz = {t["id"]: t.get("tz") or MOSCOW for t in teams}   # пояс домашней арены (ADR-019)
 
     def find(self, name: str) -> str | None:
         return self.by_name.get(norm(name))
@@ -82,6 +90,111 @@ def merge_calendar(teams: Teams, raw: list[rhockey.RawGame], official: list[dict
                       "official": False})
     return sorted(games, key=lambda g: (g["date"], g["id"]))
 
+# ---------- время начала (ADR-019) ----------
+
+
+def set_start(g: dict, start: datetime, zone: str) -> None:
+    """Начало матча: time и start по Москве, local — местное время арены, если её пояс не московский."""
+    msk = start.astimezone(TZ)
+    local = msk.astimezone(ZoneInfo(zone))
+    g["time"] = msk.strftime("%H:%M")
+    g["start"] = msk.isoformat(timespec="seconds")
+    if local.utcoffset() != msk.utcoffset():
+        g["local"] = local.strftime("%H:%M")
+    else:
+        g.pop("local", None)
+
+
+def local_start(day: str | None, hm: str | None, zone: str) -> datetime | None:
+    """Дата и «18:06» в поясе zone → начало с поясом. Не разобралось — None."""
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", (hm or "").strip())
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+        return None
+    try:
+        d = date.fromisoformat(day or "")
+    except ValueError:
+        return None
+    return datetime.combine(d, time(int(m.group(1)), int(m.group(2))), ZoneInfo(zone))
+
+
+def load_schedule(path: Path = SCHEDULE_FILE) -> list[dict]:
+    """Матчи из live/schedule.json сервера. Нет файла или он битый — пусто: время из других источников."""
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))["games"]
+    except (FileNotFoundError, ValueError, KeyError, TypeError):
+        return []
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def schedule_key(s: dict) -> tuple[date, str, str] | None:
+    """Дата, хозяева и гости строки schedule.json: из полей, а нет их — из ключа «<дата>|<хозяева>|<гости>»."""
+    parts = str(s.get("key") or "").split("|")
+    if len(parts) != 3:
+        parts = ["", "", ""]
+    day, home, away = s.get("date") or parts[0], s.get("home") or parts[1], s.get("away") or parts[2]
+    try:
+        return date.fromisoformat(str(day)), str(home), str(away)
+    except ValueError:
+        return None
+
+
+def schedule_start(s: dict, day: date) -> datetime | None:
+    """Начало из строки schedule.json: start с поясом, а нет его — time по Москве в день матча."""
+    if isinstance(s.get("start"), str):
+        try:
+            dt = datetime.fromisoformat(s["start"])
+            return dt if dt.tzinfo else dt.replace(tzinfo=TZ)   # по контракту там +03:00; без пояса — Москва
+        except ValueError:
+            pass
+    return local_start(day.isoformat(), s.get("time"), MOSCOW)
+
+
+def apply_schedule(games: list[dict], schedule: list[dict], zones: dict[str, str]) -> int:
+    """Время и ссылка на онлайн из schedule.json — по ключу «<дата>|<хозяева>|<гости>». Дата не сошлась —
+    ±1 день, если у тех же хозяев и гостей в эти дни один матч и он ещё не занят. Возвращает число матчей."""
+    by_key = {(g["date"], g["home"], g["away"]): g for g in games}
+    by_pair: dict[tuple[str, str], list[dict]] = {}
+    for g in games:
+        by_pair.setdefault((g["home"], g["away"]), []).append(g)
+    matched: dict[str, tuple[dict, dict, date]] = {}
+    fuzzy = []
+    for s in schedule:
+        k = schedule_key(s)
+        if not k:
+            continue
+        g = by_key.get((k[0].isoformat(), k[1], k[2]))
+        if g:
+            matched[g["id"]] = (g, s, k[0])
+        else:
+            fuzzy.append((k, s))
+    for (day, home, away), s in fuzzy:
+        near = [g for g in by_pair.get((home, away), []) if abs((date.fromisoformat(g["date"]) - day).days) <= 1]
+        if len(near) == 1 and near[0]["id"] not in matched:
+            matched[near[0]["id"]] = (near[0], s, day)
+    for g, s, day in matched.values():
+        start = schedule_start(s, day)
+        if start:
+            set_start(g, start, zones.get(g["home"], MOSCOW))
+        online = s.get("online")
+        if isinstance(online, str) and re.fullmatch(r"https://[^\s\"'<>]{4,300}", online):
+            g["online"] = online
+    return len(matched)
+
+
+def apply_matchday(games: list[dict], teams: "Teams", channels: list[dict], posts: dict) -> int:
+    """«Смотреть» из постов клубов в день игры; время из поста — только если других источников нет
+    (ADR-019, раздел 2). Возвращает число матчей, где что-то нашлось."""
+    found = matchday.attach(games, teams.all, channels, posts)
+    for g in games:
+        got = found.get(g["id"])
+        if not got:
+            continue
+        if got.get("watch"):
+            g["watch"] = got["watch"]
+        if got.get("start") and not g.get("time"):
+            set_start(g, got["start"], teams.tz.get(g["home"], MOSCOW))
+    return len(found)
+
 # ---------- результаты ----------
 
 
@@ -115,10 +228,16 @@ def sticker(player: dict | None, team: str, goalies: set[tuple[str, int]], hidde
     return out
 
 
-def fill_result(g: dict, p: dict, hidden: set[int] = frozenset()) -> None:
-    """Счёт, голы и сведения из протокола — в матч, как их ждёт мини-апп."""
+def fill_result(g: dict, p: dict, hidden: set[int] = frozenset(), zones: dict[str, str] | None = None) -> None:
+    """Счёт, голы и сведения из протокола — в матч, как их ждёт мини-апп. Время в протоколе — местное
+    время арены (ADR-001): по поясу хозяев из zones оно становится московским."""
     g["n"] = g.get("n") or p.get("n")
-    g["time"] = p.get("time")
+    zone = (zones or {}).get(g.get("home"), MOSCOW)
+    start = local_start(p.get("date") or g.get("date"), p.get("time"), zone)
+    if start:
+        set_start(g, start, zone)
+    else:
+        g.setdefault("time", None)
     g["attendance"] = p.get("attendance")
     g["score"] = {"home": p["home_score"], "away": p["away_score"], "decision": p["decision"],
                   "periods": p["periods"]}
@@ -143,7 +262,7 @@ def attach_results(games: list[dict], teams: Teams, results: league.Results,
             if g is None:
                 unmatched.append(f"{p['date']} {p['home']} — {p['away']}")
                 continue
-            fill_result(g, p, hidden)
+            fill_result(g, p, hidden, teams.tz)
             if protocols is not None:
                 protocols[g["id"]] = p
     return unmatched
@@ -155,8 +274,9 @@ def past_id(h: dict) -> str:
 
 
 def past_recaps(history: list[dict], protocols: dict[str, dict], wanted: set[str], teams: dict[str, str],
-                hidden: set[int] = frozenset()) -> dict[str, dict]:
-    """Разборы прошлых матчей из «Последних встреч». Матча нет в league.json — он лежит в файле целиком."""
+                hidden: set[int] = frozenset(), zones: dict[str, str] | None = None) -> dict[str, dict]:
+    """Разборы прошлых матчей из «Последних встреч». Матча нет в league.json — он лежит в файле целиком.
+    zones — пояса арен по id команды: время из протокола переводится в московское."""
     out = {}
     for h in history:
         if not h.get("game_id") or past_id(h) not in wanted or str(h["game_id"]) not in protocols:
@@ -164,7 +284,7 @@ def past_recaps(history: list[dict], protocols: dict[str, dict], wanted: set[str
         g = {"id": past_id(h), "n": None, "date": h["date"], "home": h["home"], "away": h["away"],
              "season": h["season"], "stage": h["stage"]}
         p = protocols[str(h["game_id"])]
-        fill_result(g, p, hidden)
+        fill_result(g, p, hidden, zones)
         d = match_detail(g, p, teams, hidden)
         d["game"] = g
         out[g["id"]] = d
@@ -607,11 +727,17 @@ def links(env=os.environ) -> dict[str, str]:
 
 
 def build(teams: Teams, raw: list[rhockey.RawGame], results: league.Results,
-          hidden: set[int] = frozenset()) -> tuple[dict, list[str], dict[str, dict]]:
-    """league.json, непривязанные протоколы и разборы сыгранных матчей по id матча."""
+          hidden: set[int] = frozenset(), *, schedule: list[dict] = (), channels: list[dict] = (),
+          posts: dict | None = None) -> tuple[dict, list[str], dict[str, dict]]:
+    """league.json, непривязанные протоколы и разборы сыгранных матчей по id матча.
+
+    schedule — строки schedule.json сервера, channels и posts — каналы клубов и их посты: время начала,
+    онлайн и «Смотреть» (ADR-019). Всё необязательно: без них у матча только время из протокола."""
     games = merge_calendar(teams, raw, official_games(teams))
     protocols: dict[str, dict] = {}
     unmatched = attach_results(games, teams, results, protocols, hidden)
+    apply_schedule(games, list(schedule), teams.tz)        # главнее протокола: онлайн лиги, время по Москве
+    apply_matchday(games, teams, list(channels), posts or {})
     names = {t["id"]: t["name"] for t in teams.all}
     details = {g["id"]: match_detail(g, protocols[g["id"]], names, hidden) for g in games if g["id"] in protocols}
     data = {
@@ -623,8 +749,9 @@ def build(teams: Teams, raw: list[rhockey.RawGame], results: league.Results,
             "results": "протоколы лиги",
         },
         "links": links(),
-        # mascot — проводник онбординга: имя и фразы (ADR-011); colors — цвета формы
-        "teams": [{k: t[k] for k in ("id", "abbr", "name", "city", "conf", "logo", "colors", "mascot") if k in t} for t in teams.all],
+        # mascot — проводник онбординга: имя и фразы (ADR-011); colors — цвета формы; tz — пояс арены (ADR-019)
+        "teams": [{k: t[k] for k in ("id", "abbr", "name", "city", "tz", "conf", "logo", "colors", "mascot") if k in t}
+                  for t in teams.all],
         "games": games,
         "standings": standings(teams, games),
         # форма клубов для стикеров игроков: составы в разборе матча и лидеры (ADR-009)
@@ -679,7 +806,9 @@ def main() -> None:
     now = args.now or datetime.now(TZ)
     teams = load_teams()
     raw = asyncio.run(rhockey.fetch_season())
-    data, unmatched, details = build(teams, raw, league.load_results(args.results), load_hidden())
+    channels, posts = load_channels(), load_posts()
+    data, unmatched, details = build(teams, raw, league.load_results(args.results), load_hidden(),
+                                     schedule=load_schedule(), channels=channels, posts=posts)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     history, past_protocols = load_history(), load_history_protocols()
@@ -688,7 +817,7 @@ def main() -> None:
     # «В этот день» на «Главной»: прошлые матчи сегодняшнего числа с протоколом получают разбор
     wanted |= {past_id(h) for h in history if h.get("game_id") and h["date"][4:] == now.date().isoformat()[4:]}
     names = {t["id"]: t["name"] for t in teams.all}
-    details.update(past_recaps(history, past_protocols, wanted, names, load_hidden()))
+    details.update(past_recaps(history, past_protocols, wanted, names, load_hidden(), teams.tz))
     mark_stories(h2h, details)
     (args.out.parent / "h2h.json").write_text(json.dumps(h2h, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     matches = args.out.parent / "matches"
@@ -701,10 +830,12 @@ def main() -> None:
     top = leaders(teams, load_leaders(), load_hidden())
     if top:
         (args.out.parent / "leaders.json").write_text(json.dumps(top, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    posts = write_feeds(args.out.parent, teams, data, h2h, history, details, now, load_channels(), load_posts(), top)
-    print(f"Лист «Главной»: {len(teams.all)} клубов, постов каналов в листах: {posts}")
+    shown = write_feeds(args.out.parent, teams, data, h2h, history, details, now, channels, posts, top)
+    print(f"Лист «Главной»: {len(teams.all)} клубов, постов каналов в листах: {shown}")
     played = sum(1 for g in data["games"] if g.get("score"))
     print(f"Матчей: {len(data['games'])}, сыграно: {played} → {args.out}")
+    count = lambda k: sum(1 for g in data["games"] if g.get(k))   # noqa: E731
+    print(f"Время начала: {count('start')}, онлайн: {count('online')}, «Смотреть»: {count('watch')} (ADR-019)")
     for u in unmatched:
         print("Протокол не привязан к матчу:", u)
 

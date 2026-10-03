@@ -58,6 +58,21 @@ jobs:
         continue-on-error: true
         run: python tg_channels.py
 
+      # Время матчей и ссылки на онлайн с сервера матч-центра (ADR-019, раздел 5): Settings → Variables →
+      # LIVE_API=https://…/api. Сервер не ответил или ответил не JSON — сборка идёт без schedule.json,
+      # время берётся из протоколов и постов клубов
+      - name: Скачать время матчей
+        if: vars.LIVE_API != ''
+        continue-on-error: true
+        env:
+          LIVE_API: ${{ vars.LIVE_API }}
+        run: |
+          [[ "$LIVE_API" =~ ^https://[A-Za-z0-9./_:-]+$ ]] || { echo "LIVE_API — только https://адрес без пробелов и кавычек"; exit 1; }
+          curl -sS --fail --max-time 20 -o schedule.tmp "${LIVE_API%/}/live/schedule.json"
+          python -c "import json; d = json.load(open('schedule.tmp', encoding='utf-8')); assert isinstance(d.get('games'), list)"
+          mv schedule.tmp schedule.json
+          python -c "import json; print('Матчей со временем:', len(json.load(open('schedule.json', encoding='utf-8'))['games']))"
+
       # Ссылки на бота и мини-апп (ADR-004) заданы в build_data.py; Variables BOT_LINK, APP_LINK их заменяют
       - name: Собрать данные
         env:

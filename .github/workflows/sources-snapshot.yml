@@ -20,6 +20,9 @@ jobs:
     steps:
       - name: Скачать страницы
         shell: python
+        env:
+          # API сервера (ADR-019): что служба live разобрала из онлайна КХЛ — тот же адрес, что берёт Pages
+          HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
           import re, time, urllib.request, urllib.error
           from pathlib import Path
@@ -69,6 +72,12 @@ jobs:
               get(f"https://rhl.fhr.ru/matchcenter/{t}/{g}/live/", f"rhl_mc_{g}_live")
           get("https://r-hockey.ru/stat/temp/2027/30904/calendar?month=10", "rhockey_rhl_2026_10")
           get("https://online.khl.ru/online/", "khl_online_day")
+          import os
+          host = os.environ.get("HOST", "")
+          if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
+              api = f"https://{host.replace('.', '-')}.sslip.io/api"
+              for name in ("health", "live/today.json", "live/sources.json", "live/schedule.json"):
+                  get(f"{api}/{name}", "api_" + name.replace("/", "_").replace(".json", ""))
 
       # Ветка snapshots/sources — только снимки, без истории кода: git fetch и смотреть
       - name: Положить в ветку snapshots/sources

@@ -18,6 +18,14 @@ long polling мешают друг другу (`Conflict: terminated by other ge
 «Выложить бота на сервер» само обновит код и перезапустит бота. Ключ умеет только это.
 Руками то же самое: `rhl-update` на сервере.
 
+Сервер в России: `api.telegram.org` оттуда закрыт, и бот падает с `Request timeout error`. Нужен любой
+зарубежный сервер с входом по SSH, ставить на него ничего не надо. На российском, после `setup.sh`:
+
+    bash /opt/rhl/deploy/tunnel.sh user@ЗАРУБЕЖНЫЙ-IP
+
+Скрипт один раз спросит пароль, положит туда ключ, которому разрешён только проброс портов, поднимет
+службу `tg-tunnel` (SOCKS на `127.0.0.1:1080`) и пропишет боту `TELEGRAM_PROXY`.
+
 Логи: journalctl -u bot -f
 Перезапуск: systemctl restart bot
 Время напоминаний — REMIND_TODAY_AT / REMIND_TOMORROW_AT в bot.py.

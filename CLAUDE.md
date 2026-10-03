@@ -60,7 +60,7 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `tools/render_stickers.js` | Перерисовать стикеры и эмодзи (Playwright, запускается руками) |
 | `tools/upload_emoji.py` | Опубликовать эмодзи набором `t.me/addemoji/rhl_u21_by_<бот>` |
 | `.claude/agents/bot-logic.md` | Агент для логики бота: онбординг, хендлеры, напоминания |
-| `deploy/` | Сервер: `setup.sh` — первая настройка VPS, `update.sh` — выкладка (`rhl-update`), служба `bot.service` |
+| `deploy/` | Сервер: `setup.sh` — первая настройка VPS, `update.sh` — выкладка (`rhl-update`), служба `bot.service`, `tunnel.sh` и `tg-tunnel.service` — выход в Telegram через зарубежный сервер (`TELEGRAM_PROXY`) |
 | `.github/workflows/deploy.yml` | После слияния в `main` выкладывает бота на сервер по ключу, который умеет только `rhl-update` |
 | `calendar.pdf` | Календарь на печать, отдаётся по кнопке |
 | `docs/research/` | Результаты разведки: источники данных, аудитория, письмо клубу |

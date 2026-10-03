@@ -1,0 +1,754 @@
+{
+ "now": "2026-10-03T20:56:00+03:00",
+ "system": {
+  "services": [
+   {
+    "name": "bot",
+    "title": "Бот",
+    "state": "active",
+    "sub": "running",
+    "since": "2026-10-03T17:44:00+03:00",
+    "restarts": 0
+   },
+   {
+    "name": "live",
+    "title": "Живое",
+    "state": "active",
+    "sub": "running",
+    "since": "2026-10-03T17:44:00+03:00",
+    "restarts": 0
+   },
+   {
+    "name": "api",
+    "title": "API",
+    "state": "active",
+    "sub": "running",
+    "since": "2026-10-03T17:44:00+03:00",
+    "restarts": 0
+   },
+   {
+    "name": "pages",
+    "title": "Сборка Pages",
+    "state": "active",
+    "sub": "running",
+    "since": "2026-10-03T17:44:00+03:00",
+    "restarts": 0
+   },
+   {
+    "name": "tg-tunnel",
+    "title": "Туннель в Telegram",
+    "state": "active",
+    "sub": "running",
+    "since": "2026-10-03T17:44:00+03:00",
+    "restarts": 0
+   },
+   {
+    "name": "caddy",
+    "title": "HTTPS (Caddy)",
+    "state": "active",
+    "sub": "running",
+    "since": "2026-10-03T17:44:00+03:00",
+    "restarts": 0
+   }
+  ],
+  "services_note": "",
+  "bot": {
+   "beat": "2026-10-03T20:55:20+03:00",
+   "started": "2026-10-03T17:44:00+03:00",
+   "tg_ok": "2026-10-03T20:55:20+03:00",
+   "tg_fail": null,
+   "tg_error": null
+  },
+  "builds": [
+   {
+    "id": "pages",
+    "title": "Мини-апп",
+    "status": "completed",
+    "conclusion": "success",
+    "at": "2026-10-03T20:47:00+03:00",
+    "url": "https://github.com/ArPicasso/bogdanov/actions",
+    "last_ok": "2026-10-03T20:47:00+03:00",
+    "runs_24h": 61,
+    "fails_24h": 1
+   },
+   {
+    "id": "deploy",
+    "title": "Выложить бота",
+    "status": "completed",
+    "conclusion": "success",
+    "at": "2026-10-03T17:42:00+03:00",
+    "url": "https://github.com/ArPicasso/bogdanov/actions",
+    "last_ok": "2026-10-03T17:42:00+03:00",
+    "runs_24h": 6,
+    "fails_24h": 0
+   },
+   {
+    "id": "tests",
+    "title": "Тесты",
+    "status": "completed",
+    "conclusion": "success",
+    "at": "2026-10-03T17:40:00+03:00",
+    "url": "https://github.com/ArPicasso/bogdanov/actions",
+    "last_ok": "2026-10-03T17:40:00+03:00",
+    "runs_24h": 9,
+    "fails_24h": 0
+   }
+  ],
+  "builds_at": "2026-10-03T20:45:00+03:00",
+  "kick": {
+   "ok": "2026-10-03T20:45:00+03:00",
+   "fail": null,
+   "token": true
+  },
+  "league_updated": "2026-10-03T20:48:00+03:00",
+  "live": {
+   "updated": "2026-10-03T20:55:35+03:00",
+   "sources": [
+    {
+     "name": "online.khl.ru",
+     "ok": "2026-10-03T20:55:35+03:00",
+     "fail": "2026-10-03T18:56:00+03:00",
+     "errors": 0,
+     "games": 9,
+     "note": ""
+    },
+    {
+     "name": "rhl.fhr.ru",
+     "ok": "2026-10-03T20:52:00+03:00",
+     "fail": null,
+     "errors": 0,
+     "games": 12,
+     "note": ""
+    }
+   ]
+  },
+  "raskat": {
+   "on": true,
+   "note": "соль сошлась с опубликованным раскладом 2026-10-03"
+  },
+  "disk": {
+   "free": 15032385536,
+   "total": 26843545600,
+   "db": 3145728
+  }
+ },
+ "audience": {
+  "subscribers": 412,
+  "by_team": [
+   {
+    "id": "ryazan-vdv",
+    "name": "Рязань-ВДВ",
+    "n": 46
+   },
+   {
+    "id": "sokol",
+    "name": "Сокол",
+    "n": 25
+   },
+   {
+    "id": "samara",
+    "name": "Самара",
+    "n": 23
+   },
+   {
+    "id": "tverichi",
+    "name": "Тверичи-СШОР",
+    "n": 23
+   },
+   {
+    "id": "proton",
+    "name": "Протон",
+    "n": 22
+   },
+   {
+    "id": "fakel-yamal",
+    "name": "Факел Ямал",
+    "n": 22
+   },
+   {
+    "id": "rostov",
+    "name": "Ростов",
+    "n": 21
+   },
+   {
+    "id": "dinamo-576",
+    "name": "Динамо-576",
+    "n": 20
+   },
+   {
+    "id": "akhmat-granit",
+    "name": "Ахмат-Гранит",
+    "n": 19
+   },
+   {
+    "id": "dizelist",
+    "name": "Дизелист",
+    "n": 19
+   },
+   {
+    "id": "kristall",
+    "name": "Кристалл",
+    "n": 19
+   },
+   {
+    "id": "ermak",
+    "name": "Ермак",
+    "n": 18
+   },
+   {
+    "id": "kaluga",
+    "name": "Калужские Ракеты",
+    "n": 17
+   },
+   {
+    "id": "arktika",
+    "name": "Арктика",
+    "n": 16
+   },
+   {
+    "id": "dinamo-kareliya",
+    "name": "Динамо-Карелия",
+    "n": 16
+   },
+   {
+    "id": "krasnodar",
+    "name": "Краснодар",
+    "n": 15
+   },
+   {
+    "id": "polet",
+    "name": "Полёт",
+    "n": 15
+   },
+   {
+    "id": "tambov",
+    "name": "Тамбов",
+    "n": 15
+   },
+   {
+    "id": "bryansk",
+    "name": "Брянск",
+    "n": 14
+   },
+   {
+    "id": "metallurg",
+    "name": "Металлург",
+    "n": 14
+   },
+   {
+    "id": "ekoniva-bobrov",
+    "name": "ЭкоНива-Бобров",
+    "n": 14
+   },
+   {
+    "id": "krasnaya-mashina",
+    "name": "Красная машина Академия",
+    "n": 13
+   },
+   {
+    "id": "belgorod",
+    "name": "Белгород",
+    "n": 12
+   },
+   {
+    "id": "vityaz-podolsk",
+    "name": "Витязь-Подольск",
+    "n": 12
+   },
+   {
+    "id": "progress",
+    "name": "Прогресс",
+    "n": 12
+   },
+   {
+    "id": "leningradets",
+    "name": "Ленинградец",
+    "n": 9
+   }
+  ],
+  "platforms": [
+   {
+    "id": "android",
+    "name": "android",
+    "n": 350
+   },
+   {
+    "id": "ios",
+    "name": "ios",
+    "n": 230
+   },
+   {
+    "id": "tdesktop",
+    "name": "tdesktop",
+    "n": 50
+   },
+   {
+    "id": "weba",
+    "name": "weba",
+    "n": 10
+   }
+  ],
+  "fans": [
+   {
+    "id": "ryazan-vdv",
+    "name": "Рязань-ВДВ",
+    "n": 120
+   },
+   {
+    "id": "kristall",
+    "name": "Кристалл",
+    "n": 28
+   },
+   {
+    "id": "progress",
+    "name": "Прогресс",
+    "n": 27
+   },
+   {
+    "id": "akhmat-granit",
+    "name": "Ахмат-Гранит",
+    "n": 23
+   },
+   {
+    "id": "bryansk",
+    "name": "Брянск",
+    "n": 23
+   },
+   {
+    "id": "metallurg",
+    "name": "Металлург",
+    "n": 23
+   },
+   {
+    "id": "dinamo-kareliya",
+    "name": "Динамо-Карелия",
+    "n": 22
+   },
+   {
+    "id": "fakel-yamal",
+    "name": "Факел Ямал",
+    "n": 20
+   },
+   {
+    "id": "kaluga",
+    "name": "Калужские Ракеты",
+    "n": 19
+   },
+   {
+    "id": "belgorod",
+    "name": "Белгород",
+    "n": 17
+   },
+   {
+    "id": "proton",
+    "name": "Протон",
+    "n": 16
+   },
+   {
+    "id": "vityaz-podolsk",
+    "name": "Витязь-Подольск",
+    "n": 15
+   },
+   {
+    "id": "dizelist",
+    "name": "Дизелист",
+    "n": 15
+   },
+   {
+    "id": "rostov",
+    "name": "Ростов",
+    "n": 14
+   },
+   {
+    "id": "ekoniva-bobrov",
+    "name": "ЭкоНива-Бобров",
+    "n": 12
+   },
+   {
+    "id": "dinamo-576",
+    "name": "Динамо-576",
+    "n": 11
+   },
+   {
+    "id": "krasnodar",
+    "name": "Краснодар",
+    "n": 11
+   },
+   {
+    "id": "ermak",
+    "name": "Ермак",
+    "n": 10
+   },
+   {
+    "id": "samara",
+    "name": "Самара",
+    "n": 10
+   },
+   {
+    "id": "sokol",
+    "name": "Сокол",
+    "n": 10
+   },
+   {
+    "id": "polet",
+    "name": "Полёт",
+    "n": 8
+   },
+   {
+    "id": "tverichi",
+    "name": "Тверичи-СШОР",
+    "n": 8
+   },
+   {
+    "id": "tambov",
+    "name": "Тамбов",
+    "n": 7
+   },
+   {
+    "id": "arktika",
+    "name": "Арктика",
+    "n": 6
+   },
+   {
+    "id": "krasnaya-mashina",
+    "name": "Красная машина Академия",
+    "n": 6
+   },
+   {
+    "id": "leningradets",
+    "name": "Ленинградец",
+    "n": 4
+   }
+  ],
+  "links": [
+   {
+    "id": "plain",
+    "name": "plain",
+    "n": 40
+   },
+   {
+    "id": "team",
+    "name": "team",
+    "n": 30
+   },
+   {
+    "id": "remind",
+    "name": "remind",
+    "n": 15
+   },
+   {
+    "id": "today",
+    "name": "today",
+    "n": 8
+   },
+   {
+    "id": "raskat",
+    "name": "raskat",
+    "n": 3
+   }
+  ],
+  "links_week": [
+   {
+    "id": "plain",
+    "name": "plain",
+    "n": 188
+   },
+   {
+    "id": "team",
+    "name": "team",
+    "n": 141
+   },
+   {
+    "id": "remind",
+    "name": "remind",
+    "n": 69
+   },
+   {
+    "id": "today",
+    "name": "today",
+    "n": 36
+   },
+   {
+    "id": "raskat",
+    "name": "raskat",
+    "n": 11
+   }
+  ]
+ },
+ "sends": {
+  "log": [
+   {
+    "at": "2026-10-03T20:44:00+03:00",
+    "kind": "final",
+    "match": "Рязань-ВДВ — Тамбов",
+    "sent": 128,
+    "failed": 0
+   },
+   {
+    "at": "2026-10-03T20:25:00+03:00",
+    "kind": "final",
+    "match": "Сокол — Самара",
+    "sent": 84,
+    "failed": 1
+   },
+   {
+    "at": "2026-10-03T10:00:00+03:00",
+    "kind": "remind_today",
+    "day": "2026-10-03",
+    "sent": 380,
+    "failed": 1,
+    "seconds": 41
+   },
+   {
+    "at": "2026-10-02T19:00:00+03:00",
+    "kind": "remind_tomorrow",
+    "day": "2026-10-03",
+    "sent": 352,
+    "failed": 0,
+    "seconds": 37
+   }
+  ],
+  "last_error": {
+   "at": "2026-10-03T19:36:00+03:00",
+   "what": "send to %s failed",
+   "exc": "TelegramBadRequest"
+  }
+ },
+ "games": {
+  "raskat_players": 1240,
+  "predict_top": [
+   {
+    "key": "2026-10-03|ryazan-vdv|tambov",
+    "home": 140,
+    "away": 61,
+    "votes": 201,
+    "title": "Рязань-ВДВ — Тамбов"
+   },
+   {
+    "key": "2026-10-03|krasnaya-mashina|dinamo-576",
+    "home": 40,
+    "away": 72,
+    "votes": 112,
+    "title": "Красная машина Академия — Динамо-576"
+   },
+   {
+    "key": "2026-10-03|sokol|samara",
+    "home": 33,
+    "away": 30,
+    "votes": 63,
+    "title": "Сокол — Самара"
+   }
+  ]
+ },
+ "days": [
+  {
+   "date": "2026-10-03",
+   "starts": 96,
+   "start:plain": 40,
+   "start:team": 30,
+   "start:remind": 15,
+   "start:today": 8,
+   "start:raskat": 3,
+   "sub_new": 31,
+   "sub_off": 4,
+   "blocked": 2,
+   "remind_sent": 380,
+   "remind_fail": 1,
+   "final_sent": 212,
+   "errors": 1,
+   "subs": 412,
+   "cmd:today": 20,
+   "app_users": 640,
+   "platform:android": 350,
+   "platform:ios": 230,
+   "platform:tdesktop": 50,
+   "platform:weba": 10,
+   "fav:arktika": 6,
+   "fav:akhmat-granit": 23,
+   "fav:vityaz-podolsk": 15,
+   "fav:dinamo-576": 11,
+   "fav:kaluga": 19,
+   "fav:krasnaya-mashina": 6,
+   "fav:leningradets": 4,
+   "fav:metallurg": 23,
+   "fav:dinamo-kareliya": 22,
+   "fav:polet": 8,
+   "fav:tverichi": 8,
+   "fav:fakel-yamal": 20,
+   "fav:bryansk": 23,
+   "fav:dizelist": 15,
+   "fav:ermak": 10,
+   "fav:belgorod": 17,
+   "fav:kristall": 28,
+   "fav:ryazan-vdv": 120,
+   "fav:tambov": 7,
+   "fav:progress": 27,
+   "fav:proton": 16,
+   "fav:rostov": 14,
+   "fav:sokol": 10,
+   "fav:krasnodar": 11,
+   "fav:samara": 10,
+   "fav:ekoniva-bobrov": 12,
+   "raskat": 180,
+   "votes": 520,
+   "voters": 300
+  },
+  {
+   "date": "2026-10-02",
+   "starts": 58,
+   "start:plain": 24,
+   "start:team": 18,
+   "start:remind": 9,
+   "start:today": 4,
+   "start:raskat": 1,
+   "sub_new": 18,
+   "sub_off": 2,
+   "blocked": 1,
+   "remind_sent": 232,
+   "remind_fail": 0,
+   "final_sent": 0,
+   "errors": 0,
+   "subs": 387,
+   "cmd:today": 12,
+   "app_users": 391,
+   "platform:android": 214,
+   "platform:ios": 140,
+   "platform:tdesktop": 30,
+   "platform:weba": 6,
+   "raskat": 165,
+   "votes": 480,
+   "voters": 280
+  },
+  {
+   "date": "2026-10-01",
+   "starts": 73,
+   "start:plain": 30,
+   "start:team": 23,
+   "start:remind": 11,
+   "start:today": 6,
+   "start:raskat": 2,
+   "sub_new": 23,
+   "sub_off": 3,
+   "blocked": 1,
+   "remind_sent": 0,
+   "remind_fail": 0,
+   "final_sent": 0,
+   "errors": 0,
+   "subs": 362,
+   "cmd:today": 15,
+   "app_users": 492,
+   "platform:android": 269,
+   "platform:ios": 177,
+   "platform:tdesktop": 38,
+   "platform:weba": 7,
+   "raskat": 150,
+   "votes": 440,
+   "voters": 260
+  },
+  {
+   "date": "2026-09-30",
+   "starts": 62,
+   "start:plain": 26,
+   "start:team": 19,
+   "start:remind": 9,
+   "start:today": 5,
+   "start:raskat": 1,
+   "sub_new": 20,
+   "sub_off": 2,
+   "blocked": 1,
+   "remind_sent": 0,
+   "remind_fail": 0,
+   "final_sent": 0,
+   "errors": 0,
+   "subs": 337,
+   "cmd:today": 13,
+   "app_users": 416,
+   "platform:android": 227,
+   "platform:ios": 149,
+   "platform:tdesktop": 32,
+   "platform:weba": 6,
+   "raskat": 135,
+   "votes": 400,
+   "voters": 240
+  },
+  {
+   "date": "2026-09-29",
+   "starts": 49,
+   "start:plain": 20,
+   "start:team": 15,
+   "start:remind": 7,
+   "start:today": 4,
+   "start:raskat": 1,
+   "sub_new": 15,
+   "sub_off": 2,
+   "blocked": 1,
+   "remind_sent": 0,
+   "remind_fail": 0,
+   "final_sent": 0,
+   "errors": 0,
+   "subs": 312,
+   "cmd:today": 10,
+   "app_users": 328,
+   "platform:android": 179,
+   "platform:ios": 117,
+   "platform:tdesktop": 25,
+   "platform:weba": 5,
+   "raskat": 120,
+   "votes": 360,
+   "voters": 220
+  },
+  {
+   "date": "2026-09-28",
+   "starts": 64,
+   "start:plain": 26,
+   "start:team": 20,
+   "start:remind": 10,
+   "start:today": 5,
+   "start:raskat": 2,
+   "sub_new": 20,
+   "sub_off": 2,
+   "blocked": 1,
+   "remind_sent": 0,
+   "remind_fail": 0,
+   "final_sent": 0,
+   "errors": 0,
+   "subs": 287,
+   "cmd:today": 13,
+   "app_users": 427,
+   "platform:android": 233,
+   "platform:ios": 153,
+   "platform:tdesktop": 33,
+   "platform:weba": 6,
+   "raskat": 105,
+   "votes": 320,
+   "voters": 200
+  },
+  {
+   "date": "2026-09-27",
+   "starts": 53,
+   "start:plain": 22,
+   "start:team": 16,
+   "start:remind": 8,
+   "start:today": 4,
+   "start:raskat": 1,
+   "sub_new": 17,
+   "sub_off": 2,
+   "blocked": 1,
+   "remind_sent": 0,
+   "remind_fail": 0,
+   "final_sent": 0,
+   "errors": 0,
+   "subs": 262,
+   "cmd:today": 11,
+   "app_users": 354,
+   "platform:android": 193,
+   "platform:ios": 127,
+   "platform:tdesktop": 27,
+   "platform:weba": 5,
+   "raskat": 90,
+   "votes": 280,
+   "voters": 180
+  }
+ ],
+ "problems": []
+}

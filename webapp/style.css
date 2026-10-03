@@ -630,6 +630,14 @@ h1, .display {
 
 .empty { text-align: center; padding: 28px 16px; color: var(--muted); border: var(--line); border-radius: 20px; }
 .foot { color: var(--muted); font-size: 12px; line-height: 1.5; text-align: center; margin-top: 24px; padding: 0 12px; }
+/* «Сделано болельщиками» (ADR-021, DESIGN.md): видно, но не кричит */
+.fan-note { display: block; margin: 8px auto 0; padding: 4px 12px; border: 0; background: none; color: var(--muted); font: 500 12px/1.5 var(--ui); text-align: center; cursor: pointer; }
+.fan-note u { text-decoration: underline dotted; text-underline-offset: 3px; white-space: nowrap; }
+.fan-note-wrap { margin-top: 16px; }
+.about p { margin: 12px 0 0; font-size: 15px; line-height: 1.45; }
+.about .about-tag { background: var(--away-bg); color: var(--away-fg); border-color: var(--away-edge); }
+.pill-link { display: block; width: 100%; margin: 20px 0 8px; padding: 13px 18px; border: var(--line); border-radius: 9999px; background: var(--paper); color: var(--ink); font: 700 15px/1.2 var(--ui); letter-spacing: .03em; cursor: pointer; }
+.pill-link:active { background: var(--sel); }
 
 /* ---------- Проводник — талисман клуба (ADR-011) ---------- */
 

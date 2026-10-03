@@ -3,6 +3,7 @@
 Весь интерфейс — в мини-аппе (ADR-003). У бота нет своей клавиатуры и меню команд: на всё он
 отвечает стикером и кнопкой «Открыть РХЛ» (ADR-005). Вторым планом — матчи дня (`/today`) и
 напоминания о любой команде лиги (`/team`, `/remind`) — ADR-019, раздел 8.
+Для админов — счётчики и пульс в status/bot.json и `/admin` с кнопкой пульта (ADR-021).
 """
 import asyncio
 import html
@@ -18,6 +19,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 import aiohttp
+import admin
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -48,6 +50,9 @@ RESULTS_FRESH_DAYS = 2             # матчи старше не присыла
 LIVE_FINAL_HOLD = timedelta(minutes=10)   # «окончен» с одним счётом столько подряд — пишем финал
 LIVE_STALE = timedelta(minutes=20)        # live/ без обновления дольше — ход матча не показываем
 TODAY_MAX = 14                     # матчей в одном сообщении «Матчи сегодня»
+STATUS_EVERY = 60                  # пульс для пульта (ADR-021): getMe через туннель и запись status/bot.json
+ADMIN_IDS = frozenset(int(x) for x in re.split(r"[,\s]+", os.environ.get("ADMIN_IDS", "")) if x.isdigit())
+TRACK = admin.Tracker("bot")       # счётчики за день для пульта: без id и имён
 QUIET_FROM, QUIET_TO = time(23, 0), time(9, 0)   # ночью молчим, результат уйдёт утром
 
 DOW = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
@@ -132,14 +137,15 @@ B_PREDICT = "Кто победит?"
 B_MATCH = "Матч в приложении"
 B_ONLINE = "Текстовая трансляция"
 
-# видно в пустом чате до «Старт» и в профиле бота (до 512 и 120 символов)
-DESCRIPTION = ("Бот Первенства России U21 — РХЛ 2026/27.\n\n"
+# видно в пустом чате до «Старт» и в профиле бота (до 512 и 120 символов). Что мы не лига — ADR-021
+DESCRIPTION = ("Неофициальный бот болельщиков Первенства России U21 — РХЛ 2026/27.\n\n"
                "📅 Матчи дня: время начала, счёт по ходу игры, текстовые трансляции\n"
                "🔔 Напомню о матчах любой команды лиги — накануне и в день игры, пришлю счёт\n"
                "🏒 Календарь 26 команд, таблица и лидеры — в приложении\n"
                "🏑 Раскат дня: головоломка про шайбу на пару минут\n\n"
+               "Сделан болельщиками, не связан с РХЛ и ФХР.\n\n"
                "Жми «Старт» 👇")
-SHORT_DESCRIPTION = "РХЛ U21: матчи дня со временем и счётом, трансляции и напоминания о твоей команде 🏒"
+SHORT_DESCRIPTION = "Неофициальный бот болельщиков РХЛ U21: матчи дня, счёт, трансляции и напоминания о твоей команде 🏒"
 
 
 def app_url(team: str | None = None, match: str | None = None, view: str | None = None,
@@ -241,7 +247,8 @@ def welcome_text(team: str | None = None) -> str:
             f"{e('fire')} Лучшие игроки лиги\n"
             f"{e('stick')} Раскат дня — головоломка про шайбу\n"
             f"{e('bell')} Напомню о матчах твоей команды — /team\n\n"
-            "<b>Жми «Открыть РХЛ»</b> 👇 и выбери, за кого болеешь.")
+            "<b>Жми «Открыть РХЛ»</b> 👇 и выбери, за кого болеешь.\n\n"
+            "<i>Приложение болельщиков для болельщиков — не официальное приложение РХЛ.</i>")
 
 
 def lost_text() -> str:
@@ -311,11 +318,14 @@ SUBS = load_subs()
 def set_teams(chat_id: int, teams: list[str]) -> None:
     """Пустой список — подписка снимается целиком: chat_id больше нигде не хранится."""
     if teams:
+        if chat_id not in SUBS:
+            TRACK.add("sub_new")
         SUBS[chat_id] = list(teams)
     elif chat_id not in SUBS:
         return
     else:
         SUBS.pop(chat_id)
+        TRACK.add("sub_off")
     save_subs(SUBS)
 
 
@@ -339,7 +349,10 @@ def toggle_team(chat_id: int, team: str) -> str:
     return follow(chat_id, team)
 
 
-def unsubscribe(chat_id: int) -> None:
+def unsubscribe(chat_id: int, blocked: bool = False) -> None:
+    """blocked — бота заблокировали: на пульте отдельно от «Выключить»."""
+    if blocked and chat_id in SUBS:
+        TRACK.add("blocked")
     set_teams(chat_id, [])
 
 
@@ -1089,10 +1102,23 @@ async def send_remind(bot: Bot, cid: int, note: str = "") -> None:
     await say(bot, cid, lambda: (remind_text(cid, games=games, note=note), remind_kb(cid)))
 
 
+def start_kind(args: str) -> str:
+    """Откуда пришёл /start — для пульта: plain, team, remind, today, leaders, raskat, other."""
+    if not args:
+        return "plain"
+    if args in ("today", "leaders", "raskat", "remind"):
+        return args
+    if args.startswith("remind-"):
+        return "remind"
+    return "team" if args in TEAMS else "other"
+
+
 @dp.message(CommandStart())
 async def start(m: Message, command: CommandObject):
     cid = m.chat.id
     args = (command.args or "").strip()
+    TRACK.add("starts")
+    TRACK.add(f"start:{start_kind(args)}")
     # «Напомнить» в мини-аппе: человек уже решил — включаем сразу и без приветствия (ADR-004, ADR-005).
     # remind — «Рязань-ВДВ» (так мини-апп звал до подписки на любую команду), remind-<id> — эта команда
     if args == "remind" or args.startswith("remind-"):
@@ -1126,6 +1152,7 @@ async def send_leaders(m: Message) -> None:
 
 @dp.message(Command("leaders"))   # в меню команд её нет (ADR-005), только ссылкой или руками
 async def h_leaders(m: Message):
+    TRACK.add("cmd:leaders")
     await send_leaders(m)
 
 
@@ -1137,6 +1164,7 @@ async def send_raskat(m: Message) -> None:
 
 @dp.message(Command("raskat"))   # в меню команд её нет (ADR-005), только ссылкой или руками
 async def h_raskat(m: Message):
+    TRACK.add("cmd:raskat")
     await send_raskat(m)
 
 
@@ -1163,6 +1191,7 @@ async def send_today(bot: Bot, cid: int) -> None:
 
 @dp.message(Command("today"))
 async def h_today(m: Message):
+    TRACK.add("cmd:today")
     await send_today(m.bot, m.chat.id)
 
 
@@ -1181,11 +1210,13 @@ async def cb_today_refresh(c: CallbackQuery):
 
 @dp.message(Command("remind"))
 async def h_remind(m: Message):
+    TRACK.add("cmd:remind")
     await send_remind(m.bot, m.chat.id)
 
 
 @dp.message(Command("team"))
 async def h_team(m: Message):
+    TRACK.add("cmd:team")
     cid = m.chat.id
     await say(m.bot, cid, lambda: (team_text(cid), team_kb(cid)))
 
@@ -1245,11 +1276,38 @@ async def cb_team(c: CallbackQuery):
     await c.answer()
 
 
+# ---------- пульт админа (ADR-021) ----------
+
+def admin_url() -> str:
+    p = urlsplit(WEBAPP_URL)
+    path = p.path if p.path.endswith("/") else p.path + "/"
+    return urlunsplit((p.scheme, p.netloc, path + "admin.html", "", ""))
+
+
+def admin_reply(chat_id: int, user_id: int | None) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Админу — кнопка пульта. Остальным — их id и куда его вписать: так владелец узнаёт свой."""
+    if user_id in ADMIN_IDS:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Открыть пульт",
+                                                                         web_app=WebAppInfo(url=admin_url()))]])
+        return "Пульт: службы, сборки, аудитория, рассылки и игры. Данные обновляются раз в минуту.", kb
+    return (f"Пульт — только для админов приложения. Твой Telegram id: <code>{user_id or chat_id}</code>.\n"
+            "Его вписывают в ADMIN_IDS в /etc/rhl/bot.env на сервере.", None)
+
+
+@dp.message(Command("admin"))   # в меню команд её нет; доступ к данным проверяет ещё и сервер API
+async def h_admin(m: Message):
+    if m.chat.type != "private":
+        return
+    text, kb = admin_reply(m.chat.id, m.from_user.id if m.from_user else None)
+    await m.answer(text, reply_markup=kb)
+
+
 TODAY_WORDS = re.compile(r"сегодн|матч|игр[аыуе]?\b|расписан|когда|сч[её]т|трансляц", re.I)
 
 
 @dp.message()   # последним: всё остальное (ADR-005 — бот не молчит)
 async def h_lost(m: Message):
+    TRACK.add("lost")
     if m.text and TODAY_WORDS.search(m.text):   # «когда игра?», «какой счёт» — матчи дня
         await send_today(m.bot, m.chat.id)
         return
@@ -1274,13 +1332,16 @@ async def raskat_open_broadcast(bot: Bot) -> int:
             await say(bot, cid, lambda: (raskat_open_text(), raskat_kb()))
             sent += 1
         except TelegramForbiddenError:   # бота заблокировали
-            pass
+            TRACK.add("blocked")
         except Exception:
             logging.exception("raskat to %s failed", cid)
         WAITLIST.discard(cid)   # после каждого: перезапуск не позовёт второй раз
         save_waitlist(WAITLIST)
         await asyncio.sleep(0.05)
     logging.info("raskat waitlist called: %d", sent)
+    TRACK.add("raskat_call_sent", sent)
+    TRACK.note({"kind": "raskat", "sent": sent})
+    TRACK.flush()
     return sent
 
 
@@ -1289,7 +1350,8 @@ async def send_reminders(bot: Bot, kind: str, day: date, league: dict | None) ->
     plan = reminder_plan(SUBS, day, league, read_live(f"{day.isoformat()}.json"), read_live("schedule.json"))
     games = games_of(league)
     stickered: set[int] = set()
-    sent = 0
+    sent = failed = 0
+    started = asyncio.get_running_loop().time()
     for cid, m, team in plan:
         if cid not in SUBS:   # заблокировал бота по ходу рассылки
             continue
@@ -1300,10 +1362,17 @@ async def send_reminders(bot: Bot, kind: str, day: date, league: dict | None) ->
             await say(bot, cid, lambda m=m, team=team: (reminder_text(m, kind, team, games), match_kb(m)))
             sent += 1
         except TelegramForbiddenError:   # бота заблокировали
-            unsubscribe(cid)
+            unsubscribe(cid, blocked=True)
+            failed += 1
         except Exception:
             logging.exception("send to %s failed", cid)
+            failed += 1
         await asyncio.sleep(0.05)
+    TRACK.add("remind_sent", sent)
+    TRACK.add("remind_fail", failed)
+    TRACK.note({"kind": f"remind_{kind}", "day": day.isoformat(), "sent": sent, "failed": failed,
+                "seconds": round(asyncio.get_running_loop().time() - started)})
+    TRACK.flush()
     return sent
 
 
@@ -1379,7 +1448,7 @@ async def results_step(bot: Bot, now: datetime) -> int:
     if quiet(now):
         return 0
     names = {**TEAMS, **{t["id"]: t["name"] for t in (league or {}).get("teams", []) if "id" in t}}
-    sent = 0
+    sent = failed = 0
     for g in pending_results(league, ready, announced, now.date()):
         announced |= {x for x in (g.get("id"), g["key"]) if x}
         save_announced(announced)
@@ -1388,16 +1457,25 @@ async def results_step(bot: Bot, now: datetime) -> int:
             continue
         recap = {} if g["live"] else (await fetch_once(f"matches/{g['id']}.json") or {})
         kb = recap_kb(g["id"], not g["live"]) if g.get("id") else app_kb()
+        before = (sent, failed)
         for cid, team in to:
             try:
                 await say(bot, cid, lambda team=team: (result_text(g, names, recap.get("story", ""), team, g["live"],
                                                                    g.get("src"), g.get("protocol")), kb))
                 sent += 1
             except TelegramForbiddenError:
-                unsubscribe(cid)
+                unsubscribe(cid, blocked=True)
+                failed += 1
             except Exception:
                 logging.exception("result to %s failed", cid)
+                failed += 1
             await asyncio.sleep(0.05)
+        TRACK.note({"kind": "final", "match": f"{names.get(g['home'], g['home'])} — {names.get(g['away'], g['away'])}",
+                    "sent": sent - before[0], "failed": failed - before[1]})
+    if sent or failed:
+        TRACK.add("final_sent", sent)
+        TRACK.add("final_fail", failed)
+        TRACK.flush()
     return sent
 
 
@@ -1423,8 +1501,23 @@ async def load_custom_emoji(bot: Bot) -> None:
     logging.info("custom emoji: %d", len(CUSTOM))
 
 
+async def status_loop(bot: Bot):
+    """Пульс для пульта (ADR-021): раз в минуту getMe через туннель и запись status/bot.json."""
+    while True:
+        now = datetime.now(TZ)
+        try:
+            await asyncio.wait_for(bot.get_me(), 15)
+            TRACK.info(tg_ok=admin.iso(now))
+        except Exception as err:   # туннель лёг, Telegram не ответил — это и показываем
+            TRACK.info(tg_fail=admin.iso(now), tg_error=admin.no_ids(f"{type(err).__name__}: {err}")[:200])
+        TRACK.gauge("subs", len(SUBS))
+        TRACK.flush()
+        await asyncio.sleep(STATUS_EVERY)
+
+
 async def main():
     logging.basicConfig(level=logging.INFO)
+    logging.getLogger().addHandler(admin.ErrorCount(TRACK))
     # С VPS в России api.telegram.org закрыт: ходим через туннель deploy/tunnel.sh (socks5://127.0.0.1:1080)
     proxy = os.environ.get("TELEGRAM_PROXY")
     # без превью ссылок: в «Матчах сегодня» и напоминаниях ссылки на трансляции — не карточки сайтов
@@ -1440,6 +1533,7 @@ async def main():
     await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="РХЛ", web_app=WebAppInfo(url=WEBAPP_URL)))
     asyncio.create_task(reminder_loop(bot))
     asyncio.create_task(results_loop(bot))
+    asyncio.create_task(status_loop(bot))
     await dp.start_polling(bot)
 
 

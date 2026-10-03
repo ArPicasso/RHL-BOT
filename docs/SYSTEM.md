@@ -62,7 +62,8 @@
 - `server.py`, aiohttp, слушает только `127.0.0.1:8080`. Наружу — через Caddy по HTTPS
   (`https://<хост>/api/…`, сертификат Let's Encrypt сам). Ставит Caddy `deploy/https.sh`.
 - `/api/raskat/*` — зачёт «Раската», `/api/predict/*` — «Кто победит?», `/api/live/*.json` —
-  живые файлы матч-центра из `live/` (их пишет служба `live`, `live.py`), `/api/health` — жив ли.
+  живые файлы матч-центра из `live/` (их пишет служба `live`, `live.py`), `/api/health` — жив ли,
+  `/api/admin/status` — пульт админа, `/api/seen` — счётчик открытий мини-аппа (ADR-021).
 - Вход — подпись `initData` Telegram (токен бота), CORS — только адрес Pages (`PAGES_ORIGIN`).
 - Хранит всё в SQLite `/opt/rhl/state.db`: результаты раскатов, настройки, коды дуэлей, голоса.
   О человеке — Telegram id, клуб и (только по галочке) «Пётр К.». Стирается кнопками «Удалить мои
@@ -98,6 +99,21 @@
 - Перед сервером бот жил на раннере GitHub («Запустить бота»). Это теперь только стенд: две
   копии одновременно ломают друг другу polling.
 
+### Пульт админа (ADR-021)
+
+- Страница `admin.html` рядом с мини-аппом. Открывается из бота: `/admin` → «Открыть пульт». Пускает
+  только Telegram id из `ADMIN_IDS` в `/etc/rhl/bot.env`; не-админу `/admin` пишет его id — так
+  владелец узнаёт свой. После правки `ADMIN_IDS` — `systemctl restart bot api`.
+- Наверху — «Всё работает» или список проблем. Дальше: службы (`systemctl show`), Telegram через
+  туннель, сборки GitHub, свежесть `league.json` и `live/`, источники, соль «Раската», диск; аудитория —
+  подписчики по командам, «Старт» по ссылкам, открытия мини-аппа, платформы, за кого болеют; рассылки;
+  «Раскат» и «Кто победит?» по дням.
+- Откуда числа: бот раз в минуту пишет `status/bot.json` (пульс, `getMe` через туннель, счётчики за
+  день), служба `pages` раз в 15 минут — `status/pages.json` (итоги заданий Actions тем же
+  `PAGES_TOKEN`), сервер API — открытия в `state.db`. Только числа: ни id, ни имён на пульте нет.
+- Пульт только показывает: перезапуска и рассылок с него нет. Тревог в Telegram пока тоже нет —
+  смотреть надо самому.
+
 ### Выкладка
 
 - Слияние в `main` запускает задание **«Выложить бота на сервер»** (`deploy.yml`). Задание по ssh
@@ -122,6 +138,8 @@
 | `LIVE_API` | Variables | `https://<хост>/api` — матч-центр и прогнозы. Пусто — тот же адрес sslip.io по `DEPLOY_HOST`, если API отвечает; не отвечает — без живого и без «Кто победит?». Нужна, только если у API свой домен |
 | `BOT_LINK`, `APP_LINK`, `WEBAPP_URL` | Variables | Ссылки, если отличаются от зашитых в код |
 
+`LIVE_API` задание «Мини-апп» подставляет и в пульт `admin.html`.
+
 ## Сервер: где что лежит
 
 | Путь | Что |
@@ -129,7 +147,8 @@
 | `/opt/rhl` | Клон репозитория, venv, файлы состояния бота: `subscribers.json`, `announced.json`, `raskat_waitlist.json` |
 | `/opt/rhl/state.db` | Зачёт «Раската» и прогнозы (SQLite, рядом `state.db-wal`, `-shm`) |
 | `/opt/rhl/live/` | Живые файлы матч-центра: пишет `live`, отдаёт `api`, читает бот |
-| `/etc/rhl/bot.env` | Общий для служб `bot`, `live`, `api`, `pages`: `BOT_TOKEN`, `WEBAPP_URL`, `TELEGRAM_PROXY`, `RASKAT_SALT`, `RASKAT_API`, `PAGES_ORIGIN`, `PAGES_TOKEN`. Права 640 |
+| `/opt/rhl/status/` | Пульс и счётчики для пульта: `bot.json` пишет бот, `pages.json` — служба `pages`, читает `api`. Создаёт `rhl-update` |
+| `/etc/rhl/bot.env` | Общий для служб `bot`, `live`, `api`, `pages`: `BOT_TOKEN`, `WEBAPP_URL`, `TELEGRAM_PROXY`, `RASKAT_SALT`, `RASKAT_API`, `PAGES_ORIGIN`, `PAGES_TOKEN`, `ADMIN_IDS`. Права 640 |
 | `/etc/rhl/tunnel.env` | Куда идёт туннель |
 | `/etc/caddy/Caddyfile` | HTTPS: `/api/*` → `127.0.0.1:8080`, остальное 404. Пишет `https.sh` |
 | `/usr/local/sbin/rhl-update` | Выкладка (копия `deploy/update.sh`) |
@@ -151,6 +170,8 @@
 | Зачёт «временно выключен» | Опубликованный расклад дня не читается: `curl -s 127.0.0.1:8080/api/health` → `raskat.note`. Если там про соль — выровнять `RASKAT_SALT` в `/etc/rhl/bot.env` под секрет Pages, `systemctl restart api` |
 | HTTPS не открывается, сертификат | `journalctl -u caddy -n 50`; открыты ли 80 и 443 у хостинга и в `ufw status`; повторить `bash /opt/rhl/deploy/https.sh` |
 | Живого счёта нет | `systemctl status live`, `journalctl -u live -n 50`, `ls -l /opt/rhl/live` |
+| Пульт: «Нет доступа» | Свой id — боту `/admin`; вписать в `ADMIN_IDS` в `/etc/rhl/bot.env`, `systemctl restart bot api` |
+| Пульт: «Бот не пишет пульс» | `ls -l /opt/rhl/status`; нет каталога — `rhl-update` его создаст |
 
 ## Чего пока нет
 
@@ -159,5 +180,5 @@
 - **Сайта РХЛ**: календарь — предварительный с r-hockey (`official: false`), протоколов
   и лидеров 2026/27 нет.
 - **Живого счёта** (ADR-012): опрос источников с этого сервера — следующий шаг.
-- **Мониторинга**: о падении бота никто не узнает, пока не заметит. Простейшее — `systemd`
-  `OnFailure` с сообщением владельцу в Telegram.
+- **Тревог**: пульт (ADR-021) показывает, что сломано, но сам никому не пишет. Следующий шаг —
+  бот присылает админам тот же список проблем, не чаще раза в час на причину.

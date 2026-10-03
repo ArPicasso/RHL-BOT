@@ -15,6 +15,9 @@ sys.path.insert(0, str(ROOT))
 
 import bot  # noqa: E402
 
+# счётчики пульта (ADR-021) — во временный каталог, не в status/ рядом с кодом
+bot.TRACK = bot.admin.Tracker("bot", Path(tempfile.mkdtemp()) / "bot.json")
+
 
 class AppUrl(unittest.TestCase):
     def test_team_added_to_query(self):
@@ -52,6 +55,53 @@ class Welcome(unittest.TestCase):
     def test_description_limits(self):
         self.assertLessEqual(len(bot.DESCRIPTION), 512)
         self.assertLessEqual(len(bot.SHORT_DESCRIPTION), 120)
+
+    def test_fan_made_not_official(self):
+        """ADR-021: в описании и приветствии видно, что мы не лига."""
+        self.assertIn("Неофициальный", bot.DESCRIPTION)
+        self.assertIn("не связан с РХЛ", bot.DESCRIPTION)
+        self.assertTrue(bot.SHORT_DESCRIPTION.startswith("Неофициальный"))
+        for team in (None, "arktika"):
+            self.assertIn("не официальное приложение РХЛ", bot.welcome_text(team))
+        tags = re.findall(r"</?(\w+)>", bot.welcome_text())
+        self.assertEqual(tags.count("i") % 2, 0)
+
+
+class AdminPanel(unittest.TestCase):
+    """Пульт админа (ADR-021): /admin, счётчики подписок и «Старт» без id."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        for name, value in (("SUBS_FILE", self.tmp / "subscribers.json"), ("SUBS", {}),
+                            ("TRACK", bot.admin.Tracker("bot", self.tmp / "bot.json"))):
+            p = mock.patch.object(bot, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_admin_gets_button_others_get_their_id(self):
+        with mock.patch.object(bot, "ADMIN_IDS", frozenset({7})), \
+                mock.patch.object(bot, "WEBAPP_URL", "https://x.github.io/app/?v=3"):
+            text, kb = bot.admin_reply(7, 7)
+            self.assertEqual(kb.inline_keyboard[0][0].web_app.url, "https://x.github.io/app/admin.html")
+            text, kb = bot.admin_reply(8, 8)
+        self.assertIsNone(kb)
+        self.assertIn("<code>8</code>", text)
+        self.assertIn("ADMIN_IDS", text)
+
+    def test_start_kinds(self):
+        self.assertEqual([bot.start_kind(a) for a in ("", "today", "remind", "remind-tambov", "tambov", "leaders", "zzz")],
+                         ["plain", "today", "remind", "remind", "team", "leaders", "other"])
+
+    def test_subscription_counters(self):
+        bot.follow(42, "tambov")
+        bot.follow(42, "sokol")      # вторая команда — не новая подписка
+        bot.follow(43, "tambov")
+        bot.unsubscribe(42)
+        bot.unsubscribe(43, blocked=True)
+        bot.unsubscribe(44, blocked=True)   # его и не было
+        self.assertEqual(bot.TRACK.today(), {"sub_new": 2, "sub_off": 2, "blocked": 1})
+        bot.TRACK.flush()
+        self.assertNotIn("42", (self.tmp / "bot.json").read_text(encoding="utf-8"))
 
 
 class CustomEmoji(unittest.TestCase):

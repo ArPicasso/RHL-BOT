@@ -1,0 +1,227 @@
+{
+ "date": "2026-10-03",
+ "updated": "2026-10-03T17:42:10+03:00",
+ "games": [
+  {
+   "key": "2026-10-03|ryazan-vdv|belgorod",
+   "date": "2026-10-03",
+   "home": "ryazan-vdv",
+   "away": "belgorod",
+   "start": "2026-10-03T17:00:00+03:00",
+   "time": "17:00",
+   "status": "live",
+   "period": "2",
+   "clock": "12:34",
+   "score": {
+    "home": 2,
+    "away": 1,
+    "decision": null
+   },
+   "events": [
+    {
+     "period": "1",
+     "time": "00:00",
+     "team": null,
+     "kind": "period",
+     "text": "Начался 1-й период"
+    },
+    {
+     "period": "1",
+     "time": "05:12",
+     "team": "home",
+     "kind": "goal",
+     "text": "Иванов (Петров, Сидоров)",
+     "score": "1:0"
+    },
+    {
+     "period": "1",
+     "time": "09:40",
+     "team": "away",
+     "kind": "penalty",
+     "text": "Смирнов — 2 мин, подножка"
+    },
+    {
+     "period": "1",
+     "time": "14:03",
+     "team": "away",
+     "kind": "goal",
+     "text": "Козлов (Орлов)",
+     "score": "1:1"
+    },
+    {
+     "period": "1",
+     "time": "20:00",
+     "team": null,
+     "kind": "period",
+     "text": "Конец 1-го периода — 1:1, броски 11:8"
+    },
+    {
+     "period": "2",
+     "time": "00:00",
+     "team": null,
+     "kind": "period",
+     "text": "Начался 2-й период"
+    },
+    {
+     "period": "2",
+     "time": "03:21",
+     "team": "home",
+     "kind": "goal",
+     "text": "Петров (Иванов)",
+     "score": "2:1"
+    },
+    {
+     "period": "2",
+     "time": "10:05",
+     "team": "home",
+     "kind": "penalty",
+     "text": "Сидоров — 2 мин, задержка клюшкой"
+    },
+    {
+     "period": "2",
+     "time": "11:58",
+     "team": null,
+     "kind": "text",
+     "text": "Вратарь «Белгорода» Лебедев отбивает бросок в упор"
+    }
+   ],
+   "online": "https://online.khl.ru/online/904950.html",
+   "khl_id": 904950,
+   "protocol": null,
+   "seen": "2026-10-03T17:42:05+03:00",
+   "src": "online.khl.ru",
+   "watch": [
+    {
+     "title": "Трансляция · канал «МХК Рязань-ВДВ»",
+     "url": "https://vk.com/video-12345_456239017",
+     "src": "t.me/hcryazan"
+    }
+   ]
+  },
+  {
+   "key": "2026-10-03|proton|kristall",
+   "date": "2026-10-03",
+   "home": "proton",
+   "away": "kristall",
+   "start": "2026-10-03T16:00:00+03:00",
+   "time": "16:00",
+   "status": "break",
+   "period": "2",
+   "clock": null,
+   "score": {
+    "home": 0,
+    "away": 3,
+    "decision": null
+   },
+   "events": [
+    {
+     "period": "1",
+     "time": "07:44",
+     "team": "away",
+     "kind": "goal",
+     "text": "Фролов (Егоров)",
+     "score": "0:1"
+    },
+    {
+     "period": "2",
+     "time": "02:10",
+     "team": "away",
+     "kind": "goal",
+     "text": "Егоров",
+     "score": "0:2"
+    },
+    {
+     "period": "2",
+     "time": "16:39",
+     "team": "away",
+     "kind": "goal",
+     "text": "Фролов (Гусев, Егоров)",
+     "score": "0:3"
+    },
+    {
+     "period": "2",
+     "time": "20:00",
+     "team": null,
+     "kind": "period",
+     "text": "Конец 2-го периода"
+    }
+   ],
+   "online": "https://online.khl.ru/online/904951.html",
+   "khl_id": 904951,
+   "protocol": null,
+   "seen": "2026-10-03T17:42:05+03:00",
+   "src": "online.khl.ru"
+  },
+  {
+   "key": "2026-10-03|rostov|krasnodar",
+   "date": "2026-10-03",
+   "home": "rostov",
+   "away": "krasnodar",
+   "start": "2026-10-03T14:00:00+03:00",
+   "time": "14:00",
+   "status": "ended",
+   "period": "ОТ",
+   "clock": null,
+   "score": {
+    "home": 4,
+    "away": 3,
+    "decision": "ОТ"
+   },
+   "events": [
+    {
+     "period": "3",
+     "time": "18:20",
+     "team": "away",
+     "kind": "goal",
+     "text": "Белов (Носов)",
+     "score": "3:3"
+    },
+    {
+     "period": "ОТ",
+     "time": "02:47",
+     "team": "home",
+     "kind": "goal",
+     "text": "Орехов (Зайцев)",
+     "score": "4:3"
+    },
+    {
+     "period": "ОТ",
+     "time": "02:47",
+     "team": null,
+     "kind": "period",
+     "text": "Матч окончен — 4:3 ОТ"
+    }
+   ],
+   "online": "https://online.khl.ru/online/904952.html",
+   "khl_id": 904952,
+   "protocol": null,
+   "seen": "2026-10-03T17:42:05+03:00",
+   "src": "online.khl.ru",
+   "watch": [
+    {
+     "title": "Запись матча · канал «ХК Ростов»",
+     "url": "https://vkvideo.ru/video-55555_456239100",
+     "src": "t.me/hcrostov"
+    }
+   ]
+  },
+  {
+   "key": "2026-10-03|tverichi|metallurg",
+   "date": "2026-10-03",
+   "home": "tverichi",
+   "away": "metallurg",
+   "start": "2026-10-03T19:30:00+03:00",
+   "time": "19:30",
+   "status": "sched",
+   "period": null,
+   "clock": null,
+   "score": null,
+   "events": [],
+   "online": "https://online.khl.ru/online/904953.html",
+   "khl_id": 904953,
+   "protocol": null,
+   "seen": null,
+   "src": "online.khl.ru"
+  }
+ ]
+}

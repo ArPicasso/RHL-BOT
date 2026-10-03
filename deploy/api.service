@@ -1,0 +1,33 @@
+# API на VPS (server.py, ADR-019): /api/live/*, /api/raskat/*, /api/predict/* на 127.0.0.1:8080.
+# Наружу его выводит Caddy по HTTPS (deploy/https.sh). Ставит и перезапускает rhl-update (deploy/update.sh).
+# База — /opt/rhl/state.db (зачёт «Раската» и прогнозы), живые файлы читает из /opt/rhl/live.
+[Unit]
+Description=RHL U21 API (server.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rhl
+Group=rhl
+WorkingDirectory=/opt/rhl
+EnvironmentFile=/etc/rhl/bot.env
+ExecStart=/opt/rhl/venv/bin/python server.py
+Restart=always
+RestartSec=5
+UMask=0027
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/rhl
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

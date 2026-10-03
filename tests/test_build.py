@@ -1,9 +1,11 @@
 """Сборка данных лиги для мини-аппа: календарь r-hockey, справочник команд, таблица."""
 import json
 import sys
+import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -58,6 +60,16 @@ class TeamNames(unittest.TestCase):
             if "logo" in t:
                 self.assertTrue((webapp / t["logo"]).is_file(), t["logo"])
 
+    def test_arena_time_zones(self):
+        """У каждой команды пояс арены (ADR-019): время протокола — местное, в данных — московское."""
+        for t in self.teams.all:
+            self.assertIsNotNone(ZoneInfo(t["tz"]), t["id"])
+        tz = self.teams.tz
+        self.assertEqual((tz["ermak"], tz["fakel-yamal"], tz["samara"], tz["kristall"], tz["progress"]),
+                         ("Asia/Irkutsk", "Asia/Yekaterinburg", "Europe/Samara", "Europe/Saratov", "Europe/Samara"))
+        self.assertEqual(sum(z == "Europe/Moscow" for z in tz.values()), 21)
+        self.assertEqual(b.Teams([{"id": "x", "name": "Икс", "aliases": [], "rhockey": 1}]).tz, {"x": "Europe/Moscow"})
+
 
 class Calendar(unittest.TestCase):
     teams = b.load_teams()
@@ -103,6 +115,131 @@ class Links(unittest.TestCase):
 
     def test_defaults(self):
         self.assertEqual(b.links({}), {"bot": "https://t.me/rhl_u21_bot", "app": "https://t.me/rhl_u21_bot/myapp"})
+
+
+class StartTime(unittest.TestCase):
+    """Время матча — московское (ADR-019, разделы 2 и 5): протокол, schedule.json, посты клубов."""
+    teams = b.load_teams()
+    results = json.loads((FIX / "results_1378_ryazan.json").read_text(encoding="utf-8"))
+
+    def protocol(self, n: str) -> dict:
+        return json.loads(json.dumps(self.results["1378"][n]))
+
+    def game(self, gid="g", day="2026-10-03", home="ryazan-vdv", away="belgorod", **kw):
+        return {"id": gid, "n": None, "date": day, "home": home, "away": away, "official": False, **kw}
+
+    def test_protocol_time_is_local_then_moscow(self):
+        # 08.11.2025 «Ермак» — «Рязань-ВДВ» в Ангарске: в протоколе 12:00 местного, это 07:00 по Москве
+        p = self.protocol("144")
+        self.assertEqual((p["date"], p["time"], p["home"]), ("2025-11-08", "12:00", "МХК Ермак"))
+        g = self.game(day="2025-11-08", home="ermak", away="ryazan-vdv")
+        self.assertEqual(b.attach_results([g], self.teams, {"1378": {"144": p}}), [])
+        self.assertEqual((g["time"], g["start"], g["local"]), ("07:00", "2025-11-08T07:00:00+03:00", "12:00"))
+
+    def test_moscow_arena_has_no_local(self):
+        p = self.protocol("16")                                    # 08.10.2025 в Белгороде, 19:00
+        g = self.game(day=p["date"], home="belgorod", away="ryazan-vdv")
+        b.fill_result(g, p, zones=self.teams.tz)
+        self.assertEqual((g["time"], g["start"]), ("19:00", "2025-10-08T19:00:00+03:00"))
+        self.assertNotIn("local", g)
+
+    def test_protocol_without_time(self):
+        p = {**self.protocol("16"), "time": ""}
+        g = self.game(day=p["date"], home="belgorod", away="ryazan-vdv")
+        b.fill_result(g, p, zones=self.teams.tz)
+        self.assertIsNone(g["time"])
+        self.assertNotIn("start", g)
+
+    def test_samara_and_saratov_are_moscow_plus_one(self):
+        start = b.local_start("2026-10-03", "18:00", "Europe/Saratov")
+        g = self.game()
+        b.set_start(g, start, "Europe/Saratov")
+        self.assertEqual((g["time"], g["local"]), ("17:00", "18:00"))
+
+    def schedule(self, *rows):
+        return [{"key": f"{d}|{h}|{a}", "date": d, "home": h, "away": a, "start": f"{d}T{t}:00+03:00", "time": t,
+                 "online": f"https://online.khl.ru/online/{i}.html", "khl_id": i, "src": "online.khl.ru"}
+                for i, (d, h, a, t) in enumerate(rows, 904950)]
+
+    def test_schedule_by_key(self):
+        games = [self.game("n1", "2026-10-03"), self.game("n2", "2026-10-04"),
+                 self.game("rh1", "2026-10-03", "ermak", "samara")]
+        n = b.apply_schedule(games, self.schedule(("2026-10-03", "ryazan-vdv", "belgorod", "17:00"),
+                                                  ("2026-10-03", "ermak", "samara", "07:00")), self.teams.tz)
+        self.assertEqual(n, 2)
+        self.assertEqual((games[0]["time"], games[0]["start"], games[0]["online"]),
+                         ("17:00", "2026-10-03T17:00:00+03:00", "https://online.khl.ru/online/904950.html"))
+        self.assertNotIn("time", games[1])                         # второй матч серии — своего ключа нет
+        self.assertEqual((games[2]["time"], games[2]["local"]), ("07:00", "12:00"))
+
+    def test_schedule_one_day_off(self):
+        games = [self.game("n1", "2026-10-03"), self.game("n2", "2026-10-04")]
+        # 05.10 — рядом только матч 04.10: он и есть, хоть дата и разошлась
+        b.apply_schedule(games, self.schedule(("2026-10-05", "ryazan-vdv", "belgorod", "16:00")), self.teams.tz)
+        self.assertEqual((games[0].get("time"), games[1]["time"]), (None, "16:00"))
+        # 03.10 и 04.10 заняты своими ключами — лишняя строка 02.10 к занятому матчу не прилипает
+        games = [self.game("n1", "2026-10-03"), self.game("n2", "2026-10-04")]
+        n = b.apply_schedule(games, self.schedule(("2026-10-03", "ryazan-vdv", "belgorod", "17:00"),
+                                                  ("2026-10-04", "ryazan-vdv", "belgorod", "16:00"),
+                                                  ("2026-10-02", "ryazan-vdv", "belgorod", "15:00")), self.teams.tz)
+        self.assertEqual((n, games[0]["time"], games[1]["time"]), (2, "17:00", "16:00"))
+
+    def test_schedule_ambiguous_or_reversed(self):
+        games = [self.game("n1", "2026-10-03"), self.game("n2", "2026-10-05")]
+        b.apply_schedule(games, self.schedule(("2026-10-04", "ryazan-vdv", "belgorod", "17:00")), self.teams.tz)
+        self.assertFalse(any("time" in g for g in games))          # 03.10 и 05.10 — оба рядом, не угадываем
+        b.apply_schedule(games, self.schedule(("2026-10-03", "belgorod", "ryazan-vdv", "17:00")), self.teams.tz)
+        self.assertFalse(any("time" in g for g in games))          # хозяева и гости наоборот — другой матч
+
+    def test_schedule_fields_optional_and_checked(self):
+        games = [self.game("n1"), self.game("n2", "2026-10-04")]
+        rows = [{"key": "2026-10-03|ryazan-vdv|belgorod", "time": "17:00", "online": "javascript:alert(1)"},
+                {"date": "2026-10-04", "home": "ryazan-vdv", "away": "belgorod", "start": "2026-10-04T16:00:00"},
+                {"key": "битый"}, {"date": "завтра", "home": "ryazan-vdv", "away": "belgorod"}]
+        self.assertEqual(b.apply_schedule(games, rows, self.teams.tz), 2)
+        self.assertEqual((games[0]["start"], games[1]["start"]), ("2026-10-03T17:00:00+03:00", "2026-10-04T16:00:00+03:00"))
+        self.assertNotIn("online", games[0])                       # только https-ссылка
+
+    def test_schedule_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "schedule.json"
+            self.assertEqual(b.load_schedule(path), [])            # нет файла — молча ничего
+            path.write_text("<html>502</html>", encoding="utf-8")
+            self.assertEqual(b.load_schedule(path), [])
+            path.write_text(json.dumps({"updated": "x", "games": [{"key": "a"}, 5]}), encoding="utf-8")
+            self.assertEqual(b.load_schedule(path), [{"key": "a"}])
+
+    def test_schedule_wins_over_protocol_and_post(self):
+        p = self.protocol("144")
+        g = self.game("n1", "2025-11-08", "ermak", "ryazan-vdv")
+        b.attach_results([g], self.teams, {"1378": {"144": p}})
+        b.apply_schedule([g], self.schedule(("2025-11-08", "ermak", "ryazan-vdv", "08:00")), self.teams.tz)
+        self.assertEqual((g["time"], g["local"]), ("08:00", "13:00"))
+        posts = {"ermak_angarsk_hc": {"ok": True, "posts": [{
+            "id": 1, "url": "u", "at": "2025-11-08T01:00+03:00", "title": "", "text": "Сегодня «Рязань-ВДВ»",
+            "times": ["Начало в 14:00"], "links": ["https://vk.com/video-1_2"]}]}}
+        channels = [{"handle": "ermak_angarsk_hc", "club": "ermak", "kind": "club", "short": "ХК «Ермак»"}]
+        b.apply_matchday([g], self.teams, channels, posts)
+        self.assertEqual(g["time"], "08:00")                       # время из поста — только если других нет
+        self.assertEqual(g["watch"], [{"title": "VK Видео · канал ХК «Ермак»", "url": "https://vk.com/video-1_2",
+                                       "src": "t.me/ermak_angarsk_hc"}])
+        bare = self.game("n2", "2025-11-08", "ermak", "ryazan-vdv")
+        b.apply_matchday([bare], self.teams, channels, posts)
+        self.assertEqual((bare["time"], bare["start"], bare["local"]), ("09:00", "2025-11-08T09:00:00+03:00", "14:00"))
+
+    def test_build_keeps_old_format(self):
+        """Без schedule.json и постов матч такой же, как раньше: новые поля необязательные."""
+        data, _, _ = b.build(self.teams, [], {})
+        first = data["games"][0]
+        self.assertEqual(first, {"id": "n1", "n": 1, "date": "2026-10-03", "home": "ryazan-vdv", "away": "belgorod",
+                                 "official": True})
+        self.assertEqual(data["teams"][0]["tz"], "Europe/Moscow")
+        rows = self.schedule(("2026-10-03", "ryazan-vdv", "belgorod", "17:00"))
+        data, _, _ = b.build(self.teams, [], {}, schedule=rows)
+        self.assertEqual((data["games"][0]["time"], data["games"][0]["online"]),
+                         ("17:00", "https://online.khl.ru/online/904950.html"))
+        self.assertFalse(any(k in data["games"][1] for k in ("time", "start", "local", "online", "watch")))
+        self.assertEqual(datetime.fromisoformat(data["games"][0]["start"]).utcoffset().total_seconds(), 3 * 3600)
 
 
 def protocol_game(name: str, game_id: int, home: str, away: str, hidden: set[int] = frozenset()) -> tuple[dict, dict]:

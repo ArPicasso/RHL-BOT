@@ -22,7 +22,7 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | --- | --- |
 | `bot.py` | Вся логика: онбординг `/start`, хендлеры, форматирование, `reminder_loop` |
 | `games.json` | Календарь сезона, 48 игр. Правится руками |
-| `subscribers.json` | Подписчики на напоминания. Не в git |
+| `subscribers.json` | Подписчики на напоминания: `{"<chat_id>": [id команд, до трёх]}`, старый список `[chat_id]` бот сам переписывает в «Рязань-ВДВ» (ADR-019). Не в git |
 | `announced.json` | Матчи, о которых бот уже написал после игры (ADR-008). Не в git |
 | `hidden_players.json` | Id игроков на сайте лиги, которых не показываем по просьбе (ADR-007, ADR-008) |
 | `league.py` | Загрузка и разбор протоколов матчей с сайта лиги → `results.json` (ADR-001) |
@@ -31,21 +31,29 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `docs/adr/` | Архитектурные решения, по файлу на решение |
 | `leaders.json` | Лидеры лиги по шести показателям, по 30 игроков (ADR-009). В git: сейчас НМХЛ 2025/26, после первого тура РХЛ его заменяет задание мини-аппа |
 | `past_clubs.json` | Клубы прошлых сезонов, которых нет в РХЛ: написания и эмблема из `webapp/logos/past/` (ADR-009) |
-| `teams.json` | 26 команд лиги: конференция, город, id на r-hockey, варианты написания, прежние названия (`former`), цвета формы (`colors`), проводник онбординга (`mascot`: имя и фразы, ADR-011) |
+| `teams.json` | 26 команд лиги: конференция, город, пояс домашней арены `tz` (IANA, ADR-019), id на r-hockey, варианты написания, прежние названия (`former`), цвета формы (`colors`), проводник онбординга (`mascot`: имя и фразы, ADR-011) |
 | `raskat/` | Движок игры «Раскат» (ADR-018), только stdlib: константы и формула очков `rules.py`, размер поля по дню недели `plan.py`, расклад, решатель и проверка пути `puzzle.py`, зачёты `standings.py` |
 | `build_raskat.py` | Собирает `webapp/data/raskat/`: `index.json` и расклад на каждый день сезона. В Pages-задании сразу после `build_data.py` |
 | `docs/raskat/contract.md` | Контракт частей «Раската»: правила поля, опубликованные данные, функции движка, очки и зачёты, API сервера, бот |
+| `server.py` | API на VPS (ADR-019): `/api/live/*`, зачёт «Раската» `/api/raskat/*`, прогнозы `/api/predict/*`, `/api/health`. aiohttp на `127.0.0.1:8080`, подпись `initData`, CORS для Pages, сверка соли |
+| `raskat_store.py`, `predict.py` | Хранилище зачёта «Раската» и голоса «Кто победит?» (ADR-020) в SQLite `state.db` (не в git); в `predict.py` ещё правила приёма и итога матча |
 | `rhockey.py` | Календарь всей лиги с r-hockey.ru — временно, до открытия rhl.fhr.ru |
 | `channels.json` | Telegram-каналы клубов и лиги для листа «Главной» (ADR-015): `kind`, `scope`, `markers`, короткое имя `short`, отказ клуба `optout` (`images` — без картинок, `all` — не показываем), дата письма клубу `notified`. Правится руками |
-| `tg_channels.py` | Посты каналов из `t.me/s` → `channel_posts.json` (не в git): только превью, фильтры рекламы, букмекеров, дней рождения и возраста, постов не о молодёжке |
+| `tg_channels.py` | Посты каналов из `t.me/s` → `channel_posts.json` (не в git): только превью, фильтры рекламы, букмекеров (и по ссылкам), пиратских трансляций, дней рождения и возраста, постов не о молодёжке. Для матч-центра у поста внешние ссылки `links` и строки со временем `times`, короткие посты со ссылкой — в `extra` канала (ADR-019) |
 | `feed.py` | Правила листа дня «Главной» (ADR-015): свои карточки и посты каналов, доли 60/40, лимиты, ротация клубов. `build_data.py` пишет `webapp/data/feed/<клуб>.json` и общую ленту лиги за неделю `feed/stream.json` |
-| `build_data.py` | Собирает `webapp/data/league.json` (команды, матчи, результаты, таблица), `h2h.json`, разборы матчей `matches/<id>.json` (ADR-008) и `leaders.json` (ADR-009) |
+| `build_data.py` | Собирает `webapp/data/league.json` (команды, матчи, результаты, таблица), `h2h.json`, разборы матчей `matches/<id>.json` (ADR-008) и `leaders.json` (ADR-009). Время матча — московское: `time`, `start`, у арены в другом поясе ещё `local`; источники — `schedule.json`, протокол (в нём местное), пост клуба. Плюс `online` и `watch` (ADR-019) |
+| `khl_online.py` | Разбор онлайна КХЛ без сети (ADR-019): заголовок страницы матча, список дня, статус, счёт и события текстовой трансляции. Вёрстку подтверждает `tools/probe_sources.py` |
+| `live.py` | Служба `live` на VPS: опрос онлайна КХЛ и календаря сайта РХЛ → `live/today.json`, `live/<дата>.json`, `live/schedule.json`, `live/sources.json` (не в git, ADR-019, раздел 5). Ночью и без матчей не опрашивает |
+| `tools/probe_sources.py` | Запустить на VPS руками: сохранить страницы онлайна и `rhl.fhr.ru` в `probe/` (не в git) и показать, что из них разобрано — из этого делаются фикстуры `tests/` |
+| `matchday.py` | «Смотреть» и время начала из постов каналов клубов и лиги в день матча (ADR-019, разделы 2 и 7): привязка поста к матчу, белый список видеохостингов, не больше трёх ссылок. Без сети, его вызывает `build_data.py` |
+| `schedule.json` | Время матчей и ссылки на онлайн на 14 дней — копия `$LIVE_API/live/schedule.json` с сервера (ADR-019, раздел 5). Кладёт шаг Pages, если задана переменная `LIVE_API`. Не в git; нет файла — сборка без него |
 | `history.py` | Матчи пяти прошлых сезонов НМХЛ с сайта лиги → `history.json` для очных встреч (ADR-006) |
 | `history.json` | Прошлые сезоны, команды уже в id из `teams.json`. В git, пересобирается руками раз в сезон |
 | `history_protocols.json` | Протоколы прошлых матчей из «Последних встреч» для их разбора (ADR-008). В git, докачивается `history.py --protocols` |
-| `webapp/` | Мини-апп: `index.html`, `style.css`, `app.js`, без сборки. Публикуется на GitHub Pages |
+| `webapp/` | Мини-апп: `index.html`, `style.css`, `app.js`, без сборки. Публикуется на GitHub Pages. Живое и прогнозы — с `window.LIVE_API` (переменная Pages `LIVE_API`), пусто — по `league.json` |
 | `webapp/raskat.js`, `webapp/raskat.css` | Вкладка «Раскат» (ADR-018): поле и ведение шайбы по опубликованному раскладу дня без сервера, зачёты поверх API из `window.RASKAT_API` (переменная Pages `RASKAT_API`) |
 | `webapp/data/raskat/mock/` | Мок-сервер `api.js` и выдуманные зачёты «Раската» для разработки без сервера: `?raskat_mock=1`, `=solved`, `=none`. В git через `add -f`: `webapp/data/` в `.gitignore` |
+| `webapp/data/live/mock/` | Мок матч-центра (ADR-019) и прогнозов «Кто победит?» (ADR-020) без сервера: живое дня 03.10 `today.json` (`pre/`, `post/` — до и после матчей) и `api.js` с ответами `/predict/*`, как у `server.py`. `?live_mock=1` — матчи в разных статусах, `=pre`, `=post`, `=guest` — как вне Telegram, `=stale` — живое старше 5 минут. В git через `add -f` |
 | `webapp/brand/` | Иконка для экрана загрузки Telegram и фавиконки (`icon.svg`, `icon-512.png`) |
 | `webapp/logos/` | Эмблемы всех 26 клубов, 200×200 PNG с прозрачным фоном, путь — поле `logo` в `teams.json` |
 | `webapp/players/` | Стикеры игроков вместо фото, 192×192 WebP: в форме клубов — `clubs/<клуб>-skater.webp` и `-goalie.webp`, общие — `skater.webp`, `goalie.webp`; исходники — `art/players/` (ADR-009) |
@@ -59,7 +67,7 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `tools/render_stickers.js` | Перерисовать стикеры и эмодзи (Playwright, запускается руками) |
 | `tools/upload_emoji.py` | Опубликовать эмодзи набором `t.me/addemoji/rhl_u21_by_<бот>` |
 | `.claude/agents/bot-logic.md` | Агент для логики бота: онбординг, хендлеры, напоминания |
-| `deploy/` | Сервер: `setup.sh` — первая настройка VPS, `update.sh` — выкладка (`rhl-update`), служба `bot.service`, `tunnel.sh` и `tg-tunnel.service` — выход в Telegram через зарубежный сервер (`TELEGRAM_PROXY`) |
+| `deploy/` | Сервер: `setup.sh` — первая настройка VPS, `update.sh` — выкладка (`rhl-update`), службы `bot.service`, `live.service`, `api.service`, `https.sh` — Caddy и HTTPS для API, `tunnel.sh` и `tg-tunnel.service` — выход в Telegram через зарубежный сервер (`TELEGRAM_PROXY`) |
 | `.github/workflows/deploy.yml` | После слияния в `main` выкладывает бота на сервер по ключу, который умеет только `rhl-update` |
 | `calendar.pdf` | Календарь на печать, отдаётся по кнопке |
 | `docs/SYSTEM.md` | Как система работает сейчас: части, выкладка, секреты, сервер, что делать при сбоях |
@@ -84,6 +92,8 @@ venv/bin/python history.py --protocols           # затем протоколы
 venv/bin/python tg_channels.py                   # посты каналов клубов в channel_posts.json (ADR-015)
 venv/bin/python build_data.py                    # собрать webapp/data/league.json, h2h.json и листы feed/
 venv/bin/python build_raskat.py                  # расклады «Раската» в webapp/data/raskat/ (ADR-018)
+venv/bin/python live.py --once                   # один проход опроса живых источников в live/ (только с VPS в России)
+BOT_TOKEN=... venv/bin/python server.py          # API на 127.0.0.1:8080: /api/health, зачёт, прогнозы
 cd webapp && python3 -m http.server 8000         # мини-апп в браузере: localhost:8000
 ```
 

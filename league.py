@@ -373,6 +373,78 @@ def parse_game_ids(html: str, tournament: int) -> list[int]:
     return list(dict.fromkeys(ids))
 
 
+CAL_DATE_RE = re.compile(r"(?<!\d)(\d{1,2})\.(\d{1,2})\.(\d{4}|\d{2})(?!\d)")
+CAL_TIME_RE = re.compile(r"([01]\d|2[0-3]):([0-5]\d)")   # «17:00», «09:30»; «1:10» — это счёт
+CAL_SCORE_RE = re.compile(r"^\s*\d{1,2}\s*:\s*\d{1,2}\s*(ОТ|Б)?\s*$")   # «6:1», «5:4 Б», «1:10»; «17:00» — время
+REPORT_HREF = re.compile(r"/report/(\d+)/\?idgame=(\d+)")
+ONLINE_HREF = re.compile(r"online\.khl\.ru/online/(\d+)\.html")
+
+
+def _cal_date(text: str) -> date | None:
+    m = CAL_DATE_RE.search(text or "")
+    if not m:
+        return None
+    year = int(m.group(3))
+    try:
+        return date(year + 2000 if year < 100 else year, int(m.group(2)), int(m.group(1)))
+    except ValueError:
+        return None
+
+
+def _cal_time(text: str) -> str | None:
+    m = CAL_TIME_RE.fullmatch((text or "").strip())
+    return f"{m.group(1)}:{m.group(2)}" if m else None
+
+
+def parse_calendar_times(html: str, tournament: int | None = None) -> list[dict]:
+    """Будущие матчи календаря лиги: дата, время начала, хозяева, гости, номер матча и idgame.
+
+    Вёрстку будущих игр сайта РХЛ мы не видели (ADR-019). Предположение: та же таблица, что у
+    сыгранных (tests/fixtures/calendar_*.html), а на месте счёта — время «17:00»; время ищем ещё в
+    ячейке с классом time и под датой. Сыгранные (счёт «6:1» или секция «Завершившиеся») пропускаем.
+    Время — как на сайте, без перевода в МСК; не нашли — None. idgame — из ссылки на протокол или онлайн.
+    """
+    root = parse_html(html)
+    out = []
+    for block in root.find_all("div", "matches_list") or [root]:
+        h2 = block.find("h2")
+        finished = bool(h2 and "заверш" in h2.text().lower())
+        for date_td in block.find_all("td", "date"):
+            row = date_td.parent
+            day = _cal_date((date_td.find("h4") or date_td).text())
+            if row is None or day is None:
+                continue
+            under_date = [_cal_time(p.text()) for p in date_td.find_all("p")]
+            for tr in row.find_all("tr"):
+                team_td = tr.find("td", "col_team")
+                if team_td is None:
+                    continue
+                names = [a.text() for a in team_td.find_all("a") if a.text()]
+                if len(names) != 2:
+                    names = [x.strip() for x in re.split(r"\s+[-–—]\s+", team_td.text())]
+                if len(names) != 2 or not all(names):
+                    continue
+                count_td = tr.find("td", "col_count")
+                count = count_td.text() if count_td else ""
+                if finished or (CAL_SCORE_RE.match(count) and not _cal_time(count)):
+                    continue
+                time_cells = [_cal_time(td.text()) for td in tr.find_all("td") if any("time" in c for c in td.classes())]
+                when = next((t for t in [_cal_time(count), *time_cells, *under_date] if t), None)
+                idgame = None
+                for a in tr.find_all("a"):
+                    href = a.attrs.get("href") or ""
+                    rep = REPORT_HREF.search(href)
+                    if rep and (tournament is None or int(rep.group(1)) == tournament):
+                        idgame = int(rep.group(2))
+                    elif (onl := ONLINE_HREF.search(href)) and idgame is None:
+                        idgame = int(onl.group(1))
+                num_td = tr.find("td", "col_number")
+                num = num_td.text() if num_td else ""
+                out.append({"date": day.isoformat(), "time": when, "home": names[0], "away": names[1],
+                            "idgame": idgame, "n": int(num) if num.isdigit() else None, "tournament": tournament})
+    return out
+
+
 def parse_club_ids(html: str, tournament: int) -> dict[str, int]:
     """Id клуба внутри сезона из фильтра календаря; каждый сезон он свой."""
     opts = re.findall(rf'value="/calendar/{tournament}/\d+/(\d+)/"[^>]*>([^<]+)', html)

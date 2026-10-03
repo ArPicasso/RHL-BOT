@@ -10,7 +10,6 @@ const TZ = "Europe/Moscow";
 // своего клуба (ADR-011). Поэтому ключи новые, а старые стираем с устройства и из облака Telegram
 const FAV_KEY = "fav";
 const OLD_KEYS = ["fav_team", "tour_done", "guide_met", "splash_team"];
-const REMIND_TEAM = "ryazan-vdv";   // напоминания бот пока шлёт только о её матчах
 const THEME_KEY = "theme";          // "auto" | "light" | "dark", хранится на устройстве
 const SPLASH_KEY = "splash";        // эмблема для заставки: её рисуют до загрузки данных
 const SURFACE = { light: "#ffffff", dark: "#131922" };
@@ -57,6 +56,11 @@ const state = {
   streamFilter: "all",  // «Все · Мой клуб · Соперник»
   streamShown: 0,       // сколько элементов ленты уже на экране: подгружаем порциями
   homeView: "today",    // «Главная» (ADR-017): «Сегодня» или «Лента лиги». Запуск — всегда «Сегодня»
+  live: null,           // живое дня (ADR-019): { date, updated, byKey }; null — нет или LIVE_API пуст
+  liveAt: 0,            // когда живое последний раз спрашивали
+  mdAll: false,         // «Матчи дня в РХЛ» раскрыты целиком
+  evAll: null,          // ключ матча, у которого лента событий раскрыта целиком
+  pred: { day: {}, loading: {}, busy: {}, note: {}, me: undefined, meLoading: null },   // «Кто победит?» (ADR-020)
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -379,15 +383,18 @@ function whereTag(g, me) {
   return g.home === me ? `<span class="tag home">${ICON.home}Дома</span>` : `<span class="tag away">${ICON.away}Выезд</span>`;
 }
 
-function board(g) {
+function board(g, st = null) {
   const side = (id) => `<div class="side">${emblem(id, "lg")}<div class="name">${esc(team(id).name)}</div><div class="city">${esc(team(id).city)}</div></div>`;
   let mid;
   if (g.score) {
     // в основное время подписи нет: счёт сам говорит, что матч сыгран
     const dec = { "ОТ": "овертайм", "Б": "буллиты" }[g.score.decision];
     mid = `<div class="score">${g.score.home}:${g.score.away}${dec ? `<span class="dec">${dec}</span>` : ""}</div>`;
+  } else if (g.season) {
+    mid = `<div class="score pending">vs<span class="dec">${until(g.date)}</span></div>`;
   } else {
-    mid = `<div class="score pending">${g.time ? esc(g.time) : "vs"}<span class="dec">${until(g.date)}</span></div>`;
+    // время по Москве или счёт по ходу: середину перерисовывает живое (ADR-019)
+    mid = `<div class="bmid" data-lv="mid" data-g="${esc(g.id)}">${boardMid(g, st || matchState(g))}</div>`;
   }
   return `<div class="board">${side(g.home)}${mid}${side(g.away)}</div>`;
 }
@@ -397,46 +404,822 @@ function periodsLine(g) {
   return `<div class="periods">${g.score.periods.map((p) => `<span class="num">${p[0]}:${p[1]}</span>`).join("")}</div>`;
 }
 
-// Строка календаря одной команды: команда уже названа фильтром, в строке — только соперник
+// Строка календаря одной команды: команда уже названа фильтром, в строке — только соперник.
+// Сегодняшнюю строку перерисовывает живое (data-lv): время, статус и счёт по ходу (ADR-019)
 function gameRow(g, me, next) {
+  const live = !g.score && g.date === todayISO();
+  return `<div class="row one${g.score ? " past" : ""}${next ? " next" : ""}" data-game="${esc(g.id)}" data-date="${esc(g.date)}" role="button" tabindex="0"${next ? ' id="next-anchor"' : ""}${live ? ` data-lv="cal1" data-g="${esc(g.id)}" data-me="${esc(me)}"` : ""}>${gameRowInner(g, me)}</div>`;
+}
+function gameRowInner(g, me) {
   const d = parseISO(g.date);
-  const past = !!g.score;
   const home = g.home === me;
   const opp = home ? g.away : g.home;
   const where = home
     ? '<span class="where home">Дома</span>'
     : `<span class="where away">Выезд</span><span class="city">${esc(team(g.home).city)}</span>`;
-  let right = `<span class="kick">${g.time ? esc(g.time) : ""}</span>`;
-  if (past) {
+  let right;
+  if (g.score) {
     const mine = home ? g.score.home : g.score.away;
     const their = home ? g.score.away : g.score.home;
     const res = me === state.fav ? resultPill(g) : "";
     right = `<span class="sc num">${mine}:${their}</span>${res}`;
+  } else {
+    right = rowStatus(g, (sc) => `${home ? sc.home : sc.away}:${home ? sc.away : sc.home}`);
   }
-  return `<div class="row one${past ? " past" : ""}${next ? " next" : ""}" data-game="${esc(g.id)}" data-date="${esc(g.date)}" role="button" tabindex="0"${next ? ' id="next-anchor"' : ""}>
-    <div class="date"><b>${d.getUTCDate()}</b><span>${MON_SHORT[d.getUTCMonth()]} ${DOW[d.getUTCDay()]}</span></div>
+  return `<div class="date"><b>${d.getUTCDate()}</b><span>${MON_SHORT[d.getUTCMonth()]} ${DOW[d.getUTCDay()]}</span></div>
     <div class="t"><div>${emblem(opp)}<span class="nm">${esc(team(opp).name)}</span></div><div class="sub">${where}</div></div>
-    <div class="r">${right}</div>
-  </div>`;
+    <div class="r">${right}</div>`;
+}
+
+// Правый край строки календаря до протокола: время по Москве; у сегодняшнего — статус-чип и счёт
+// по ходу, нет времени — «время уточняется» (у будущих дней — пусто: время назначают ближе к игре)
+function rowStatus(g, scoreText) {
+  if (g.date !== todayISO()) {
+    const t = hmOf(g);
+    return t ? `<span class="kick num">${esc(t)}</span>` : "";
+  }
+  const st = matchState(g);
+  const sc = shownScore(st);
+  const p = statusParts(g, st);
+  if (sc || p.chip) {
+    const top = sc ? `<b class="num">${esc(scoreText ? scoreText(sc) : `${sc.home}:${sc.away}`)}</b>` : "";
+    return `<span class="lvs">${top}${chipHTML(p.chip)}${!sc && p.short && p.chip[0] !== "soon" ? `<small>${esc(p.short)}</small>` : ""}</span>`;
+  }
+  if (st.time) return `<span class="lvs"><b class="num">${esc(st.time)}</b>${p.short ? `<small>${esc(p.short)}</small>` : ""}</span>`;
+  return '<span class="kick tbd">время уточняется</span>';
 }
 
 // Строка «Вся лига»: без даты — её даёт подзаголовок дня
 function leagueRow(g) {
-  const past = !!g.score;
-  const lead = (id) => (id === g.home ? g.score.home > g.score.away : g.score.away > g.score.home);
-  const goals = (id) => (past ? `<span class="gl${lead(id) ? " lead" : ""}">${id === g.home ? g.score.home : g.score.away}</span>` : "");
+  const live = !g.score && g.date === todayISO();
+  return `<div class="row two${g.score ? " past" : ""}" data-game="${esc(g.id)}" role="button" tabindex="0"${live ? ` data-lv="cal2" data-g="${esc(g.id)}"` : ""}>${leagueRowInner(g)}</div>`;
+}
+function leagueRowInner(g) {
+  const sc = g.score || (g.date === todayISO() ? shownScore(matchState(g)) : null);
+  const lead = (id) => (id === g.home ? sc.home > sc.away : sc.away > sc.home);
+  const goals = (id) => (sc ? `<span class="gl${lead(id) ? " lead" : ""}">${id === g.home ? sc.home : sc.away}</span>` : "");
   const line = (id) => `<div>${emblem(id)}<span class="nm${id === state.fav ? " me" : ""}">${esc(team(id).name)}</span>${goals(id)}</div>`;
-  const right = past ? resultPill(g) : `<span class="kick">${g.time ? esc(g.time) : ""}</span>`;
-  return `<div class="row two${past ? " past" : ""}" data-game="${esc(g.id)}" role="button" tabindex="0">
-    <div class="t">${line(g.home)}${line(g.away)}</div>
-    <div class="r">${right}</div>
-  </div>`;
+  let right;
+  if (g.score) right = resultPill(g);
+  else if (sc) {
+    const p = statusParts(g, matchState(g));
+    right = p.chip ? `<span class="lvs">${chipHTML(p.chip)}${p.short ? `<small>${esc(p.short)}</small>` : ""}</span>` : "";
+  } else right = rowStatus(g);
+  return `<div class="t">${line(g.home)}${line(g.away)}</div>
+    <div class="r">${right}</div>`;
 }
 
 function footer() {
   const upd = state.data.updated ? new Date(state.data.updated) : null;
   const when = upd ? upd.toLocaleString("ru-RU", { timeZone: TZ, day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" }) : "";
   return `<div class="foot">${esc(state.data.league)} · сезон ${esc(state.data.season)}${when ? `<br>Обновлено ${esc(when)} МСК` : ""}</div>`;
+}
+
+// ---------- матч-центр дня (ADR-019) и «Кто победит?» (ADR-020) ----------
+// Время, статус и ссылки матча — DESIGN.md → «Матч-центр дня». Время в данных всегда московское,
+// местное считаем по поясу арены хозяев (tz в teams.json). Живое — ${LIVE_API}/live/today.json
+// (ADR-019, раздел 5), ключ матча «<дата>|<хозяева>|<гости>». LIVE_API пуст — всё по league.json:
+// время, ссылки и честные подписи, без живого счёта и без прогнозов.
+// Для разработки: ?live_mock=1 — живое и прогнозы на устройстве (data/live/mock/api.js);
+// =pre — до матчей, =post — после, =guest — как вне Telegram, =stale — живое старше 5 минут
+
+const LIVE_POLL_MS = 20e3;           // опрос живого, пока в лиге идёт или вот-вот начнётся матч
+const LIVE_SLOW_MS = 5 * 60e3;       // у сегодняшних матчей нет времени — заглядываем реже
+const LIVE_STALE_MS = 5 * 60e3;      // старше — «идёт матч» без минуты (ADR-012, раздел 1)
+const LIVE_LEAD_MS = 15 * 60e3;      // опрос начинается за 15 минут до начала
+const SOON_MS = 60 * 60e3;           // «Скоро» — меньше часа до начала
+const COUNTDOWN_MS = 6 * 3600e3;     // отсчёт «через 2 ч 15 мин» — в последние 6 часов
+const GAME_MS = 3 * 3600e3;          // без живого: через 3 часа после начала матч уже сыгран
+const PRED_FRESH_MS = 60e3;          // доли трибуны освежаем не чаще раза в минуту
+const MD_SHOW = 6;                   // строк «Матчей дня» до пилюли «Все N матчей дня»
+const EV_SHOW = 12;                  // событий в ленте матча до «Показать все»
+const HTTPS = /^https:\/\/[^\s"'<>\\]{4,500}$/;
+const LIVE_STATES = new Set(["live", "break", "ended", "final", "moved", "off"]);
+const LIVE_NOW = new Set(["soon", "live", "break", "ended"]);
+const SCORED = new Set(["live", "break", "ended", "final"]);
+const PER_LONG = { "1": "1-й период", "2": "2-й период", "3": "3-й период", "ОТ": "овертайм", "РБ": "буллиты" };
+const PER_SHORT = { "1": "1-й", "2": "2-й", "3": "3-й", "ОТ": "ОТ", "РБ": "буллиты" };
+const PER_AFTER = { "1": "после 1-го", "2": "после 2-го", "3": "перед овертаймом", "ОТ": "перед буллитами" };
+const SRC_NAME = { "online.khl.ru": "онлайн лиги", "rhl.fhr.ru": "сайт лиги" };
+const LV_ICON = {
+  online: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="3"/><path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4"/></svg>',
+  watch: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 5.8v12.4L18.5 12z"/></svg>',
+  doc: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4v13H6z"/><path d="M14 3.5v4h4M9 12h6M9 15.5h6"/></svg>',
+  ok: '<svg class="ok" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>',
+};
+
+function liveMock() {
+  try { return new URLSearchParams(location.search).get("live_mock") || ""; } catch (e) { return ""; }
+}
+// База API матч-центра (ADR-019, раздел 3): https — в продакшене, http://localhost — только на своей машине
+function liveApiBase() {
+  const a = window.LIVE_API;
+  if (typeof a !== "string") return "";
+  return /^(https:\/\/[^\s"'<>]+|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/[^\s"'<>]*)?)$/.test(a) ? a.replace(/\/+$/, "") : "";
+}
+const liveOn = () => !!liveMock() || !!liveApiBase();
+const liveMocked = () => typeof window.LIVE_MOCK_API === "function";
+// Прогнозы — на том же сервере (ADR-020, раздел 4): без него блока «Кто победит?» нет вовсе
+const predOn = liveOn;
+const predAuthed = () => (liveMock() ? liveMock() !== "guest" : inTelegram && !!tg.initData);
+
+function loadScript(src) {
+  return new Promise((done) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = () => done(true);
+    s.onerror = () => done(false);
+    document.head.appendChild(s);
+  });
+}
+let liveScript = null;
+function liveReady() {
+  if (!liveScript) liveScript = liveMock() && !liveMocked() ? loadScript("data/live/mock/api.js") : Promise.resolve(true);
+  return liveScript;
+}
+const liveErr = (status, text) => Object.assign(new Error(text), { status });
+
+// Запрос к серверу матч-центра. auth — с подписью Telegram, как у зачёта «Раската» (rsApi)
+async function liveApi(method, path, body = null, auth = false) {
+  await liveReady();
+  if (liveMocked()) return window.LIVE_MOCK_API(method, path, body, auth && predAuthed());
+  const base = liveApiBase();
+  if (!base) throw liveErr(0, "Сервер матч-центра пока не подключён.");
+  const headers = {};
+  if (auth && inTelegram && tg.initData) headers.Authorization = `tma ${tg.initData}`;
+  if (body) headers["Content-Type"] = "application/json";
+  let r;
+  try {
+    r = await fetch(base + path, { method, headers, body: body ? JSON.stringify(body) : undefined, cache: "no-store" });
+  } catch (e) {
+    throw liveErr(0, "Нет связи с сервером. Проверь интернет и попробуй ещё раз.");
+  }
+  let d = null;
+  try { d = await r.json(); } catch (e) { d = null; }
+  if (!r.ok) throw liveErr(r.status, (d && typeof d.error === "string" && d.error) || "Сервер не ответил. Попробуй ещё раз.");
+  return d;
+}
+
+// ---------- живое: файл дня и опрос ----------
+
+const gameKey = (g) => `${g.date}|${g.home}|${g.away}`;
+function liveIndex(d) {
+  if (!d || typeof d !== "object" || !Array.isArray(d.games)) return null;
+  const byKey = {};
+  for (const x of d.games) {
+    if (!x || typeof x !== "object") continue;
+    const key = typeof x.key === "string" ? x.key : `${x.date}|${x.home}|${x.away}`;
+    byKey[key] = x;
+  }
+  return { date: typeof d.date === "string" ? d.date : "", updated: d.updated, byKey };
+}
+let liveLoading = null;
+function loadLive() {
+  if (!liveOn()) return Promise.resolve(null);
+  if (!liveLoading) {
+    liveLoading = liveApi("GET", "/live/today.json")
+      .then((d) => { state.live = liveIndex(d); })
+      .catch((e) => { if (e.status === 404) state.live = null; })   // не ответил — остаётся прежнее живое
+      .finally(() => { state.liveAt = Date.now(); liveLoading = null; });
+  }
+  return liveLoading;
+}
+const liveOf = (g) => (state.live && state.live.byKey[gameKey(g)]) || null;
+
+// Нужно ли опрашивать: fast — в лиге сегодня матч в окне «за 15 минут — окончен» (или живое так
+// говорит само), slow — у сегодняшних матчей нет времени, и окна не знаем
+function liveNeed() {
+  const day = todayISO();
+  const now = Date.now();
+  let need = "";
+  for (const g of games()) {
+    if (g.date !== day || g.score) continue;
+    const st = matchState(g);
+    if (st.lv && LIVE_NOW.has(st.lv.status)) return "fast";
+    if (["final", "moved", "off", "late"].includes(st.status)) continue;
+    if (st.start == null) need = "slow";
+    else if (now >= st.start - LIVE_LEAD_MS) return "fast";
+  }
+  return need;
+}
+
+let liveTimer = 0;
+function liveTick(force = false) {
+  if (!state.data || document.visibilityState === "hidden") return;
+  const need = liveNeed();
+  const since = Date.now() - (state.liveAt || 0);
+  const pull = liveOn() && (force ? since > 5e3 : need === "fast" || (need === "slow" && since >= LIVE_SLOW_MS));
+  const after = () => { paintLive(); predTick(); };
+  if (pull) loadLive().then(after);
+  else after();   // отсчёт и «Скоро» считаются по часам — перерисовываем и без запроса
+}
+// Часы идут и без сервера: «Скоро», «Начался» и отсчёт считаются по времени из league.json
+function liveStart() {
+  if (liveTimer) return;
+  liveTimer = setInterval(liveTick, LIVE_POLL_MS);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") liveTick(true); });
+  if (liveOn()) liveReady().then(() => liveTick(true));
+}
+
+// ---------- матч: время и статус ----------
+
+function hmOf(src) {
+  if (typeof src.time === "string" && /^\d{1,2}:\d{2}$/.test(src.time)) return src.time.padStart(5, "0");
+  const s = Date.parse(src.start || "");
+  return isNaN(s) ? "" : fmtHM(s);
+}
+const fmtHM = (ms, zone = TZ) => new Intl.DateTimeFormat("ru-RU", { timeZone: zone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(ms));
+// Местное время арены — только если её пояс не московский: «21:00 местное»
+function localOf(g, start) {
+  const tz = team(g.home).tz;
+  if (start == null) return "";
+  if (!tz) return g.local || "";
+  if (tz === TZ) return "";
+  try {
+    const loc = fmtHM(start, tz);
+    return loc !== fmtHM(start) ? loc : "";
+  } catch (e) {
+    return g.local || "";
+  }
+}
+
+// Что с матчем сейчас (ADR-012, раздел 1). sched и soon — по своим часам; live, break, ended, final,
+// moved, off — из живого; begun и late — живого нет, а время уже прошло: честно «начался» и «ждём протокол»
+function matchState(g) {
+  const lv = g.season ? null : liveOf(g);
+  const src = lv && (lv.start || lv.time) ? lv : g;
+  const time = hmOf(src);
+  let start = Date.parse(src.start || "");
+  if (isNaN(start)) start = time ? Date.parse(`${g.date}T${time}:00+03:00`) : null;
+  const st = { lv, start, time, status: "sched", period: null, clock: null, score: null, stale: false, seen: null, proto: false };
+  if (g.score) return Object.assign(st, { status: "final", score: g.score, proto: true });
+  const now = Date.now();
+  if (lv && LIVE_STATES.has(lv.status)) {
+    const seen = Date.parse(lv.seen || (state.live && state.live.updated) || "");
+    Object.assign(st, {
+      status: lv.status,
+      period: lv.period != null && PER_LONG[String(lv.period)] ? String(lv.period) : null,
+      clock: typeof lv.clock === "string" && /^\d{1,3}:\d{2}$/.test(lv.clock) ? lv.clock : null,
+      score: liveScore(lv.score),
+      seen: isNaN(seen) ? null : seen,
+    });
+    st.stale = (st.status === "live" || st.status === "break") && !(now - seen < LIVE_STALE_MS);
+    return st;
+  }
+  if (start == null) return st;
+  st.status = now < start - SOON_MS ? "sched" : now < start ? "soon" : now < start + GAME_MS ? "begun" : "late";
+  return st;
+}
+function liveScore(s) {
+  if (!s || !Number.isInteger(s.home) || !Number.isInteger(s.away)) return null;
+  return { home: s.home, away: s.away, decision: s.decision === "ОТ" || s.decision === "Б" ? s.decision : null };
+}
+const shownScore = (st) => (st.score && SCORED.has(st.status) ? st.score : null);
+const winnerOf = (s) => (s && s.home !== s.away ? (s.home > s.away ? "home" : "away") : null);
+
+// «через 2 ч 15 мин» — только в последние 6 часов
+function countdown(start) {
+  const ms = start - Date.now();
+  if (!(ms > 0) || ms > COUNTDOWN_MS) return "";
+  const min = Math.ceil(ms / 6e4);
+  if (min < 2) return "вот-вот начнётся";
+  const h = Math.floor(min / 60), m = min % 60;
+  return `через ${[h ? `${h}\u00a0ч` : "", m ? `${m}\u00a0мин` : ""].filter(Boolean).join(" ")}`;   // число не отрывается от «ч»
+}
+// Когда живое обновлялось: «30 с назад», «7 мин назад», «в 17:42»
+function agoLive(t) {
+  if (t == null) return "давно";
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 60) return `${Math.max(10, Math.round(s / 10) * 10)} с назад`;
+  if (s < 3600) return `${Math.round(s / 60)} мин назад`;
+  return `в ${fmtHM(t)}`;
+}
+// «17:00 МСК · 21:00 местное»
+function timeWords(g, st) {
+  if (!st.time) return "";
+  const loc = localOf(g, st.start);
+  return `${st.time} МСК${loc ? ` · ${loc} местное` : ""}`;
+}
+
+// Статус словами: чип [вид, подпись], строка для карточки и короткая подробность для строки списка
+function statusParts(g, st) {
+  const cd = st.start != null ? countdown(st.start) : "";
+  const stale = st.stale ? `последний счёт · ${agoLive(st.seen)}` : "";
+  switch (st.status) {
+    case "soon": return { chip: ["soon", "Скоро"], text: [timeWords(g, st), cd].filter(Boolean).join(" · "), short: st.time };
+    case "live": return {
+      chip: ["live", "Идёт"],
+      text: stale || [PER_LONG[st.period], st.clock].filter(Boolean).join(" · "),
+      short: st.stale ? "" : [PER_SHORT[st.period], st.clock].filter(Boolean).join(" · "),
+    };
+    case "break": return st.stale ? { chip: ["live", "Идёт"], text: stale, short: "" }
+      : { chip: ["brk", "Перерыв"], text: PER_AFTER[st.period] || "", short: PER_AFTER[st.period] || "" };
+    case "ended": return { chip: ["end", "Окончен"], text: "ждём протокол", short: "ждём протокол" };
+    case "final": return { chip: null, text: st.proto ? "" : "Окончен", short: "" };
+    case "moved": return { chip: ["off", "Перенесён"], text: "новую дату объявит лига", short: "" };
+    case "off": return { chip: ["off", "Отменён"], text: "", short: "" };
+    case "begun": return { chip: null, text: `Начался в ${st.time} МСК${liveOn() ? "" : " · счёт — после протокола"}`, short: "начался" };
+    case "late": return { chip: null, text: "Ждём протокол лиги", short: "ждём протокол" };
+    default: {
+      const day = daysFromToday(g.date) === 0 ? "Сегодня" : fmtLong(g.date);
+      return { chip: null, text: [day, timeWords(g, st) || "время уточняется", cd].filter(Boolean).join(" · "), short: "" };
+    }
+  }
+}
+const chipHTML = (chip, tag = false) => (chip ? `<span class="${tag ? "tag" : "lv"} ${chip[0]}">${esc(chip[1])}</span>` : "");
+
+// Для экранного диктора: «Рязань-ВДВ — Белгород, идёт, 2-й период · 12:34, счёт 2:1»
+function matchSpeech(g, st = matchState(g)) {
+  const p = statusParts(g, st);
+  const sc = shownScore(st);
+  const parts = [`${team(g.home).name} — ${team(g.away).name}`];
+  if (p.chip) parts.push(p.chip[1].toLowerCase());
+  else if (st.status === "final" && !p.text) parts.push("окончен");
+  if (p.text) parts.push(p.text);
+  if (sc) parts.push(`счёт ${sc.home}:${sc.away}`);
+  return parts.join(", ");
+}
+
+// Середина табло: до начала — время по Москве крупно, во время и после — счёт
+function boardMid(g, st = matchState(g)) {
+  const sc = shownScore(st);
+  if (sc) {
+    const dec = { "ОТ": "овертайм", "Б": "буллиты" }[sc.decision];
+    const sub = st.status === "live" && !st.stale ? PER_LONG[st.period] : st.status === "break" && !st.stale ? "перерыв" : dec;
+    return `<div class="score${st.status === "final" ? "" : " running"}">${sc.home}:${sc.away}${sub ? `<span class="dec">${esc(sub)}</span>` : ""}</div>`;
+  }
+  const today = daysFromToday(g.date) === 0;
+  const p = statusParts(g, st);
+  if (!st.time) return `<div class="score pending">vs<span class="dec">${today ? "время уточняется" : esc(until(g.date))}</span></div>`;
+  const loc = localOf(g, st.start);
+  const when = (st.start != null && countdown(st.start)) || (["begun", "late"].includes(st.status) ? p.short : until(g.date));
+  return `<div class="score pending">${esc(st.time)}<span class="dec">МСК${loc ? ` · ${esc(loc)} местное` : ""}</span><span class="dec">${esc(when)}</span></div>`;
+}
+
+// Шапка табло своего матча: во время матча чип встаёт на место стикера «Сегодня» — один --ember на карточку
+function boardTopHTML(g, me) {
+  const st = matchState(g);
+  const p = statusParts(g, st);
+  const now = p.chip && p.chip[0] !== "soon" ? chipHTML(p.chip, true) : daysFromToday(g.date) === 0 ? '<span class="tag today">Сегодня</span>' : "";
+  return `<span class="tags">${whereTag(g, me)}${now}${g.official ? "" : '<span class="tag soft">предварительно</span>'}</span><span class="when">${esc(fmtLong(g.date))}</span>`;
+}
+// Строка подробностей под табло своего матча: «2-й период · 12:34 · онлайн лиги». До начала её нет —
+// время и отсчёт уже в середине табло
+function mlineHTML(g) {
+  const st = matchState(g);
+  if (st.status === "sched" || st.status === "soon" || (st.status === "final" && st.proto)) return "";
+  const p = statusParts(g, st);
+  const src = st.lv && shownScore(st) ? ` · ${SRC_NAME[st.lv.src] || "онлайн лиги"}` : "";
+  return p.text ? esc(p.text + src) : "";
+}
+
+// Ссылки матча: текстовая трансляция (онлайн лиги), «Смотреть» (пост клуба, ADR-019, раздел 7), протокол.
+// Только https из данных. Нет ссылки — нет кнопки
+function linksOf(g, st) {
+  const lv = st.lv || {};
+  const out = [];
+  const online = [lv.online, g.online].find((u) => typeof u === "string" && HTTPS.test(u));
+  if (online) out.push({ kind: "online", url: online });
+  // «Смотреть» собирает сборка из постов клубов (league.json); живое может принести ссылку раньше часовой сборки
+  const watch = Array.isArray(g.watch) && g.watch.length ? g.watch : Array.isArray(lv.watch) ? lv.watch : [];
+  const w = watch.find((x) => x && typeof x.url === "string" && HTTPS.test(x.url));
+  if (w) out.push({ kind: "watch", url: w.url, title: typeof w.title === "string" ? w.title : "" });
+  if (typeof lv.protocol === "string" && HTTPS.test(lv.protocol)) out.push({ kind: "doc", url: lv.protocol });
+  return out;
+}
+// mode: full — карточка матча, полные подписи; board — табло своего матча, коротко, чтобы ряд влез
+// в одну строку на 320px; short — строка матча дня, 32px. Полное название — всегда в aria-label
+const GO_NAME = { online: "Текстовая трансляция", watch: "Смотреть", doc: "Протокол" };
+const GO_SHORT = { online: "Онлайн", watch: "Смотреть" };
+function linksHTML(g, mode = "full", st = matchState(g)) {
+  const short = mode !== "full";
+  const list = linksOf(g, st).filter((x) => !short || GO_SHORT[x.kind]);
+  if (!list.length) return "";
+  const pair = `${team(g.home).name} — ${team(g.away).name}`;
+  return `<div class="go-row${mode === "short" ? " short" : ""}">${list.map((x) => {
+    const label = `${GO_NAME[x.kind]}: ${x.kind === "watch" && x.title ? x.title : pair}`;
+    return `<button type="button" class="go" data-out="${esc(x.url)}" data-fk="o:${esc(g.id)}:${x.kind}" aria-label="${esc(label)}">${LV_ICON[x.kind]}<span>${(short ? GO_SHORT : GO_NAME)[x.kind]}</span></button>`;
+  }).join("")}</div>`;
+}
+function openOut(url) {
+  if (!HTTPS.test(url || "")) return;
+  haptic();
+  // мини-апп не закрывается: болельщик вернётся на то же место
+  if (inTelegram && /^https:\/\/t\.me\//.test(url)) return tg.openTelegramLink(url);
+  if (inTelegram && tg.openLink) return tg.openLink(url);
+  window.open(url, "_blank", "noopener");
+}
+
+// Табло своего матча на «Сегодня»: карточка нажимается вся, кнопки и прогноз внутри — свои
+function nextCard(g, me) {
+  const today = daysFromToday(g.date) === 0;
+  const st = matchState(g);
+  const lv = (kind, cls, html) => `<div class="${cls}" data-lv="${kind}" data-g="${esc(g.id)}">${html}</div>`;
+  return `<section class="part"><div class="label">${today ? "Матч сегодня" : "Следующий матч"}${g.n ? `<span class="aside">№ ${esc(g.n)}</span>` : ""}</div>
+    <div class="board-card tap mine-card" data-game="${esc(g.id)}">
+      <div class="board-hit" role="button" tabindex="0" aria-label="${esc(`Открыть матч: ${matchSpeech(g, st)}`)}">
+        ${lv("btop", "board-top", boardTopHTML(g, me))}
+        ${board(g, st)}
+        ${lv("mline", "mline", mlineHTML(g))}
+      </div>
+      ${lv("links", "links-box", linksHTML(g, "board", st))}
+      ${predOn() ? lv("vote", "vote-box", voteHTML(g)) : ""}
+    </div></section>`;
+}
+
+// ---------- «Матчи дня в РХЛ» ----------
+
+// Матчи лиги в день: свой — первым, остальные по времени начала, без времени — в конце
+function mdGames(day) {
+  const me = state.fav;
+  return games().filter((g) => g.date === day)
+    .map((g) => ({ g, mine: g.home === me || g.away === me, t: matchState(g).start }))
+    .sort((a, b) => (b.mine - a.mine) || ((a.t == null ? Infinity : a.t) - (b.t == null ? Infinity : b.t)) || (a.g.id < b.g.id ? -1 : 1))
+    .map((x) => x.g);
+}
+function mdView() {
+  const day = todayISO();
+  const list = mdGames(day);
+  const all = state.mdAll || list.length <= MD_SHOW + 1;
+  const shown = all ? list : list.slice(0, MD_SHOW);
+  return { day, list, shown, all, sig: `${day}|${list.length}|${shown.map((g) => g.id).join(",")}` };
+}
+function mdHTML(v = mdView()) {
+  const label = (aside) => `<div class="label" role="heading" aria-level="2">Матчи дня в РХЛ${aside ? `<span class="aside">${aside}</span>` : ""}</div>`;
+  if (!v.list.length) {
+    const next = games().find((g) => g.date > v.day);
+    if (!next) return "";
+    const n = games().filter((g) => g.date === next.date).length;
+    return `${label("")}<button type="button" class="md-next" data-md-cal="${esc(next.date)}">
+      <span><small>Сегодня в лиге матчей нет</small><b>Следующий игровой день — ${esc(fmtLong(next.date))} · ${n} ${plural(n, "матч", "матча", "матчей")}</b></span>${ICON_ME.chev}</button>`;
+  }
+  const more = v.list.length - v.shown.length;
+  return `${label(`${esc(fmtLong(v.day))} · МСК`)}
+    <div class="list md-list">${v.shown.map(mdRow).join("")}</div>
+    ${more > 0 ? `<button type="button" class="md-more" data-md-all>Все ${v.list.length} ${plural(v.list.length, "матч", "матча", "матчей")} дня</button>` : ""}`;
+}
+function mdRow(g) {
+  const mine = g.home === state.fav || g.away === state.fav;
+  return `<div class="md-row${mine ? " mine" : ""}" data-game="${esc(g.id)}" data-lv="mdrow" data-g="${esc(g.id)}">${mdRowInner(g)}</div>`;
+}
+// Строка матча дня: слева время или статус, справа две строки команд с шайбами, под ними ссылки.
+// Строка — не кнопка: внутри свои кнопки. С клавиатуры матч открывает .md-main
+function mdRowInner(g) {
+  const st = matchState(g);
+  const sc = shownScore(st);
+  const win = winnerOf(sc);
+  const line = (id, side) => `<span class="md-tm">${emblem(id)}<span class="nm${id === state.fav ? " me" : ""}">${esc(team(id).name)}</span>${sc ? `<b class="gl num${win === side ? " lead" : ""}">${sc[side]}</b>` : ""}</span>`;
+  const p = statusParts(g, st);
+  let when;
+  if (p.chip) when = `${chipHTML(p.chip)}${p.short ? `<small>${esc(p.short)}</small>` : ""}`;
+  else if (st.status === "final") when = `<small>Окончен</small>${sc && sc.decision ? `<small>${sc.decision === "ОТ" ? "в овертайме" : "по буллитам"}</small>` : ""}`;
+  else if (st.time) when = `<b class="num">${esc(st.time)}</b>${p.short ? `<small>${esc(p.short)}</small>` : ""}`;
+  else when = "<small>время уточняется</small>";
+  return `<button type="button" class="md-main" data-fk="g:${esc(g.id)}" aria-label="${esc(matchSpeech(g, st))}"><span class="md-when">${when}</span><span class="md-teams">${line(g.home, "home")}${line(g.away, "away")}</span></button>${linksHTML(g, "short", st)}`;
+}
+// Список дня перерисовывается целиком, только когда поменялся состав или порядок строк
+function paintMd() {
+  const box = $("#md");
+  if (!box) return;
+  const v = mdView();
+  if (box.dataset.sig === v.sig) return;
+  box.dataset.sig = v.sig;
+  patch(box, mdHTML(v));
+  primeLive(box);
+}
+
+// ---------- карточка матча: статус, лента событий, источник ----------
+
+function statusLineHTML(g) {
+  const st = matchState(g);
+  const p = statusParts(g, st);
+  if (!p.chip && !p.text) return "";
+  return `${chipHTML(p.chip)}${p.text ? `<span>${esc(p.text)}</span>` : ""}`;
+}
+function eventsHTML(g) {
+  const st = matchState(g);
+  if (st.proto) return "";
+  const evs = st.lv && Array.isArray(st.lv.events) ? st.lv.events.filter((e) => e && typeof e === "object").slice(-60) : [];
+  const label = (aside) => `<div class="label" role="heading" aria-level="2">Лента матча${aside ? `<span class="aside">${aside}</span>` : ""}</div>`;
+  if (!evs.length) {
+    return st.lv && (st.status === "live" || st.status === "break")
+      ? `${label("")}<div class="ev-empty">Онлайн лиги пока не передал событий. Счёт выше обновляется сам.</div>` : "";
+  }
+  const key = gameKey(g);
+  const list = evs.slice().reverse();
+  const shown = state.evAll === key ? list : list.slice(0, EV_SHOW);
+  let html = "", per = null;
+  for (const e of shown) {
+    const p = e.period != null ? String(e.period) : "";
+    if (p && p !== per) {
+      per = p;
+      html += `<div class="period"><span class="tag">${esc(PER_LONG[p] || p)}</span></div>`;
+    }
+    html += evRow(g, e);
+  }
+  const more = list.length - shown.length;
+  return `${label("новое сверху")}<div class="goals ev-list">${html}</div>${more > 0
+    ? `<button type="button" class="md-more" data-ev-all="${esc(key)}">Показать все ${list.length} ${plural(list.length, "событие", "события", "событий")}</button>` : ""}`;
+}
+function evRow(g, e) {
+  const side = e.team === "home" || e.team === "away" ? e.team : null;
+  const id = side ? sideTeam(g, side) : null;
+  const tm = typeof e.time === "string" && /^\d{1,3}:\d{2}$/.test(e.time) ? e.time : "";
+  const text = typeof e.text === "string" ? e.text : "";
+  if ((e.kind === "goal" || e.kind === "penalty") && id) {
+    const what = e.kind === "goal" ? "гол" : "удаление";
+    const sc = e.kind === "goal" && typeof e.score === "string" && /^\d{1,2}:\d{1,2}$/.test(e.score) ? e.score : "";
+    return `<div class="goal ev${e.kind === "penalty" ? " pen" : ""}"><span class="tm num">${esc(tm)}</span><span class="ev-em">${emblem(id)}</span>
+      <div class="who">${esc(text || team(id).name)}<div class="as">${what} · ${esc(team(id).name)}</div></div><span class="sc num">${esc(sc)}</span></div>`;
+  }
+  if (!text) return "";
+  return `<div class="ev-line">${tm ? `<b class="num">${esc(tm)}</b>` : ""}<span>${esc(text)}</span></div>`;
+}
+// «Счёт по ходу — онлайн лиги, 30 с назад» — внизу ленты. Пришёл протокол — источник в «О матче»
+function srcLineHTML(g) {
+  const st = matchState(g);
+  if (st.proto || !st.lv || !shownScore(st)) return "";
+  return `Счёт по ходу — ${esc(SRC_NAME[st.lv.src] || "онлайн лиги")}, ${esc(agoLive(st.seen))}`;
+}
+
+// ---------- точечная перерисовка ----------
+// Куски, которые меняет живое, помечены data-lv (что это) и data-g (id матча). Раз в 20 секунд каждый
+// считается заново и заменяется, только если изменился: без мигания, фокус и прокрутка на месте
+
+const lvHTML = new WeakMap();
+const LV = {
+  btop: (g) => boardTopHTML(g, state.fav),
+  mid: (g) => boardMid(g),
+  mline: (g) => mlineHTML(g),
+  links: (g, el) => linksHTML(g, el.closest("#sheet") ? "full" : "board"),
+  vote: (g) => voteHTML(g),
+  mdrow: (g) => mdRowInner(g),
+  cal1: (g, el) => gameRowInner(g, el.dataset.me),
+  cal2: (g) => leagueRowInner(g),
+  mstat: (g) => statusLineHTML(g),
+  events: (g) => eventsHTML(g),
+  src: (g) => srcLineHTML(g),
+};
+function patch(el, html) {
+  if (lvHTML.get(el) === html) return false;
+  const a = document.activeElement;
+  const fk = a && a !== el && el.contains(a) && a.dataset ? a.dataset.fk : null;
+  el.innerHTML = html;
+  lvHTML.set(el, html);
+  if (fk) {
+    const n = el.querySelector(`[data-fk="${CSS.escape(fk)}"]`);
+    if (n) n.focus({ preventScroll: true });
+  }
+  return true;
+}
+function lvEach(root, fn) {
+  if (!root || !state.data) return;
+  root.querySelectorAll("[data-lv]").forEach((el) => {
+    const f = LV[el.dataset.lv];
+    const g = f && findGame(el.dataset.g || "");
+    if (g) fn(el, f(g, el));
+  });
+}
+// После отрисовки запоминаем, что нарисовано: первая перерисовка не заменит то же самое
+const primeLive = (root) => lvEach(root, (el, html) => lvHTML.set(el, html));
+// То, что читаешь, не уезжает. Якорь — то, что на 40% высоты экрана (или листа); если это меняющийся
+// кусок (лента событий растёт сверху), — ближайший неизменный блок под ним. После замены прокрутка
+// сдвигается на столько, на сколько якорь съехал
+function scrollAnchor(box, x, y) {
+  const el = document.elementFromPoint(x, y);
+  if (!el || !box.contains(el)) return null;
+  const frag = el.closest("[data-lv]");
+  if (!frag) return el;
+  for (let n = frag; n && n !== box; n = n.parentElement) {
+    let s = n.nextElementSibling;
+    while (s && (s.matches("[data-lv]") || s.querySelector("[data-lv]") || !s.getBoundingClientRect().height)) s = s.nextElementSibling;
+    if (s) return s;
+  }
+  return frag;
+}
+function keepScroll(fn) {
+  const sheet = $("#sheet");
+  const inSheet = !sheet.hidden && !sheetClosing;
+  let a = null;
+  if (inSheet ? sheet.scrollTop > 0 : window.scrollY > 0) {
+    const r = inSheet ? sheet.getBoundingClientRect() : { left: 0, top: 0, width: innerWidth, height: innerHeight };
+    const el = scrollAnchor(inSheet ? sheet : $("#screen"), r.left + r.width / 2, r.top + r.height * 0.4);
+    if (el) a = { el, top: el.getBoundingClientRect().top };
+  }
+  fn();
+  if (!a || !a.el.isConnected) return;
+  const d = a.el.getBoundingClientRect().top - a.top;
+  if (Math.abs(d) < 0.5) return;
+  if (inSheet) sheet.scrollTop += d;
+  else window.scrollBy(0, d);
+}
+function paintLive() {
+  if (!state.data) return;
+  keepScroll(() => {
+    if (state.tab === "home") paintMd();
+    lvEach(document, (el, html) => {
+      if (el.closest("#sheet") && $("#sheet").hidden) return;
+      patch(el, html);
+    });
+  });
+}
+
+// ---------- «Кто победит?» (ADR-020) ----------
+
+const tallyOf = (g) => {
+  const d = state.pred.day[g.date];
+  const t = d && d.games && d.games[gameKey(g)];
+  return t && typeof t === "object" ? t : null;
+};
+function setTally(day, key, t) {
+  const P = state.pred;
+  if (!P.day[day]) P.day[day] = { games: {}, at: Date.now() };
+  P.day[day].games[key] = t;
+}
+function loadPredDay(day) {
+  const P = state.pred;
+  if (!predOn() || P.loading[day]) return P.loading[day] || Promise.resolve(null);
+  const ask = (auth) => liveApi("GET", `/predict/day/${day}`, null, auth);
+  P.loading[day] = ask(predAuthed())
+    .catch((e) => (e.status === 401 ? ask(false) : Promise.reject(e)))   // вход устарел — хотя бы доли без своего голоса
+    .then((d) => { P.day[day] = { games: (d && d.games && typeof d.games === "object") ? d.games : {}, at: Date.now() }; })
+    .catch(() => { P.day[day] = { games: (P.day[day] && P.day[day].games) || {}, at: Date.now(), fail: true }; })
+    .finally(() => { delete P.loading[day]; paintLive(); });
+  return P.loading[day];
+}
+// Доли трибуны на экране освежаем раз в минуту: только те дни, чьи блоки видны
+function predTick() {
+  if (!predOn()) return;
+  const days = new Set();
+  document.querySelectorAll('[data-lv="vote"]').forEach((el) => {
+    if (el.closest("#sheet") && $("#sheet").hidden) return;
+    const g = findGame(el.dataset.g || "");
+    if (g) days.add(g.date);
+  });
+  days.forEach((d) => {
+    const x = state.pred.day[d];
+    if (!x || Date.now() - x.at > PRED_FRESH_MS) loadPredDay(d);
+  });
+}
+// Одна постоянная область для экранного диктора: блок прогноза перерисовывается, а объявление — нет
+function announce(text) {
+  let box = $("#lv-say");
+  if (!box) {
+    document.body.insertAdjacentHTML("beforeend", '<div id="lv-say" class="sr-only" aria-live="polite"></div>');
+    box = $("#lv-say");
+  }
+  box.textContent = "";
+  setTimeout(() => { box.textContent = text; }, 50);
+}
+
+function voteHTML(g) {
+  if (!predOn() || g.season) return "";
+  const P = state.pred;
+  const key = gameKey(g);
+  const st = matchState(g);
+  const t = tallyOf(g);
+  const result = (t && (t.result === "home" || t.result === "away") ? t.result : null)
+    || (st.status === "ended" || st.status === "final" ? winnerOf(st.score) : null);
+  // приём — до начала матча; время неизвестно — до конца дня (ADR-020, раздел 1). Сервер главнее
+  const open = !result && (st.status === "sched" || st.status === "soon") && daysFromToday(g.date) >= 0 && !(t && t.open === false);
+  const me = t && (t.me === "home" || t.me === "away") ? t.me : null;
+  const votes = t && Number.isInteger(t.votes) ? t.votes : 0;
+  if (!open && !votes) return "";
+  const idOf = (side) => (side === "home" ? g.home : g.away);
+  const aside = !open ? (result ? "матч сыгран" : "приём закрыт") : me ? "твой голос принят" : "";
+  let html = `<div class="vote" role="group" aria-label="${esc(`Кто победит: ${team(g.home).name} или ${team(g.away).name}`)}">
+    <div class="vote-top"><span>Кто победит?</span>${aside ? `<span>${aside}</span>` : ""}</div>`;
+  if (open) {
+    html += `<div class="vote-btns">${["home", "away"].map((side) => {
+      const on = me === side;
+      const busy = P.busy[key] === side;
+      return `<button type="button" class="vote-b${on ? " on" : ""}" data-vote="${side}" data-key="${esc(key)}" data-g="${esc(g.id)}" data-fk="v:${esc(key)}:${side}" aria-pressed="${on}"${busy ? ' aria-busy="true"' : ""}${P.busy[key] ? " disabled" : ""}>${emblem(idOf(side), "md")}<span class="vn">${esc(team(idOf(side)).name)}</span>${on ? LV_ICON.ok : ""}</button>`;
+    }).join("")}</div>`;
+  }
+  // до своего голоса долей не видно, иначе все голосуют за большинство (ADR-020)
+  if (votes && (me || !open)) {
+    const h = Math.max(0, Math.min(100, Number(t.home) || 0));
+    const a = Math.max(0, Math.min(100, Number(t.away) || 0));
+    const lead = h >= a ? "home" : "away";
+    const say = h === a ? "Поровну" : `${Math.max(h, a)}% за ${quoted(idOf(lead))}`;
+    html += `<div class="vote-bar-row">${emblem(g.home)}<b class="num">${h}%</b><div class="vote-bar" role="img" aria-label="${esc(`За ${team(g.home).name} ${h}%, за ${team(g.away).name} ${a}%`)}"><i style="width:${h}%"></i></div><b class="num">${a}%</b>${emblem(g.away)}</div>
+      <div class="vote-say"><b>${say}</b> · ${votes} ${plural(votes, "голос", "голоса", "голосов")}</div>`;
+  }
+  if (result && me) {
+    html += `<div class="vote-res"><span class="res ${me === result ? "w" : "l"}">${me === result ? "Угадал" : "Не угадал"}</span><span>Твой голос — за ${quoted(idOf(me))}</span></div>`;
+  } else if (me && !open) {
+    html += `<div class="vote-say">Твой голос — за ${quoted(idOf(me))}</div>`;
+  } else if (me) {
+    html += '<div class="vote-say">Передумал — нажми на другую, до начала матча</div>';
+  }
+  const note = P.note[key];
+  if (note === "tg") {
+    const app = state.data.links && state.data.links.app;
+    const link = app && HTTPS.test(app) ? `${app}?startapp=${encodeURIComponent(`m-${g.id}`)}` : "";
+    html += `<div class="vote-note">Голосовать можно в Telegram${link ? ` <button type="button" class="fc-link" data-out="${esc(link)}" data-fk="v:${esc(key)}:tg">Открыть в Telegram ›</button>` : ""}</div>`;
+  } else if (note) {
+    html += `<div class="vote-note">${esc(note)}</div>`;
+  }
+  return html + "</div>";
+}
+
+async function vote(key, pick, id) {
+  const g = findGame(id);
+  const P = state.pred;
+  if (!g || gameKey(g) !== key || (pick !== "home" && pick !== "away") || P.busy[key]) return;
+  haptic();
+  if (!predAuthed()) {
+    P.note[key] = "tg";
+    announce("Голосовать можно в Telegram");
+    return paintLive();
+  }
+  const t = tallyOf(g);
+  if (t && t.me === pick) return;
+  P.busy[key] = pick;
+  delete P.note[key];
+  paintLive();
+  try {
+    const r = await liveApi("POST", "/predict/vote", { key, pick }, true);
+    if (r && typeof r === "object") setTally(g.date, key, r);
+    if (inTelegram && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    announce(`Голос за ${team(pick === "home" ? g.home : g.away).name} принят`);
+  } catch (e) {
+    P.note[key] = e.message;
+    announce(e.message);
+    // 409 — матч уже начался: приём закрыт, свежие доли берём с сервера
+    if (e.status === 409 && t) t.open = false;
+    if (inTelegram && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+    delete P.busy[key];
+    if (e.status === 409) loadPredDay(g.date);
+  }
+  delete P.busy[key];
+  paintLive();
+}
+
+// «Я» → «Прогнозы»: личное число и способ удалить голоса (CLAUDE.md, правило 4)
+function predMeText() {
+  const me = state.pred.me;
+  if (!predAuthed()) return "Голосовать можно в Telegram";
+  if (me === undefined) return "Загружаем…";
+  if (!me) return "Не удалось загрузить";
+  if (!me.of) return "Голосуй на карточке матча — итог появится после игры";
+  return `Угадано ${me.right} из ${me.of}${me.streak > 1 ? ` · ${me.streak} подряд` : ""}`;
+}
+function predRowHTML() {
+  if (!predOn()) return "";
+  return `<button type="button" class="menu-row" data-pred-open>${ICON_ME.vote}<span><b>Прогнозы</b><small id="pred-me">${esc(predMeText())}</small></span>${ICON_ME.chev}</button>`;
+}
+function loadPredMe(force = false) {
+  const P = state.pred;
+  if (!predOn() || !predAuthed() || P.meLoading || (P.me !== undefined && !force)) return;
+  P.meLoading = liveApi("GET", "/predict/me", null, true)
+    .then((d) => { P.me = d && Number.isInteger(d.right) && Number.isInteger(d.of) ? d : null; })
+    .catch(() => { P.me = null; })
+    .finally(() => {
+      P.meLoading = null;
+      const box = $("#pred-me");
+      if (box) box.textContent = predMeText();
+      if ($("#pred-sheet")) openPredSheet();
+    });
+}
+const PRED_RULES = [
+  "Один голос на матч — за хозяев или гостей. Поменять можно до начала игры.",
+  "Доли трибуны видно после своего голоса.",
+  "Без очков, призов и таблиц: только твоё число угаданных.",
+];
+function openPredSheet(step = "") {
+  const me = state.pred.me;
+  const big = predAuthed() && me && me.of
+    ? `<div class="pred-big"><b class="num">${me.right}</b><span>из ${me.of}<br>угадано</span>${me.streak > 1 ? `<span class="tag soft">${me.streak} подряд</span>` : ""}</div>`
+    : `<p class="pred-sub">${esc(predMeText())}</p>`;
+  let tail = "";
+  if (predAuthed()) {
+    tail = step === "ask"
+      ? `<div class="pred-confirm"><p>Сотрём все твои голоса и счёт угаданных. Вернуть их нельзя.</p>
+          <div class="pred-btns"><button type="button" class="btn ghost" data-pred-keep>Не удалять</button><button type="button" class="btn" data-pred-erase>Удалить</button></div></div>`
+      : `<div class="menu"><button type="button" class="menu-row" data-pred-forget>${ICON_ME.trash}<span><b>Удалить мои прогнозы</b><small>${step === "done" ? "Удалено. Голосовать можно заново" : step === "fail" ? "Не получилось. Проверь интернет и попробуй ещё раз" : "Все голоса и счёт угаданных"}</small></span>${ICON_ME.chev}</button></div>`;
+  }
+  showSheet(`<div class="grab"></div>
+    <div class="sheet-head" id="pred-sheet"><span class="when">Прогнозы «Кто победит?»</span>
+    <button class="btn-round" data-close aria-label="Закрыть">${ICON.close}</button></div>
+    ${big}<ol class="fc-rules">${PRED_RULES.map((r) => `<li>${esc(r)}</li>`).join("")}</ol>${tail}`);
+  if (step === "ask") { const b = $("#sheet [data-pred-keep]"); if (b) b.focus({ preventScroll: true }); }
+}
+async function predForget() {
+  try {
+    await liveApi("DELETE", "/predict/me", null, true);
+  } catch (e) {
+    return openPredSheet("fail");
+  }
+  const P = state.pred;
+  P.me = { right: 0, of: 0, streak: 0 };
+  Object.values(P.day).forEach((d) => Object.values(d.games || {}).forEach((t) => { if (t && t.me) { t.me = null; } }));
+  Object.values(P.day).forEach((d) => { d.at = 0; });
+  haptic();
+  openPredSheet("done");
+  const box = $("#pred-me");
+  if (box) box.textContent = predMeText();
+  paintLive();
 }
 
 // ---------- экраны ----------
@@ -455,10 +1238,16 @@ function seasonStats(me, count = false) {
   }
   if (!mine.length) return "";
   const home = mine.filter((g) => g.home === me).length;
-  const days = Math.max(daysFromToday(mine[0].date), 0);
+  // «0 дней до старта» не бывает: в день первого матча — «1-й матч сезона сегодня»,
+  // после него и до протокола лиги — сколько сыграно
+  const days = daysFromToday(mine[0].date);
+  const played = mine.filter((g) => g.date < todayISO()).length;
+  const third = days > 0 ? `${n(days)}<span>${plural(days, "день", "дня", "дней")}<br>до старта</span>`
+    : days === 0 ? "<b>1-й</b><span>матч сезона<br>сегодня</span>"
+    : `${n(played)}<span>${plural(played, "сыгран", "сыграно", "сыграно")},<br>ждём протокол</span>`;
   return `<div class="stat">${n(mine.length)}<span>матчей<br>в сезоне</span></div>
     <div class="stat">${n(home)}<span>дома,<br>${mine.length - home} на выезде</span></div>
-    <div class="stat">${n(days)}<span>${plural(days, "день", "дня", "дней")}<br>до старта</span></div>`;
+    <div class="stat">${third}</div>`;
 }
 
 // Самый длинный кусок названия, который нельзя перенести: по нему подбирается кегль шапки
@@ -499,7 +1288,7 @@ function refreshHome() {
     const box = $("#home-body");
     if (!box || state.tab !== "home") return;
     box.innerHTML = homeBody();
-    countUp(box);
+    primeLive(box);
     watchFeedImages(box);
     watchSeen(box);
     mountStream();
@@ -507,10 +1296,10 @@ function refreshHome() {
   });
 }
 
-// Бюджет «Сегодня» — семь блоков (ADR-017): шапка с переключателем, цифры сезона, следующий матч,
-// ряд историй, последний результат, лист дня и отметка «Ты в курсе за сутки» в его конце.
-// Новый блок не добавляется, а вытесняет старый. Секция — свой <section>: её заголовок прилипает,
-// пока она на экране, и уходит вместе с ней
+// Бюджет «Сегодня» — шесть блоков (ADR-017, пересмотр 03.10): шапка с переключателем, свой матч,
+// «Матчи дня в РХЛ», последний результат, лист дня и отметка «Ты в курсе за сутки» в его конце.
+// Матчи дня вытеснили цифры сезона — они на паспорте в «Я». Новый блок не добавляется, а вытесняет
+// старый. Секция — свой <section>: её заголовок прилипает, пока она на экране, и уходит вместе с ней
 function homeToday() {
   const me = state.fav;
   const next = nextGame(me);
@@ -518,18 +1307,13 @@ function homeToday() {
 
   let html = "";
   if (next) {
-    const today = daysFromToday(next.date) === 0;
-    html += `<section class="part"><div class="label">Следующий матч${next.n ? `<span class="aside">№ ${esc(next.n)}</span>` : ""}</div>
-      <div class="board-card tap" data-game="${esc(next.id)}" role="button" tabindex="0">
-        <div class="board-top">
-          <span class="tags">${whereTag(next, me)}${today ? '<span class="tag today">Сегодня</span>' : ""}${next.official ? "" : '<span class="tag soft">предварительно</span>'}</span>
-          <span class="when">${esc(fmtLong(next.date))}</span>
-        </div>
-        ${board(next)}
-      </div></section>`;
+    html += nextCard(next, me);
   } else {
     html += `<section class="part"><div class="label">Следующий матч</div><div class="empty">Матчей регулярного чемпионата больше нет</div></section>`;
   }
+  // все матчи лиги сегодня — под своим (ADR-019, раздел 1); список перерисовывает живое
+  const md = mdView();
+  html += `<section class="part md-part" id="md" data-sig="${esc(md.sig)}">${mdHTML(md)}</section>`;
   if (last) {
     html += `<section class="part"><div class="label">Последний результат</div>
       <div class="board-card tap" data-game="${esc(last.id)}" role="button" tabindex="0">
@@ -538,11 +1322,6 @@ function homeToday() {
         ${periodsLine(last)}
       </div></section>`;
   }
-
-  // цифры сезона — ниже табло: переключатель забрал у первого экрана полосу, и на 320×568 табло
-  // уезжало под меню. «Табло всегда на первом экране» (ADR-015) важнее справки о сезоне
-  const stats = seasonStats(me, true);
-  if (stats) html += `<div class="stats">${stats}</div>`;
 
   // лист дня — на своей подложке: переход от «моего матча» к листу виден цветом (ADR-017)
   html += `<div id="feed" class="part deck">${feedHTML(me)}</div>`;
@@ -613,13 +1392,17 @@ function feedSeenPrev(club) {
   return state.feedSeen[club];
 }
 
-// Живые карточки: не просроченные, без скрытых каналов и без двух постов подряд
+// Живые карточки: не просроченные, без скрытых каналов и без двух постов подряд. «Сегодня в лиге» —
+// не на «Сегодня», когда те же матчи уже в «Матчах дня в РХЛ»: один список, а не два (ADR-017, 03.10)
 function feedCards(f) {
   const now = Date.now();
   const hidden = feedHidden();
+  const day = todayISO();
+  const mdToday = games().some((g) => g.date === day);
   const out = [];
   for (const c of f.cards || []) {
     if (!(Date.parse(c.until) > now)) continue;
+    if (c.kind === "today" && mdToday && (!c.date || c.date === day)) continue;
     if (c.kind === "post" && (hidden[c.channel] || !POST_URL.test(c.url || "") || !out.length || out[out.length - 1].kind === "post")) continue;
     out.push(c);
   }
@@ -752,7 +1535,7 @@ function feedEndSay(f) {
   const soon = g ? daysFromToday(g.date) : null;
   const st = soon === 0 ? "match" : soon === 1 ? "eve" : f.state;
   switch (st) {
-    case "match": return `Сегодня играем${g && g.time ? ` в ${g.time}` : ""} — до встречи на трибуне!`;
+    case "match": return `Сегодня играем${g && g.time ? ` в ${g.time} МСК` : ""} — до встречи на трибуне!`;
     case "eve": return "Завтра играем — не пропусти!";
     case "start": return g ? `Сезон стартует ${fmtLong(g.date).replace(/ (?=\S+$)/, "\u00a0")}.` : "Скоро сезон.";
     case "over": return "Сезон окончен — спасибо, что болел!";
@@ -1371,6 +2154,7 @@ function refreshCalendar(keep) {
     if (token !== calToken || state.tab !== "calendar") return;
     const list = calendarList();
     $("#cal-list").innerHTML = calendarMonths(list, anchor ? anchor.date.slice(0, 7) : undefined);
+    primeLive($("#cal-list"));
     if (anchor) {
       const els = [...document.querySelectorAll("#cal-list [data-date]")];
       const el = els.find((x) => x.dataset.date >= anchor.date) || els[els.length - 1];
@@ -1834,7 +2618,7 @@ const otherMatch = (ctx) => ctx.route.kind === "later" || ctx.route.kind === "le
 const STEP = {
   // I. Ближайший матч
   card: {
-    key: "card", screen: "home", kind: "pass", pose: "point", act: "Открыть матч",
+    key: "card", screen: "home", kind: "pass", pose: "point", act: "Открыть матч", hit: "[data-game]",
     aim: (ctx) => firstShown($("#screen"), [`.board-card[data-game="${esc(ctx.route.card.id)}"]`]),
     text: (ctx) => {
       const g = ctx.route.card;
@@ -2043,7 +2827,7 @@ const STEP = {
   // «Поделиться» и настройки — одним шагом: окно на кнопках, настройки — словами
   share: {
     key: "share", screen: "me", kind: "look", pose: "point", aim: onScreen(".me-actions"),
-    text: () => (state.fav === REMIND_TEAM && state.data.links && state.data.links.bot
+    text: () => (state.data.links && state.data.links.bot
       ? "Выложи паспорт в историю или позови друга. Ниже — напоминания, смена команды и эти подсказки."
       : "Выложи паспорт в историю или позови друга. Ниже — смена команды и эти подсказки."),
   },
@@ -2446,7 +3230,7 @@ async function tourFinish() {
   t.primary = () => tourEnd();
   const bot = state.data.links && state.data.links.bot;
   const g = guideOf(state.fav);
-  if (state.fav === REMIND_TEAM && bot) {
+  if (bot) {
     coach(state.fav, g ? "cheer" : "", "Напомнить о матче? Напишу в боте накануне и в день игры, а после — пришлю счёт и разбор.",
       `<button type="button" class="btn" data-tour="remind">Напомнить</button>
        <button type="button" class="coach-skip" data-tour="done">Не сейчас</button>`, "Подсказки");
@@ -3063,6 +3847,12 @@ function inviteLink(id) {
   if (app) return `${app}?startapp=${encodeURIComponent(id)}`;
   return `${location.origin}${location.pathname}?team=${encodeURIComponent(id)}`;
 }
+// Напоминания — о матчах любимой команды: бот подписывает по ?start=remind-<id команды> (ADR-019, раздел 8)
+const remindLink = () => `${state.data.links.bot}?start=remind-${encodeURIComponent(state.fav)}`;
+function openBot(url) {
+  if (inTelegram) tg.openTelegramLink(url);
+  else window.open(url, "_blank", "noopener");
+}
 function canStory() {
   return inTelegram && typeof tg.shareToStory === "function" && tg.isVersionAtLeast("7.8");
 }
@@ -3077,13 +3867,15 @@ const ICON_ME = {
   help: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1 .9-1 1.6v.4M12 16.8v.2"/></svg>',
   hide: '<svg viewBox="0 0 24 24"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6Z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 20 20 4"/></svg>',
   posts: '<svg viewBox="0 0 24 24"><path d="M20 4 3 11l6.5 2.5L12 20z"/><path d="M6 17.5h4M6 20.5h8"/></svg>',
+  vote: '<svg viewBox="0 0 24 24"><path d="M4 20.5h16"/><rect x="5" y="11" width="4" height="7" rx="1"/><rect x="10" y="6" width="4" height="12" rx="1"/><rect x="15" y="9" width="4" height="9" rx="1"/></svg>',
+  trash: '<svg viewBox="0 0 24 24"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13"/></svg>',
 };
 
 function passport(me) {
   const t = team(me);
   const u = tgUser();
   const who = u && u.first_name ? `${esc(u.first_name)} · ` : "";
-  const stats = seasonStats(me);
+  const stats = seasonStats(me, true);   // досчитывают раз в день, как раньше на «Главной»
   return `<article class="passport" aria-label="Паспорт болельщика">
     <div class="pp-top"><span class="pp-tag">Паспорт болельщика</span>${guideOf(me) ? `<span class="pp-guide">${guideFig(me, "hello")}</span>` : STAR}</div>
     <div class="pp-main">${emblem(me, "xl")}
@@ -3115,10 +3907,10 @@ function renderMe() {
   });
   html += `<div class="label">Настройки</div><div class="menu">`;
   if (bot) {
-    html += me === REMIND_TEAM
-      ? `<button type="button" class="menu-row" data-remind>${ICON_ME.bell}<span><b>Напоминания о матчах</b><small>Накануне и в день игры — в боте</small></span>${ICON_ME.chev}</button>`
-      : `<div class="menu-row off">${ICON_ME.bell}<span><b>Напоминания о матчах</b><small>Пока только о «Рязань-ВДВ». Скоро — о любой команде</small></span></div>`;
+    html += `<button type="button" class="menu-row" data-remind>${ICON_ME.bell}<span><b>Напоминания о матчах</b><small>${quoted(me)} — накануне и в день игры, в боте</small></span>${ICON_ME.chev}</button>`;
   }
+  html += predRowHTML();
+  loadPredMe();
   html += `<button type="button" class="menu-row" data-switch-open>${ICON_ME.swap}<span><b>Сменить команду</b><small>Сейчас: ${esc(t.name)}</small></span>${ICON_ME.chev}</button>
   <button type="button" class="menu-row" data-feed-rules>${ICON_ME.posts}<span><b>Посты каналов</b><small>${Object.keys(feedHidden()).length ? `Скрыто: ${Object.keys(feedHidden()).length}. ` : ""}Как мы их выбираем</small></span>${ICON_ME.chev}</button>
   <button type="button" class="menu-row" data-tour-restart>${ICON_ME.help}<span><b>Показать подсказки</b><small>${guideOf(me) ? `${esc(guideOf(me).name)} покажет всё или одну главу` : "Покажем всё или одну главу"}</small></span>${ICON_ME.chev}</button>
@@ -3519,7 +4311,9 @@ function factsHTML(g) {
   let html = `<div class="label">О матче</div><div class="facts-card"><dl class="facts">`;
   if (g.n) html += `<dt>Номер</dt><dd>№ ${esc(g.n)}</dd>`;
   html += `<dt>Город</dt><dd>${esc(team(g.home).city)}</dd>`;
-  if (g.time) html += `<dt>Начало</dt><dd>${esc(g.time)} местное</dd>`;
+  // время в данных московское (ADR-019, раздел 2), у арены в другом поясе — ещё и местное
+  const st = matchState(g);
+  if (st.time) html += `<dt>Начало</dt><dd>${esc(timeWords(g, st))}</dd>`;
   if (g.attendance) html += `<dt>Зрители</dt><dd>${esc(Number(g.attendance).toLocaleString("ru-RU"))}</dd>`;
   if (d && d.referees && d.referees.length) html += `<dt>Главные судьи</dt><dd>${d.referees.map(esc).join(", ")}</dd>`;
   if (d && d.linesmen && d.linesmen.length) html += `<dt>Линейные судьи</dt><dd>${d.linesmen.map(esc).join(", ")}</dd>`;
@@ -3529,6 +4323,7 @@ function factsHTML(g) {
   if (g.season) html += `<dt>Турнир</dt><dd>НМХЛ ${esc(g.season)}, ${esc(STAGE[g.stage] || g.stage)}</dd>`;
   else html += `<dt>Календарь</dt><dd>${g.official ? "ФХР, официальный" : '<span class="tag soft">предварительно</span>'}</dd>`;
   if (g.score) html += `<dt>Источник счёта</dt><dd>протокол лиги</dd>`;
+  else if (shownScore(st) && st.lv) html += `<dt>Источник счёта</dt><dd>${esc(SRC_NAME[st.lv.src] || "онлайн лиги")}, по ходу</dd>`;
   return html + `</dl></div>`;
 }
 
@@ -3574,10 +4369,18 @@ function openMatch(id, from = null, dir = 0) {
   const when = g.season
     ? `${esc(fmtLong(g.date))} ${parseISO(g.date).getUTCFullYear()} · НМХЛ ${esc(g.season)}${g.stage === "playoff" ? ", плей-офф" : ""}`
     : `${esc(fmtLong(g.date))} ${parseISO(g.date).getUTCFullYear()} · ${esc(until(g.date))}`;
+  const st = matchState(g);
   let html = `<div class="grab"></div>
     <div class="sheet-head">${back}<span class="when">${when}</span>
     <button class="btn-round" data-close aria-label="Закрыть">${ICON.close}</button></div>
-    <div class="board-card">${board(g)}${periodsLine(g)}</div>`;
+    <div class="board-card">${board(g, st)}${periodsLine(g)}</div>`;
+  // матч-центр (ADR-019): статус, ссылки, «Кто победит?» (ADR-020) — сверху, до разбора; лента событий по ходу
+  if (!g.season) {
+    const lv = (kind, cls, inner) => `<div class="${cls}" data-lv="${kind}" data-g="${esc(g.id)}">${inner}</div>`;
+    html += lv("mstat", "mc-status", statusLineHTML(g)) + lv("links", "links-box", linksHTML(g, "full", st));
+    if (predOn()) html += lv("vote", "vote-box", voteHTML(g));
+    html += lv("events", "mc-events", eventsHTML(g)) + lv("src", "ev-src", srcLineHTML(g));
+  }
 
   const recapReady = !!recaps[id] || recapMissing.has(id);
   if (g.score) html += `<div id="recap">${recapReady ? recapHTML(g) : recapSkeleton(g)}</div>`;
@@ -3585,6 +4388,8 @@ function openMatch(id, from = null, dir = 0) {
   html += `<div id="facts">${factsHTML(g)}</div>`;
 
   showSheet(html, dir);
+  primeLive($("#sheet"));
+  predTick();
   if (g.score && !recapReady) fillRecap(id);
   if (!state.h2h && !g.season) fillH2H(g);
 }
@@ -3739,15 +4544,18 @@ function fillMarquee() {
   const d = state.data;
   const first = d.games.length ? d.games[0].date : null;
   const played = d.games.filter((g) => g.score).length;
+  const todayN = d.games.filter((g) => g.date === todayISO()).length;
+  const start = first ? daysFromToday(first) : -1;
   const facts = [
     `${d.league} ${d.season}`,
-    first && daysFromToday(first) > 0 ? `старт ${fmtLong(first)}` : `сыграно ${played} из ${d.games.length}`,
+    start > 0 ? `старт ${fmtLong(first)}` : start === 0 ? "старт сезона — сегодня" : `сыграно ${played} из ${d.games.length}`,
+    todayN ? `сегодня в РХЛ ${todayN} ${plural(todayN, "матч", "матча", "матчей")}` : "",
     `${d.teams.length} команд`,
     `${d.games.length} матчей`,
     "Восток и Запад",
     "8 лучших — в плей-офф",
   ];
-  const once = facts.map((f) => `<span>${esc(f)}</span>`).join("");
+  const once = facts.filter(Boolean).map((f) => `<span>${esc(f)}</span>`).join("");
   $("#marquee").innerHTML = once + once;
 }
 
@@ -3778,11 +4586,12 @@ function render(dir = 0) {
     window.scrollTo(0, 0);
   }
   if (state.tab === "home") {
-    countUp(screen);
     watchFeedImages(screen);
     watchSeen(screen);
     mountStream();
   }
+  if (state.tab === "home" || state.tab === "me") countUp(screen);
+  primeLive(screen);
   if (state.tab === "raskat") rsMounted();
   if (dir && !calm()) {
     // двигаем детей, а не сам экран: его край обрезает сдвиг (#screen в style.css)
@@ -3844,7 +4653,7 @@ function confirmTeam(id = state.draft || state.fav) {
 }
 
 document.addEventListener("click", (e) => {
-  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-home-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],[data-pack],[data-pack-nav],#sheet-backdrop");
+  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-home-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],[data-pack],[data-pack-nav],[data-out],[data-vote],[data-md-all],[data-md-cal],[data-ev-all],[data-pred-open],[data-pred-forget],[data-pred-keep],[data-pred-erase],#sheet-backdrop");
   if (!el || el.disabled) return;
   if (el.dataset.guide) return guideHop(el);
   if (el.hasAttribute("data-meet-close") || (el.hasAttribute("data-coach-back") && state.meet)) return closeCoach();
@@ -3859,13 +4668,37 @@ document.addEventListener("click", (e) => {
     }
     if (act === "skip") return tourSkip();
     if (act === "final" && t && !t.greet) return tourFinish();
-    if (act === "remind") {
-      const url = `${state.data.links.bot}?start=remind`;
-      if (inTelegram) tg.openTelegramLink(url);
-      else window.open(url, "_blank", "noopener");
-    }
+    if (act === "remind") openBot(remindLink());
     return tourEnd();
   }
+  // матч-центр (ADR-019) и «Кто победит?» (ADR-020): кнопки внутри карточки матча — свои, матч не открывают
+  if (el.dataset.out) return openOut(el.dataset.out);
+  if (el.dataset.vote) return vote(el.dataset.key, el.dataset.vote, el.dataset.g);
+  if (el.hasAttribute("data-md-all")) {
+    const n = MD_SHOW;
+    state.mdAll = true;
+    haptic();
+    paintMd();
+    const row = document.querySelectorAll("#md .md-main")[n];
+    if (row) row.focus({ preventScroll: true });
+    return;
+  }
+  if (el.dataset.mdCal) {
+    state.cal = calFor(null);
+    return go("calendar");
+  }
+  if (el.dataset.evAll) {
+    state.evAll = el.dataset.evAll;
+    haptic();
+    return paintLive();
+  }
+  if (el.hasAttribute("data-pred-open")) {
+    loadPredMe(state.pred.me === null);
+    return openPredSheet();
+  }
+  if (el.hasAttribute("data-pred-forget")) return openPredSheet("ask");
+  if (el.hasAttribute("data-pred-keep")) return openPredSheet();
+  if (el.hasAttribute("data-pred-erase")) return predForget();
   if (el.dataset.postMore) return openPostMenu(el.dataset.postMore, el);
   if (el.dataset.post) return openPost(el.dataset.post);
   if (el.dataset.feedHide) {
@@ -3920,10 +4753,7 @@ document.addEventListener("click", (e) => {
   if (el.dataset.switch) return confirmTeam(el.dataset.switch);
   if (el.hasAttribute("data-story")) return shareStory();
   if (el.hasAttribute("data-invite")) return shareLink(inviteLink(state.fav), `Болеем вместе за ${team(state.fav).name}: матчи, таблица и счёт РХЛ`);
-  if (el.hasAttribute("data-remind")) {
-    const url = `${state.data.links.bot}?start=remind`;
-    return inTelegram ? tg.openTelegramLink(url) : window.open(url, "_blank", "noopener");
-  }
+  if (el.hasAttribute("data-remind")) return openBot(remindLink());
   if (el.hasAttribute("data-theme-toggle")) return toggleTheme(el);
   if (el.dataset.themePick) {
     haptic();
@@ -4159,6 +4989,12 @@ function initTelegram() {
   }
   applyTheme();
   dropOldKeys();
+  // вход Telegram пришёл после первой отрисовки — доли трибуны берём заново, уже со своим голосом
+  if (state.data && predOn()) {
+    Object.values(state.pred.day).forEach((d) => { d.at = 0; });
+    state.pred.note = {};
+    predTick();
+  }
   // команда могла быть выбрана на другом устройстве — она в облаке Telegram
   const c = cloud();
   if (c) {
@@ -4281,6 +5117,7 @@ function boot(d, cached = false) {
   }
   render();
   hideSplash(cached ? SPLASH_REPEAT_MS : SPLASH_MIN_MS);
+  liveStart();   // матч-центр дня (ADR-019): часы статусов, а с LIVE_API — живое и доли трибуны
   const mid = matchParam();
   if (mid && !state.openedFromLink && (games().some((g) => g.id === mid) || /^h\d+$/.test(mid))) {
     state.openedFromLink = true;

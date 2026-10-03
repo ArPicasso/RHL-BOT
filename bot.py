@@ -1,13 +1,16 @@
 """Бот РХЛ U21 2026/27 (@rhl_u21_bot, aiogram 3): встречает и ведёт в мини-апп, напоминает о матчах.
 
 Весь интерфейс — в мини-аппе (ADR-003). У бота нет своей клавиатуры и меню команд: на всё он
-отвечает стикером и одной кнопкой «Открыть РХЛ» (ADR-005).
+отвечает стикером и кнопкой «Открыть РХЛ» (ADR-005). Вторым планом — матчи дня (`/today`) и
+напоминания о любой команде лиги (`/team`, `/remind`) — ADR-019, раздел 8.
 """
 import asyncio
 import html
 import json
 import logging
+import math
 import os
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -26,18 +29,25 @@ from aiogram.types import (CallbackQuery, FSInputFile, InlineKeyboardButton, Inl
 
 BASE = Path(__file__).parent
 TZ = ZoneInfo("Europe/Moscow")
-SUBS_FILE = BASE / "subscribers.json"
+SUBS_FILE = BASE / "subscribers.json"      # {"<chat_id>": ["ryazan-vdv", …]} — кому о каких командах напоминать
 ANNOUNCED_FILE = BASE / "announced.json"   # матчи, о которых уже написали после игры (ADR-008)
 WAITLIST_FILE = BASE / "raskat_waitlist.json"   # кого позвать, когда в «Раскате» откроется зачёт
+# живые файлы матч-центра (ADR-019, раздел 5): пишет служба live (live.py) на том же сервере
+LIVE_DIR = Path(os.environ.get("LIVE_DIR") or BASE / "live")
 STICKERS = BASE / "stickers"          # стикеры бота (ADR-005), 512×512 WEBP
 # мини-апп (ADR-003); переменная окружения — только чтобы подставить тестовый адрес
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://arpicasso.github.io/bogdanov/"
 REMIND_TODAY_AT = time(10, 0)      # утром в день игры
 REMIND_TOMORROW_AT = time(19, 0)   # вечером накануне
-REMIND_TEAM = "Рязань-ВДВ"         # напоминания пока только о её матчах: games.json
-RESULTS_POLL = 600                 # раз в 10 минут смотрим опубликованные результаты мини-аппа
+REMIND_TEAM = "Рязань-ВДВ"         # её календарь — games.json: запасной путь, если league.json не скачался
+MAX_TEAMS = 3                      # до трёх команд на болельщика
+RESULTS_POLL = 60                  # раз в минуту: live/ с диска, league.json — не чаще DATA_TTL
 DATA_TTL = 600                     # опубликованные данные перечитываем не чаще раза в 10 минут
+DATA_RETRY = 120                   # не скачалось — пробуем снова не раньше чем через 2 минуты
 RESULTS_FRESH_DAYS = 2             # матчи старше не присылаем
+LIVE_FINAL_HOLD = timedelta(minutes=10)   # «окончен» с одним счётом столько подряд — пишем финал
+LIVE_STALE = timedelta(minutes=20)        # live/ без обновления дольше — ход матча не показываем
+TODAY_MAX = 14                     # матчей в одном сообщении «Матчи сегодня»
 QUIET_FROM, QUIET_TO = time(23, 0), time(9, 0)   # ночью молчим, результат уйдёт утром
 
 DOW = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
@@ -56,9 +66,28 @@ GAMES = sorted(
      for g in json.loads((BASE / "games.json").read_text(encoding="utf-8"))),
     key=lambda g: g.d,
 )
-# id команды → название: для диплинка /start <id> (ADR-005)
-TEAMS = {t["id"]: t["name"] for t in json.loads((BASE / "teams.json").read_text(encoding="utf-8"))}
+TEAM_LIST = json.loads((BASE / "teams.json").read_text(encoding="utf-8"))
+# id команды → название: для диплинка /start <id> (ADR-005) и всех текстов
+TEAMS = {t["id"]: t["name"] for t in TEAM_LIST}
+TEAM_INFO = {t["id"]: t for t in TEAM_LIST}   # город и пояс арены (ADR-019), конференция
 REMIND_TEAM_ID = next(i for i, name in TEAMS.items() if name == REMIND_TEAM)
+CONFS = {"west": "Запад", "east": "Восток"}
+
+
+def _norm(name: str) -> str:
+    """Как build_data.norm: «МХК Белгород» и «Белгород» — одна команда."""
+    name = name.lower().replace("ё", "е").replace("«", "").replace("»", "").replace('"', "")
+    name = re.sub(r"\s*-\s*", "-", name)
+    name = re.sub(r"^(мхк|хк)\s+", "", name.strip())
+    return re.sub(r"\s+", " ", name)
+
+
+TEAM_BY_NAME = {_norm(n): t["id"] for t in TEAM_LIST for n in [t["name"], *t.get("aliases", [])]}
+
+
+def tname(team: str) -> str:
+    """Название команды по id; не нашлось — как есть (соперник из games.json без id)."""
+    return TEAMS.get(team, team)
 
 # ---------- свои эмодзи ----------
 # Набор rhl_u21_by_<бот> (tools/upload_emoji.py) в порядке stickers/emoji.json. Писать ими бот
@@ -98,15 +127,19 @@ B_LEADERS = "Все лидеры"
 B_RASKAT = "Собрать раскат"
 B_WAIT_ON = "Позвать, когда откроется"
 B_WAIT_OFF = "Больше не звать"
+B_TODAY = "Матчи сегодня"
+B_PREDICT = "Кто победит?"
+B_MATCH = "Матч в приложении"
+B_ONLINE = "Текстовая трансляция"
 
 # видно в пустом чате до «Старт» и в профиле бота (до 512 и 120 символов)
 DESCRIPTION = ("Бот Первенства России U21 — РХЛ 2026/27.\n\n"
-               "🏒 Календарь всех 26 команд, таблица и счёт матчей — в приложении\n"
-               "🏆 Лучшие игроки лиги: бомбардиры, снайперы, вратари\n"
-               "🏑 Раскат дня: головоломка про шайбу на пару минут\n"
-               "🔔 Напоминания перед играми\n\n"
+               "📅 Матчи дня: время начала, счёт по ходу игры, текстовые трансляции\n"
+               "🔔 Напомню о матчах любой команды лиги — накануне и в день игры, пришлю счёт\n"
+               "🏒 Календарь 26 команд, таблица и лидеры — в приложении\n"
+               "🏑 Раскат дня: головоломка про шайбу на пару минут\n\n"
                "Жми «Старт» 👇")
-SHORT_DESCRIPTION = "РХЛ U21: календарь, таблица и счёт матчей. Напомню перед игрой 🏒"
+SHORT_DESCRIPTION = "РХЛ U21: матчи дня со временем и счётом, трансляции и напоминания о твоей команде 🏒"
 
 
 def app_url(team: str | None = None, match: str | None = None, view: str | None = None,
@@ -123,44 +156,34 @@ def app_url(team: str | None = None, match: str | None = None, view: str | None 
     return urlunsplit(u._replace(query=urlencode(parse_qsl(u.query) + extra)))
 
 
-def app_kb(team: str | None = None) -> InlineKeyboardMarkup:
-    """Одна кнопка — открыть мини-апп."""
-    web_app = WebAppInfo(url=app_url(team))
-    if "puck" in CUSTOM:   # значок на кнопке — наша шайба
-        btn = InlineKeyboardButton(text=B_APP, icon_custom_emoji_id=CUSTOM["puck"], web_app=web_app)
-    else:
-        btn = InlineKeyboardButton(text=f"{EMOJI['puck']} {B_APP}", web_app=web_app)
-    return InlineKeyboardMarkup(inline_keyboard=[[btn]])
+def btn(text: str, icon: str | None = None, **kw) -> InlineKeyboardButton:
+    """Кнопка со своим эмодзи-значком, если набор загружен, иначе с обычным эмодзи в тексте."""
+    if icon and icon in CUSTOM:
+        return InlineKeyboardButton(text=text, icon_custom_emoji_id=CUSTOM[icon], **kw)
+    return InlineKeyboardButton(text=f"{EMOJI[icon]} {text}" if icon else text, **kw)
+
+
+def app_kb(team: str | None = None, today: bool = False) -> InlineKeyboardMarkup:
+    """Одна большая кнопка — открыть мини-апп. today — вторым планом «Матчи сегодня» (ADR-019)."""
+    rows = [[btn(B_APP, "puck", web_app=WebAppInfo(url=app_url(team)))]]
+    if today:
+        rows.append([InlineKeyboardButton(text=f"📅 {B_TODAY}", callback_data="d:today")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def recap_kb(match: str) -> InlineKeyboardMarkup:
     """Одна кнопка — карточка сыгранного матча в мини-аппе."""
-    web_app = WebAppInfo(url=app_url(match=match))
-    if "goal" in CUSTOM:
-        btn = InlineKeyboardButton(text=B_RECAP, icon_custom_emoji_id=CUSTOM["goal"], web_app=web_app)
-    else:
-        btn = InlineKeyboardButton(text=f"{EMOJI['goal']} {B_RECAP}", web_app=web_app)
-    return InlineKeyboardMarkup(inline_keyboard=[[btn]])
+    return InlineKeyboardMarkup(inline_keyboard=[[btn(B_RECAP, "goal", web_app=WebAppInfo(url=app_url(match=match)))]])
 
 
 def leaders_kb() -> InlineKeyboardMarkup:
     """Одна кнопка — лидеры лиги в мини-аппе."""
-    web_app = WebAppInfo(url=app_url(view="leaders"))
-    if "cup" in CUSTOM:
-        btn = InlineKeyboardButton(text=B_LEADERS, icon_custom_emoji_id=CUSTOM["cup"], web_app=web_app)
-    else:
-        btn = InlineKeyboardButton(text=f"{EMOJI['cup']} {B_LEADERS}", web_app=web_app)
-    return InlineKeyboardMarkup(inline_keyboard=[[btn]])
+    return InlineKeyboardMarkup(inline_keyboard=[[btn(B_LEADERS, "cup", web_app=WebAppInfo(url=app_url(view="leaders")))]])
 
 
 def raskat_kb(chat_id: int | None = None) -> InlineKeyboardMarkup:
     """Кнопка «Раската» (startapp=raskat). Пока зачёта нет — вторым планом лист ожидания."""
-    web_app = WebAppInfo(url=app_url(startapp="raskat"))
-    if "stick" in CUSTOM:
-        btn = InlineKeyboardButton(text=B_RASKAT, icon_custom_emoji_id=CUSTOM["stick"], web_app=web_app)
-    else:
-        btn = InlineKeyboardButton(text=f"{EMOJI['stick']} {B_RASKAT}", web_app=web_app)
-    rows = [[btn]]
+    rows = [[btn(B_RASKAT, "stick", web_app=WebAppInfo(url=app_url(startapp="raskat")))]]
     if chat_id is not None and not raskat_api():
         waiting = chat_id in WAITLIST
         rows.append([InlineKeyboardButton(text=f"🔕 {B_WAIT_OFF}" if waiting else f"🔔 {B_WAIT_ON}",
@@ -211,80 +234,615 @@ def welcome_text(team: str | None = None) -> str:
     head = (f"Здарова! Открываю РХЛ с командой <b>«{html.escape(TEAMS[team])}»</b> {e('rhl')}" if team
             else f"Здарова! Это РХЛ U21 — всё про лигу в одном месте {e('rhl')}")
     return (f"{head}\n\n"
-            f"{e('star')} Календарь 26 команд\n"
-            f"{e('cup')} Таблица конференций\n"
-            f"{e('goal')} Счёт и голы матчей\n"
+            f"{e('goal')} Матчи дня: время, счёт и трансляции\n"
+            f"{e('star')} Календарь и таблица 26 команд\n"
             f"{e('fire')} Лучшие игроки лиги\n"
-            f"{e('stick')} Раскат дня — головоломка про шайбу\n\n"
+            f"{e('stick')} Раскат дня — головоломка про шайбу\n"
+            f"{e('bell')} Напомню о матчах твоей команды — /team\n\n"
             "<b>Жми «Открыть РХЛ»</b> 👇 и выбери, за кого болеешь.")
 
 
 def lost_text() -> str:
     return f"Всё самое интересное — в приложении {e('fire')}\nЖми кнопку 👇"
 
+
+def quoted(teams: list[str]) -> str:
+    """«Рязань-ВДВ», «Белгород» и «Самара»."""
+    q = [f"«{html.escape(tname(t))}»" for t in teams]
+    return q[0] if len(q) == 1 else ", ".join(q[:-1]) + " и " + q[-1]
+
 # ---------- напоминания: подписчики ----------
+# subscribers.json — {"<chat_id>": ["<id команды>", …]}, до MAX_TEAMS команд. Старый формат
+# [chat_id, …] — подписка на «Рязань-ВДВ»: читаем и тихо переписываем в новый. Выключил
+# напоминания или заблокировал бота — chat_id удаляется из файла целиком (CLAUDE.md, правило 4).
 
-def load_subs() -> set[int]:
+def parse_subs(raw) -> tuple[dict[int, list[str]], bool]:
+    """Подписчики из файла и нужно ли переписать файл (был старый формат или мусор)."""
+    subs: dict[int, list[str]] = {}
+    if isinstance(raw, list):   # до подписки на любую команду: все — за «Рязань-ВДВ»
+        for x in raw:
+            try:
+                subs[int(x)] = [REMIND_TEAM_ID]
+            except (TypeError, ValueError):
+                pass
+        return subs, True
+    if not isinstance(raw, dict):
+        return subs, True
+    dirty = False
+    for k, v in raw.items():
+        teams = v if isinstance(v, list) else [v] if isinstance(v, str) else []
+        clean = list(dict.fromkeys(t for t in teams if t in TEAMS))[:MAX_TEAMS]
+        dirty |= clean != v or not clean
+        try:
+            if clean:
+                subs[int(k)] = clean
+        except (TypeError, ValueError):
+            dirty = True
+    return subs, dirty
+
+
+def load_subs() -> dict[int, list[str]]:
     try:
-        return set(json.loads(SUBS_FILE.read_text()))
+        raw = json.loads(SUBS_FILE.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
-        return set()
+        return {}
+    subs, dirty = parse_subs(raw)
+    if dirty:
+        save_subs(subs)
+        logging.info("subscribers.json переписан в новый формат: %d", len(subs))
+    return subs
 
 
-def save_subs(subs: set[int]) -> None:
-    SUBS_FILE.write_text(json.dumps(sorted(subs)))
+def write_atomic(path: Path, data) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def save_subs(subs: dict[int, list[str]]) -> None:
+    write_atomic(SUBS_FILE, {str(k): subs[k] for k in sorted(subs)})
 
 
 SUBS = load_subs()
 
 
-def turn_on(chat_id: int) -> None:
-    if chat_id not in SUBS:
-        SUBS.add(chat_id)
-        save_subs(SUBS)
+def set_teams(chat_id: int, teams: list[str]) -> None:
+    """Пустой список — подписка снимается целиком: chat_id больше нигде не хранится."""
+    if teams:
+        SUBS[chat_id] = list(teams)
+    elif chat_id not in SUBS:
+        return
+    else:
+        SUBS.pop(chat_id)
+    save_subs(SUBS)
+
+
+def follow(chat_id: int, team: str) -> str:
+    """Напоминать о команде: on — включили, already — уже было, full — уже MAX_TEAMS команд."""
+    teams = SUBS.get(chat_id) or []
+    if team in teams:
+        return "already"
+    if len(teams) >= MAX_TEAMS:
+        return "full"
+    set_teams(chat_id, [*teams, team])
+    return "on"
+
+
+def toggle_team(chat_id: int, team: str) -> str:
+    """Кнопка команды в выборе: on, off или full, если уже MAX_TEAMS и эта не выбрана."""
+    teams = SUBS.get(chat_id) or []
+    if team in teams:
+        set_teams(chat_id, [t for t in teams if t != team])
+        return "off"
+    return follow(chat_id, team)
+
+
+def unsubscribe(chat_id: int) -> None:
+    set_teams(chat_id, [])
+
+
+def turn_on(chat_id: int, team: str = REMIND_TEAM_ID) -> str:
+    return follow(chat_id, team)
 
 
 def remind_kb(chat_id: int) -> InlineKeyboardMarkup:
-    on = chat_id in SUBS
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
-        text="🔕 Выключить" if on else "🔔 Включить", callback_data="r:toggle")]])
+    """Включены — «Выключить» и «Команды»; выключены — сразу выбор конференции."""
+    if not SUBS.get(chat_id):
+        return team_kb(chat_id)
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔕 Выключить", callback_data="r:toggle"),
+        InlineKeyboardButton(text="✏️ Команды", callback_data="t:home")]])
 
 
 def next_game(today: date) -> Game | None:
     return next((g for g in GAMES if g.d >= today), None)
 
 
-def remind_text(chat_id: int, today: date | None = None) -> str:
-    """Состояние напоминаний. Включены — и ближайшая игра, чтобы было видно, о чём напомню."""
-    on = chat_id in SUBS
-    text = (f"{e('bell')} Напоминания о матчах «{REMIND_TEAM}» {'✅ включены' if on else '❌ выключены'}\n\n"
-            f"Пришлю сообщение накануне игры в {REMIND_TOMORROW_AT:%H:%M} "
-            f"и в день игры в {REMIND_TODAY_AT:%H:%M} (МСК).")
-    g = next_game(today or datetime.now(TZ).date()) if on else None
-    if g:
-        where = "дома" if g.home else "в гостях"
-        text += f"\n\nБлижайшая: {DOW[g.d.weekday()]} {g.d:%d.%m}, {where} с «{html.escape(g.opponent)}»"
+def local_match(g: Game) -> dict:
+    """Матч из games.json в виде матча league.json: запасной путь, когда Pages не ответили."""
+    opp = TEAM_BY_NAME.get(_norm(g.opponent), g.opponent)
+    home, away = (REMIND_TEAM_ID, opp) if g.home else (opp, REMIND_TEAM_ID)
+    return {"id": f"n{g.n}", "key": f"{g.d.isoformat()}|{home}|{away}", "date": g.d.isoformat(),
+            "home": home, "away": away}
+
+
+def games_of(league: dict | None) -> list[dict]:
+    """Матчи сезона: из league.json, а нет его — «Рязань-ВДВ» по games.json."""
+    games = (league or {}).get("games")
+    if isinstance(games, list) and games:
+        return [g for g in games if isinstance(g, dict)]
+    return [local_match(g) for g in GAMES]
+
+
+def next_match(team: str, today: date, games: list[dict]) -> dict | None:
+    """Ближайший не сыгранный матч команды начиная с сегодня."""
+    d = today.isoformat()
+    ms = [g for g in games if team in (g.get("home"), g.get("away")) and str(g.get("date", "")) >= d
+          and not g.get("score")]
+    return min(ms, key=lambda g: (g["date"], (start_of(g) or datetime.max.replace(tzinfo=TZ)).timestamp()),
+               default=None)
+
+
+def nearest_text(team: str, m: dict, with_team: bool) -> str:
+    d = date.fromisoformat(m["date"])
+    start = start_of(m)
+    at = f" в {start:%H:%M} МСК" if start else ""
+    home = m["home"] == team
+    opp = m["away"] if home else m["home"]
+    who = f"«{html.escape(tname(team))}»: " if with_team else ""
+    return f"{who}{DOW[d.weekday()]} {d:%d.%m}{at}, {'дома' if home else 'в гостях'} с «{html.escape(tname(opp))}»"
+
+
+def remind_text(chat_id: int, today: date | None = None, games: list[dict] | None = None, note: str = "") -> str:
+    """Состояние напоминаний. Включены — команды и ближайшие игры, чтобы было видно, о чём напомню."""
+    teams = SUBS.get(chat_id) or []
+    when = f"накануне в {REMIND_TOMORROW_AT:%H:%M} и в день игры в {REMIND_TODAY_AT:%H:%M} (МСК)"
+    head = f"{note}\n\n" if note else ""
+    if not teams:
+        return (f"{head}{e('bell')} Напоминания о матчах ❌ выключены\n\n"
+                f"Выбери команду — напомню {when}, а после игры пришлю счёт. Можно до трёх.")
+    text = (f"{head}{e('bell')} Напоминания о матчах {quoted(teams)} ✅ включены\n\n"
+            f"Пришлю сообщение {when}, а после игры — счёт.")
+    today = today or datetime.now(TZ).date()
+    games = games if games is not None else games_of(None)
+    near = [(t, m) for t in teams if (m := next_match(t, today, games))]
+    if len(teams) == 1 and near:
+        text += f"\n\nБлижайшая: {nearest_text(*near[0], with_team=False)}"
+    elif near:
+        text += "\n\nБлижайшие:\n" + "\n".join(nearest_text(t, m, with_team=True) for t, m in near)
     return text
 
+# ---------- выбор команды (/team) ----------
 
-def reminder_text(g: Game, kind: str) -> str:
-    head = "Сегодня игра!" if kind == "today" else "Завтра игра!"
-    where = f"{e('home')} Дома" if g.home else f"{e('away')} На выезде"
-    return (f"{e('bell')} <b>{head}</b>\n\n{DOW[g.d.weekday()]} {g.d:%d.%m} · {REMIND_TEAM} — "
-            f"<b>{html.escape(g.opponent)}</b>\n{where}")
+def team_text(chat_id: int, conf: str | None = None) -> str:
+    teams = SUBS.get(chat_id) or []
+    now = f"Сейчас: {quoted(teams)}." if teams else "Пока ни одной."
+    if conf in CONFS:
+        return (f"{e('bell')} <b>{CONFS[conf]}</b>\n\nЖми на команду — ✅ значит, уже напоминаю. "
+                f"Можно до трёх.\n{now}")
+    return (f"{e('bell')} <b>За кого болеешь?</b>\n\nВыбери до трёх команд — напомню об их матчах "
+            f"накануне и в день игры, а после пришлю счёт.\n{now}")
 
-def result_text(g: dict, names: dict[str, str], story: str = "") -> str:
-    """Сообщение после матча: счёт, исход для нашей команды, фраза-сюжет из разбора (ADR-008)."""
+
+def team_kb(chat_id: int, conf: str | None = None) -> InlineKeyboardMarkup:
+    """Без conf — две конференции; с conf — её команды по две в ряд, выбранные с ✅."""
+    teams = SUBS.get(chat_id) or []
+    if conf not in CONFS:
+        rows = [[InlineKeyboardButton(text=label, callback_data=f"t:c:{c}") for c, label in CONFS.items()]]
+        if teams:
+            rows.append([InlineKeyboardButton(text="✅ Готово", callback_data="r:show")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+    ids = sorted((t["id"] for t in TEAM_LIST if t.get("conf") == conf), key=lambda i: TEAMS[i].replace("Ё", "Е"))
+    buttons = [InlineKeyboardButton(text=("✅ " if i in teams else "") + TEAMS[i], callback_data=f"t:s:{i}")
+               for i in ids]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton(text="← Конференции", callback_data="t:home"),
+                 InlineKeyboardButton(text="Готово", callback_data="r:show")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+# ---------- матчи дня: league.json + live/ (ADR-019, разделы 2 и 5) ----------
+
+LIVE_ON = ("live", "break")
+LIVE_DONE = ("ended", "final")
+PERIODS = {"1": "1-й период", "2": "2-й период", "3": "3-й период", "ОТ": "овертайм", "РБ": "буллиты"}
+HM_RE = re.compile(r"([01]?\d|2[0-3]):([0-5]\d)")
+
+
+def match_key(m: dict) -> str:
+    """Ключ матча, как у live.py: <дата>|<хозяева>|<гости>."""
+    return f"{m.get('date')}|{m.get('home')}|{m.get('away')}"
+
+
+def read_live(name: str) -> dict | None:
+    """Файл из LIVE_DIR. Нет файла или он битый — живого нет."""
+    try:
+        data = json.loads((LIVE_DIR / name).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _dt(v) -> datetime | None:
+    if not isinstance(v, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(v)
+    except ValueError:
+        return None
+    return dt.astimezone(TZ) if dt.tzinfo else None
+
+
+def start_of(m: dict) -> datetime | None:
+    """Начало матча по Москве: start с поясом, а нет его — time («17:00» МСК) в день матча."""
+    if dt := _dt(m.get("start")):
+        return dt
+    hm = HM_RE.fullmatch(str(m.get("time") or "").strip())
+    try:
+        d = date.fromisoformat(str(m.get("date")))
+    except ValueError:
+        return None
+    return datetime.combine(d, time(int(hm.group(1)), int(hm.group(2))), TZ) if hm else None
+
+
+def local_hm(m: dict, start: datetime | None) -> str | None:
+    """Местное время арены хозяев, если её пояс не московский: «21:00»."""
+    if HM_RE.fullmatch(str(m.get("local") or "")):
+        return m["local"]
+    tz = (TEAM_INFO.get(m.get("home")) or {}).get("tz")
+    if not start or not tz:
+        return None
+    try:
+        loc = start.astimezone(ZoneInfo(tz))
+    except (KeyError, ValueError):   # пояс не узнан
+        return None
+    return loc.strftime("%H:%M") if loc.utcoffset() != start.utcoffset() else None
+
+
+def _url(v) -> str | None:
+    return v if isinstance(v, str) and v.startswith(("https://", "http://")) else None
+
+
+def _score(sc) -> dict | None:
+    if not isinstance(sc, dict) or not all(isinstance(sc.get(k), int) for k in ("home", "away")):
+        return None
+    return {"home": sc["home"], "away": sc["away"], "decision": sc.get("decision") or ""}
+
+
+def live_fresh(live: dict | None, now: datetime) -> bool:
+    """Служба live жива: файл обновлялся не позже LIVE_STALE назад."""
+    at = _dt((live or {}).get("updated"))
+    return bool(at) and now - at <= LIVE_STALE
+
+
+def day_matches(day: date, league: dict | None, live: dict | None = None, schedule: dict | None = None,
+                now: datetime | None = None) -> list[dict]:
+    """Матчи лиги за день одним списком: календарь league.json, время и онлайн из schedule.json,
+    ход матча из live/<дата>.json. Старшинство — ADR-019, раздел 2: время и ссылка на онлайн —
+    живое, потом schedule.json, потом league.json; итог — протокол, потом «окончен» онлайна.
+    Живое старше LIVE_STALE даёт только время, ссылку и итог."""
+    now = now or datetime.now(TZ)
+    d = day.isoformat()
+    rows: dict[str, dict] = {}
+
+    def ok(x) -> bool:
+        return isinstance(x, dict) and x.get("date") == d and isinstance(x.get("home"), str) \
+            and isinstance(x.get("away"), str)
+
+    def row(x: dict) -> dict:
+        k = match_key(x)
+        return rows.setdefault(k, {"key": k, "id": None, "date": d, "home": x["home"], "away": x["away"],
+                                   "watch": [], "status": None, "period": None, "score": None})
+
+    def timed(r: dict, x: dict) -> None:
+        if x.get("time") or x.get("start"):
+            r["time"], r["start"] = x.get("time"), x.get("start")
+            r.pop("local", None)          # местное пересчитаем от нового начала
+        if _url(x.get("online")):
+            r["online"] = x["online"]
+
+    for g in (league or {}).get("games") or []:
+        if not ok(g):
+            continue
+        r = row(g)
+        r["id"] = g.get("id")
+        timed(r, g)
+        if HM_RE.fullmatch(str(g.get("local") or "")):
+            r["local"] = g["local"]
+        r["watch"] = [w for w in g.get("watch") or [] if isinstance(w, dict) and _url(w.get("url"))]
+        if sc := _score(g.get("score")):
+            r.update(score=sc, status="final", protocol=True)
+    for x in (schedule or {}).get("games") or []:
+        if ok(x):
+            timed(row(x), x)
+    if live and live.get("date") == d:
+        fresh = live_fresh(live, now)
+        for x in live.get("games") or []:
+            if not ok(x):
+                continue
+            r = row(x)
+            timed(r, x)
+            if r.get("protocol"):         # протокол лиги главнее онлайна
+                continue
+            st, sc = x.get("status"), _score(x.get("score"))
+            if st in LIVE_DONE and sc:
+                r.update(status="ended", score=sc, period=None)
+            elif st in LIVE_ON and fresh:
+                r.update(status=st, score=sc, period=x.get("period"))
+            elif st in ("moved", "off"):
+                r.update(status=st, score=None)
+    return list(rows.values())
+
+
+def sort_matches(ms: list[dict], fans: list[str] = ()) -> list[dict]:
+    """Матчи своих команд первыми, дальше по времени начала; без времени — в конце."""
+    def key(m):
+        s = start_of(m)
+        return (not (m["home"] in fans or m["away"] in fans), s is None, s.timestamp() if s else 0,
+                tname(m["home"]))
+    return sorted(ms, key=key)
+
+
+def next_game_day(today: date, *sources: dict | None) -> date | None:
+    days = set()
+    for src in sources:
+        for g in (src or {}).get("games") or []:
+            try:
+                d = date.fromisoformat(str((g or {}).get("date")))
+            except ValueError:
+                continue
+            if d > today:
+                days.add(d)
+    return min(days, default=None)
+
+
+def score_html(sc: dict) -> str:
+    dec = f" ({sc['decision']})" if sc.get("decision") else ""
+    return f"<b>{sc['home']}:{sc['away']}</b>{dec}"
+
+
+def status_text(m: dict, now: datetime) -> str:
+    """«идёт · 2-й период · 2:1», «перерыв · 1:1», «окончен 4:2», «через 40 мин» или пусто."""
+    st, sc = m.get("status"), m.get("score")
+    if st in LIVE_DONE and sc:
+        return f"окончен {score_html(sc)}"
+    if st in LIVE_ON:
+        parts = ["идёт" if st == "live" else "перерыв"]
+        if st == "live" and m.get("period") in PERIODS:
+            parts.append(PERIODS[m["period"]])
+        if sc:
+            parts.append(score_html(sc))
+        return " · ".join(parts)
+    if st == "moved":
+        return "перенесён"
+    if st == "off":
+        return "отменён"
+    start = start_of(m)
+    if start and now < start <= now + timedelta(hours=1):
+        return f"через {math.ceil((start - now).total_seconds() / 60)} мин"
+    return ""
+
+
+def links_html(m: dict) -> list[str]:
+    out = []
+    if url := _url(m.get("online")):
+        out.append(f'<a href="{html.escape(url)}">текстовая трансляция</a>')
+    if m.get("watch"):
+        out.append(f'<a href="{html.escape(m["watch"][0]["url"])}">смотреть</a>')
+    return out
+
+
+def today_line(m: dict, mine: bool, now: datetime) -> str:
+    start = start_of(m)
+    if start:
+        when = f"<b>{start:%H:%M}</b>"
+        if loc := local_hm(m, start):
+            when += f" (местное {loc})"
+    else:
+        when = "время уточняется"
+    star = f"{e('star')} " if mine else ""
+    head = f"{star}{when} · {html.escape(tname(m['home']))} — {html.escape(tname(m['away']))}"
+    tail = [s for s in (status_text(m, now),) if s] + links_html(m)
+    return head + ("\n" + " · ".join(tail) if tail else "")
+
+
+def day_label(d: date, today: date) -> str:
+    base = f"{DOW[d.weekday()]} {d:%d.%m}"
+    return f"завтра, {base}" if d == today + timedelta(days=1) else base
+
+
+def today_text(league: dict | None, live: dict | None = None, schedule: dict | None = None,
+               fans: list[str] = (), now: datetime | None = None) -> str:
+    """«Матчи сегодня» (ADR-019, раздел 8): все матчи лиги за день, свои первыми, у каждого время
+    по Москве, статус и счёт по live/today.json, ссылки на трансляции. Нет матчей — ближайший день."""
+    now = now or datetime.now(TZ)
+    today = now.date()
+    ms = day_matches(today, league, live, schedule, now)
+    if ms:
+        lines = [f"{e('puck')} <b>Матчи РХЛ сегодня · {DOW[today.weekday()]} {today:%d.%m}</b>", "Время московское"]
+    elif not league and not (schedule or {}).get("games"):
+        return f"{e('puck')} Не получилось загрузить календарь лиги.\nВсе матчи — в приложении 👇"
+    else:
+        nd = next_game_day(today, league, schedule)
+        if not nd:
+            return f"{e('puck')} Сегодня матчей в РХЛ нет, а следующих в календаре пока не видно.\nКалендарь — в приложении 👇"
+        ms = day_matches(nd, league, None, schedule, now)
+        lines = [f"{e('puck')} Сегодня матчей в РХЛ нет.", f"<b>Ближайшие — {day_label(nd, today)}</b>",
+                 "Время московское"]
+    ms = sort_matches(ms, list(fans))
+    for m in ms[:TODAY_MAX]:
+        lines += ["", today_line(m, m["home"] in fans or m["away"] in fans, now)]
+    if len(ms) > TODAY_MAX:
+        lines += ["", f"И ещё {len(ms) - TODAY_MAX} — в приложении."]
+    lines.append("")
+    if ms and ms[0]["date"] == today.isoformat() and live_fresh(live, now):
+        lines.append(f"Счёт — по онлайну лиги на {_dt(live['updated']):%H:%M}.")
+    lines.append("Карточки матчей — в приложении 👇")
+    return "\n".join(lines)
+
+
+def today_kb(chat_id: int | None = None) -> InlineKeyboardMarkup:
+    rows = app_kb().inline_keyboard
+    following = bool(SUBS.get(chat_id))
+    rows.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="d:refresh"),
+                 InlineKeyboardButton(text="🔔 Мои команды" if following else "🔔 Напоминать",
+                                      callback_data="r:open")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+# ---------- напоминания о матче ----------
+
+def recipients(subs: dict[int, list[str]], m: dict) -> list[tuple[int, str | None]]:
+    """Кому писать о матче и от чьего лица: команда болельщика, None — болеет за обе."""
+    out = []
+    for cid, teams in sorted(subs.items()):
+        mine = [t for t in teams if t in (m["home"], m["away"])]
+        if mine:
+            out.append((cid, mine[0] if len(mine) == 1 else None))
+    return out
+
+
+def reminder_plan(subs: dict[int, list[str]], day: date, league: dict | None, live: dict | None = None,
+                  schedule: dict | None = None, now: datetime | None = None) -> list[tuple[int, dict, str | None]]:
+    """Кому о каком матче дня напомнить. league.json не скачался — «Рязань-ВДВ» по games.json
+    (и что знает schedule.json сервера)."""
+    base = league if (league or {}).get("games") else {"games": games_of(None)}
+    ms = sort_matches(day_matches(day, base, live, schedule, now))
+    return [(cid, m, team) for m in ms for cid, team in recipients(subs, m)]
+
+
+def _won(g: dict, team: str) -> bool:
     sc = g["score"]
-    mine, theirs = ((sc["home"], sc["away"]) if g["home"] == REMIND_TEAM_ID else (sc["away"], sc["home"]))
-    how = {"ОТ": " в овертайме", "Б": " по буллитам"}.get(sc["decision"], "")
-    head = f"{e('win')} Победа{how}!" if mine > theirs else f"{e('loss')} Поражение{how}"
-    dec = f" ({sc['decision']})" if sc["decision"] else ""
-    home, away = (html.escape(names.get(g[k], g[k])) for k in ("home", "away"))
+    return (sc["home"] > sc["away"]) == (g["home"] == team)
+
+
+def warmup_text(m: dict, team: str | None, games: list[dict] | None) -> str:
+    """Подогрев одной строкой: прошлая встреча в сезоне, а нет её — форма команды за 5 матчей."""
+    played = [g for g in games or [] if _score(g.get("score")) and str(g.get("date", "")) < m["date"]]
+    pair = {m["home"], m["away"]}
+    met = [g for g in played if {g.get("home"), g.get("away")} == pair]
+    if met:
+        g = max(met, key=lambda g: g["date"])
+        d = date.fromisoformat(g["date"])
+        return (f"{e('fire')} Прошлая встреча {d:%d.%m}: {html.escape(tname(g['home']))} "
+                f"{score_html(_score(g['score']))} {html.escape(tname(g['away']))}")
+    t = team if team in pair else m["home"]
+    form = sorted((g for g in played if t in (g.get("home"), g.get("away"))), key=lambda g: g["date"])[-5:]
+    if not form:
+        return ""
+    return f"{e('fire')} Форма «{html.escape(tname(t))}»: " + " ".join(e("win") if _won(g, t) else e("loss") for g in form)
+
+
+def reminder_text(m: dict | Game, kind: str, team: str | None = REMIND_TEAM_ID,
+                  games: list[dict] | None = None) -> str:
+    """Напоминание о матче: когда (время МСК и местное), где, где смотреть и строка подогрева."""
+    if isinstance(m, Game):
+        m = local_match(m)
+    d = date.fromisoformat(m["date"])
+    head = "Сегодня игра!" if kind == "today" else "Завтра игра!"
+    word = "сегодня" if kind == "today" else "завтра"
+    start = start_of(m)
+    if start:
+        when = f"{word} в {start:%H:%M} МСК"
+        if loc := local_hm(m, start):
+            when += f" · {loc} по местному"
+    else:
+        when = f"{word}, время начала уточняется"
+    home, away = m["home"], m["away"]
+    city = (TEAM_INFO.get(home) or {}).get("city")
+    at = f", {html.escape(city)}" if city else ""
+    if team in (home, away):
+        opp = away if team == home else home
+        teams_line = f"{html.escape(tname(team))} — <b>{html.escape(tname(opp))}</b>"
+        where = (f"{e('home')} Дома" if team == home else f"{e('away')} На выезде") + at
+    else:
+        teams_line = f"<b>{html.escape(tname(home))}</b> — <b>{html.escape(tname(away))}</b>"
+        where = f"📍 {html.escape(city)}" if city else ""
+    lines = [f"{e('bell')} <b>{head}</b>", "", teams_line, f"{DOW[d.weekday()]} {d:%d.%m} · {when}"]
+    lines += [where] if where else []
+    if m.get("watch"):
+        lines.append(f'📺 <a href="{html.escape(m["watch"][0]["url"])}">Смотреть трансляцию</a>')
+    if warm := warmup_text(m, team, games):
+        lines += ["", warm]
+    return "\n".join(lines)
+
+
+def predict_on() -> bool:
+    """Прогнозы живут на том же сервере, что и зачёт «Раската» (ADR-020): есть адрес — есть «Кто победит?»."""
+    return bool(raskat_api() or (os.environ.get("LIVE_API") or "").strip())
+
+
+def match_kb(m: dict) -> InlineKeyboardMarkup:
+    """«Кто победит?» — карточка матча в мини-аппе (голос там), «Текстовая трансляция» — онлайн лиги."""
+    if m.get("id"):
+        label = B_PREDICT if predict_on() else B_MATCH
+        rows = [[btn(label, "fire", web_app=WebAppInfo(url=app_url(match=m["id"])))]]
+    else:
+        rows = app_kb().inline_keyboard
+    if url := _url(m.get("online")):
+        rows.append([InlineKeyboardButton(text=f"📝 {B_ONLINE}", url=url)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+# ---------- после матча (ADR-008, ADR-019) ----------
+
+def result_text(g: dict, names: dict[str, str], story: str = "", team: str | None = REMIND_TEAM_ID,
+                live: bool = False) -> str:
+    """Сообщение после матча: счёт, исход для команды болельщика, фраза-сюжет из разбора (ADR-008).
+    live — счёт по онлайну лиги, протокола ещё нет (ADR-019, раздел 8)."""
+    sc = g["score"]
+    dec_ = sc.get("decision") or ""
+    how = {"ОТ": " в овертайме", "Б": " по буллитам"}.get(dec_, "")
+    if team in (g["home"], g["away"]):
+        mine, theirs = (sc["home"], sc["away"]) if g["home"] == team else (sc["away"], sc["home"])
+        head = f"{e('win')} Победа{how}!" if mine > theirs else f"{e('loss')} Поражение{how}"
+    else:
+        head = f"{e('goal')} Матч окончен"
+    dec = f" ({dec_})" if dec_ else ""
+    home, away = (html.escape(names.get(g[k], tname(g[k]))) for k in ("home", "away"))
     text = f"<b>{head}</b>\n\n{home} <b>{sc['home']}:{sc['away']}</b>{dec} {away}"
+    if live:
+        text += "\n<i>по данным онлайна лиги</i>"
     if story:
         text += f"\n\n{html.escape(story)}"
+    if live:
+        return text + "\n\nГолы и составы появятся по кнопке, когда лига выложит протокол 👇"
     return text + "\n\nГолы, ход матча и составы — по кнопке 👇"
+
+
+def live_finals(live_games: list[dict], seen: dict[str, tuple[datetime, tuple]], now: datetime) -> list[dict]:
+    """Матчи, которые онлайн держит «оконченными» с одним счётом LIVE_FINAL_HOLD подряд.
+    seen — ключ → (когда впервые увидели, счёт); меняется на месте. Счёт сменился или матч
+    пропал из «окончен» — отсчёт заново."""
+    current, ready = {}, []
+    for x in live_games:
+        sc = _score(x.get("score"))
+        if x.get("status") not in LIVE_DONE or not sc or not isinstance(x.get("home"), str):
+            continue
+        k = x.get("key") or match_key(x)
+        sig = (sc["home"], sc["away"], sc["decision"])
+        first, old = seen.get(k, (now, sig))
+        if old != sig:
+            first = now
+        current[k] = (first, sig)
+        if now - first >= LIVE_FINAL_HOLD:
+            ready.append({**x, "key": k, "score": sc})
+    seen.clear()
+    seen.update(current)
+    return ready
+
+
+def pending_results(league: dict | None, ready: list[dict], announced: set[str], today: date) -> list[dict]:
+    """Что пора отправить: протоколы (fresh_results), а где протокола нет — финал по онлайну.
+    Один матч — одно сообщение: в announced и id матча, и ключ <дата>|<хозяева>|<гости>."""
+    out = [{**g, "key": match_key(g), "live": False} for g in fresh_results(league or {}, announced, today)]
+    ids = {match_key(g): g.get("id") for g in (league or {}).get("games") or [] if isinstance(g, dict)}
+    done = {x["key"] for x in out}
+    for x in ready:
+        gid = ids.get(x["key"])
+        if x["key"] in announced or x["key"] in done or (gid and gid in announced):
+            continue
+        done.add(x["key"])
+        out.append({"id": gid, "key": x["key"], "date": x["date"], "home": x["home"], "away": x["away"],
+                    "score": x["score"], "live": True})
+    return out
 
 # ---------- «Раскат»: игра дня и лист ожидания зачёта ----------
 # Игра живёт в мини-аппе; бот только ведёт в неё и зовёт, когда включат зачёт (контракт, раздел 6).
@@ -381,6 +939,64 @@ async def send_sticker(bot: Bot, chat_id: int, name: str, **kw) -> bool:
     _sticker_ids[name] = msg.sticker.file_id
     return True
 
+# ---------- опубликованные данные мини-аппа ----------
+
+# Данные мини-аппа меняются раз в час, вместе с ним: держим последний файл 10 минут
+_leaders: dict = {"at": None, "data": None}
+_raskat: dict = {"at": None, "data": None}
+_league: dict = {"at": None, "data": None}
+
+
+def data_url(name: str) -> str:
+    """Файл данных рядом с мини-аппом: .../data/<name>, без параметров адреса."""
+    u = urlsplit(WEBAPP_URL)
+    path = u.path if u.path.endswith("/") else u.path.rsplit("/", 1)[0] + "/"
+    return urlunsplit(u._replace(path=path + "data/" + name, query="", fragment=""))
+
+
+async def fetch_json(session: aiohttp.ClientSession, name: str) -> dict | None:
+    try:
+        async with session.get(data_url(name)) as r:
+            if r.status != 200:
+                return None
+            return await r.json(content_type=None)
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+        logging.warning("data %s not loaded", name)
+        return None
+
+
+async def fetch_once(name: str) -> dict | None:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10), trust_env=True) as session:
+        return await fetch_json(session, name)
+
+
+async def published(cache: dict, name: str) -> dict | None:
+    """Файл, опубликованный вместе с мини-аппом. Не скачался — отдаём прошлый, если он был."""
+    now = datetime.now(TZ)
+    if cache["at"] and now - cache["at"] < timedelta(seconds=DATA_TTL):
+        return cache["data"]
+    if cache.get("tried") and now - cache["tried"] < timedelta(seconds=DATA_RETRY):
+        return cache["data"]
+    cache["tried"] = now
+    data = await fetch_once(name)
+    if data:
+        cache.update(at=now, data=data)
+    return data or cache["data"]
+
+
+async def published_leaders() -> dict | None:
+    return await published(_leaders, "leaders.json")
+
+
+async def published_raskat() -> dict | None:
+    """index.json «Раската»: дни от начала сезона до сегодня (контракт «Раската», раздел 2)."""
+    return await published(_raskat, "raskat/index.json")
+
+
+async def published_league() -> dict | None:
+    """league.json: календарь, время начала, ссылки и результаты (ADR-019, раздел 5)."""
+    return await published(_league, "league.json")
+
 # ---------- хендлеры ----------
 
 dp = Dispatcher()
@@ -407,52 +1023,39 @@ async def safe_edit(c: CallbackQuery, make) -> None:
             await safe_edit(c, make)
 
 
+async def send_remind(bot: Bot, cid: int, note: str = "") -> None:
+    games = games_of(await published_league())
+    await say(bot, cid, lambda: (remind_text(cid, games=games, note=note), remind_kb(cid)))
+
+
 @dp.message(CommandStart())
 async def start(m: Message, command: CommandObject):
     cid = m.chat.id
-    # «Напомнить» в мини-аппе: человек уже решил — включаем сразу и без приветствия (ADR-004, ADR-005)
-    if command.args == "remind":
-        turn_on(cid)
+    args = (command.args or "").strip()
+    # «Напомнить» в мини-аппе: человек уже решил — включаем сразу и без приветствия (ADR-004, ADR-005).
+    # remind — «Рязань-ВДВ» (так мини-апп звал до подписки на любую команду), remind-<id> — эта команда
+    if args == "remind" or args.startswith("remind-"):
+        team = args.partition("-")[2] or REMIND_TEAM_ID
+        got = follow(cid, team) if team in TEAMS else "unknown"
+        note = (f"У тебя уже три команды. Сними одну в «Команды», чтобы добавить «{html.escape(TEAMS[team])}»."
+                if got == "full" else "")
         await send_sticker(m.bot, cid, "bell", reply_markup=ReplyKeyboardRemove())
-        await say(m.bot, cid, lambda: (remind_text(cid), remind_kb(cid)))
+        await send_remind(m.bot, cid, note)
         return
     # стикер заодно убирает клавиатуру, если она осталась от прошлой версии бота
     if not await send_sticker(m.bot, cid, "hello", reply_markup=ReplyKeyboardRemove()):
         await m.answer("🏒", reply_markup=ReplyKeyboardRemove())
-    if command.args == "leaders":   # ссылка t.me/<бот>?start=leaders (ADR-009)
+    if args == "leaders":   # ссылка t.me/<бот>?start=leaders (ADR-009)
         await send_leaders(m)
         return
-    if command.args == "raskat":    # ссылка t.me/<бот>?start=raskat (контракт «Раската», раздел 6)
+    if args == "raskat":    # ссылка t.me/<бот>?start=raskat (контракт «Раската», раздел 6)
         await send_raskat(m)
         return
-    team = command.args if command.args in TEAMS else None
-    await say(m.bot, cid, lambda: (welcome_text(team), app_kb(team)))
-
-
-# Данные мини-аппа меняются раз в час, вместе с ним: держим последний файл 10 минут
-_leaders: dict = {"at": None, "data": None}
-_raskat: dict = {"at": None, "data": None}
-
-
-async def published(cache: dict, name: str) -> dict | None:
-    """Файл, опубликованный вместе с мини-аппом. Не скачался — отдаём прошлый, если он был."""
-    now = datetime.now(TZ)
-    if cache["at"] and now - cache["at"] < timedelta(seconds=DATA_TTL):
-        return cache["data"]
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10), trust_env=True) as session:
-        data = await fetch_json(session, name)
-    if data:
-        cache.update(at=now, data=data)
-    return data or cache["data"]
-
-
-async def published_leaders() -> dict | None:
-    return await published(_leaders, "leaders.json")
-
-
-async def published_raskat() -> dict | None:
-    """index.json «Раската»: дни от начала сезона до сегодня (контракт «Раската», раздел 2)."""
-    return await published(_raskat, "raskat/index.json")
+    if args == "today":     # ссылка t.me/<бот>?start=today — матчи дня (ADR-019)
+        await send_today(m.bot, cid)
+        return
+    team = args if args in TEAMS else None
+    await say(m.bot, cid, lambda: (welcome_text(team), app_kb(team, today=True)))
 
 
 async def send_leaders(m: Message) -> None:
@@ -485,28 +1088,112 @@ async def cb_raskat_wait(c: CallbackQuery):
     await safe_edit(c, lambda: (raskat_text(data, cid), raskat_kb(cid)))
     await c.answer("Позову, когда откроется зачёт" if waiting else "Больше не позову")
 
+# ---------- матчи сегодня ----------
+
+async def today_make(cid: int):
+    league = await published_league()
+    live, schedule = read_live("today.json"), read_live("schedule.json")
+    return lambda: (today_text(league, live, schedule, SUBS.get(cid) or []), today_kb(cid))
+
+
+async def send_today(bot: Bot, cid: int) -> None:
+    await say(bot, cid, await today_make(cid))
+
+
+@dp.message(Command("today"))
+async def h_today(m: Message):
+    await send_today(m.bot, m.chat.id)
+
+
+@dp.callback_query(F.data == "d:today")
+async def cb_today(c: CallbackQuery):
+    await c.answer()
+    await send_today(c.bot, c.message.chat.id)
+
+
+@dp.callback_query(F.data == "d:refresh")
+async def cb_today_refresh(c: CallbackQuery):
+    await safe_edit(c, await today_make(c.message.chat.id))
+    await c.answer("Обновил")
+
+# ---------- напоминания и выбор команды ----------
 
 @dp.message(Command("remind"))
 async def h_remind(m: Message):
+    await send_remind(m.bot, m.chat.id)
+
+
+@dp.message(Command("team"))
+async def h_team(m: Message):
     cid = m.chat.id
-    await say(m.bot, cid, lambda: (remind_text(cid), remind_kb(cid)))
+    await say(m.bot, cid, lambda: (team_text(cid), team_kb(cid)))
 
 
 @dp.callback_query(F.data == "r:toggle")
 async def cb_remind(c: CallbackQuery):
+    """Включены — выключить совсем (подписка удаляется). Выключены — старая кнопка «Включить»
+    из сообщений до выбора команды: она была про «Рязань-ВДВ»."""
     cid = c.message.chat.id
-    SUBS.symmetric_difference_update({cid})
-    save_subs(SUBS)
-    await safe_edit(c, lambda: (remind_text(cid), remind_kb(cid)))
-    await c.answer("Готово")
-    if cid in SUBS:
+    was = bool(SUBS.get(cid))
+    if was:
+        unsubscribe(cid)
+    else:
+        turn_on(cid)
+    games = games_of(await published_league())
+    await safe_edit(c, lambda: (remind_text(cid, games=games), remind_kb(cid)))
+    await c.answer("Выключил и забыл подписку" if was else "Готово")
+    if not was:
         await send_sticker(c.bot, cid, "bell")
+
+
+@dp.callback_query(F.data.in_({"r:show", "r:open"}))
+async def cb_remind_show(c: CallbackQuery):
+    """r:show — экран напоминаний на месте выбора команды, r:open — новым сообщением (из «Матчи сегодня»)."""
+    cid = c.message.chat.id
+    await c.answer()
+    if c.data == "r:open":
+        await send_remind(c.bot, cid)
+        return
+    games = games_of(await published_league())
+    await safe_edit(c, lambda: (remind_text(cid, games=games), remind_kb(cid)))
+
+
+@dp.callback_query(F.data.startswith("t:"))
+async def cb_team(c: CallbackQuery):
+    """t:home — конференции, t:c:<конф> — её команды, t:s:<id> — выбрать или снять команду."""
+    cid = c.message.chat.id
+    parts = c.data.split(":", 2)
+    if parts[1] == "c" and len(parts) == 3 and parts[2] in CONFS:
+        await safe_edit(c, lambda: (team_text(cid, parts[2]), team_kb(cid, parts[2])))
+        await c.answer()
+        return
+    if parts[1] == "s" and len(parts) == 3 and parts[2] in TEAMS:
+        team = parts[2]
+        had = bool(SUBS.get(cid))
+        got = toggle_team(cid, team)
+        if got == "full":
+            await c.answer("Можно до трёх команд. Сними одну, чтобы выбрать эту", show_alert=True)
+            return
+        conf = TEAM_INFO[team].get("conf")
+        await safe_edit(c, lambda: (team_text(cid, conf), team_kb(cid, conf)))
+        await c.answer(f"Напомню о матчах «{TEAMS[team]}»" if got == "on" else f"«{TEAMS[team]}» — больше не напоминаю")
+        if got == "on" and not had:
+            await send_sticker(c.bot, cid, "bell")
+        return
+    await safe_edit(c, lambda: (team_text(cid), team_kb(cid)))
+    await c.answer()
+
+
+TODAY_WORDS = re.compile(r"сегодн|матч|игр[аыуе]?\b|расписан|когда|сч[её]т|трансляц", re.I)
 
 
 @dp.message()   # последним: всё остальное (ADR-005 — бот не молчит)
 async def h_lost(m: Message):
+    if m.text and TODAY_WORDS.search(m.text):   # «когда игра?», «какой счёт» — матчи дня
+        await send_today(m.bot, m.chat.id)
+        return
     await send_sticker(m.bot, m.chat.id, "tap", reply_markup=ReplyKeyboardRemove())
-    await say(m.bot, m.chat.id, lambda: (lost_text(), app_kb()))
+    await say(m.bot, m.chat.id, lambda: (lost_text(), app_kb(today=True)))
 
 # ---------- напоминания ----------
 
@@ -536,6 +1223,29 @@ async def raskat_open_broadcast(bot: Bot) -> int:
     return sent
 
 
+async def send_reminders(bot: Bot, kind: str, day: date, league: dict | None) -> int:
+    """Напоминания о матчах дня day подписчикам их команд. Утром — со стикером «Сегодня игра»."""
+    plan = reminder_plan(SUBS, day, league, read_live(f"{day.isoformat()}.json"), read_live("schedule.json"))
+    games = games_of(league)
+    stickered: set[int] = set()
+    sent = 0
+    for cid, m, team in plan:
+        if cid not in SUBS:   # заблокировал бота по ходу рассылки
+            continue
+        try:
+            if kind == "today" and cid not in stickered:
+                stickered.add(cid)
+                await send_sticker(bot, cid, "gameday")
+            await say(bot, cid, lambda m=m, team=team: (reminder_text(m, kind, team, games), match_kb(m)))
+            sent += 1
+        except TelegramForbiddenError:   # бота заблокировали
+            unsubscribe(cid)
+        except Exception:
+            logging.exception("send to %s failed", cid)
+        await asyncio.sleep(0.05)
+    return sent
+
+
 async def reminder_loop(bot: Bot):
     while True:
         now = datetime.now(TZ)
@@ -543,24 +1253,13 @@ async def reminder_loop(bot: Bot):
         await asyncio.sleep((at - now).total_seconds())
         await raskat_open_broadcast(bot)   # отдельного цикла не плодим
         day = at.date() + timedelta(days=1 if kind == "tomorrow" else 0)
-        games = [g for g in GAMES if g.d == day]
-        if not games:
-            continue
-        g = games[0]
-        for cid in list(SUBS):
-            try:
-                if kind == "today":
-                    await send_sticker(bot, cid, "gameday")
-                await say(bot, cid, lambda: (reminder_text(g, kind), app_kb()))
-            except TelegramForbiddenError:   # бота заблокировали
-                SUBS.discard(cid)
-                save_subs(SUBS)
-            except Exception:
-                logging.exception("send to %s failed", cid)
-            await asyncio.sleep(0.05)
+        try:
+            await send_reminders(bot, kind, day, await published_league())
+        except Exception:
+            logging.exception("reminders failed")
 
 
-# ---------- результаты после матча (ADR-008) ----------
+# ---------- результаты после матча (ADR-008, ADR-019) ----------
 
 def load_announced() -> set[str] | None:
     """None — файла ещё нет: первый запуск."""
@@ -573,17 +1272,19 @@ def load_announced() -> set[str] | None:
 
 
 def save_announced(ids: set[str]) -> None:
-    ANNOUNCED_FILE.write_text(json.dumps(sorted(ids)))
+    ANNOUNCED_FILE.write_text(json.dumps(sorted(ids), ensure_ascii=False))
 
 
-def played_games(data: dict, team: str = REMIND_TEAM_ID) -> list[dict]:
-    return [g for g in data.get("games", []) if g.get("score") and team in (g["home"], g["away"])]
+def played_games(data: dict, team: str | None = None) -> list[dict]:
+    """Сыгранные матчи (есть протокол): все или одной команды."""
+    return [g for g in data.get("games", []) if g.get("score") and (team is None or team in (g["home"], g["away"]))]
 
 
-def fresh_results(data: dict, announced: set[str], today: date) -> list[dict]:
-    """Сыгранные матчи нашей команды, о которых ещё не писали, не старше двух дней."""
+def fresh_results(data: dict, announced: set[str], today: date, teams: set[str] | None = None) -> list[dict]:
+    """Сыгранные матчи (команд teams или всей лиги), о которых ещё не писали, не старше двух дней."""
     since = today - timedelta(days=RESULTS_FRESH_DAYS)
-    return sorted((g for g in played_games(data) if g["id"] not in announced
+    return sorted((g for g in played_games(data) if g["id"] not in announced and match_key(g) not in announced
+                   and (teams is None or g["home"] in teams or g["away"] in teams)
                    and date.fromisoformat(g["date"]) >= since), key=lambda g: g["date"])
 
 
@@ -592,49 +1293,61 @@ def quiet(now: datetime) -> bool:
     return t >= QUIET_FROM or t < QUIET_TO
 
 
-def data_url(name: str) -> str:
-    """Файл данных рядом с мини-аппом: .../data/<name>, без параметров адреса."""
-    u = urlsplit(WEBAPP_URL)
-    path = u.path if u.path.endswith("/") else u.path.rsplit("/", 1)[0] + "/"
-    return urlunsplit(u._replace(path=path + "data/" + name, query="", fragment=""))
+LIVE_ENDED: dict[str, tuple[datetime, tuple]] = {}   # ключ → когда впервые увидели «окончен» и счёт
 
 
-async def fetch_json(session: aiohttp.ClientSession, name: str) -> dict | None:
-    try:
-        async with session.get(data_url(name)) as r:
-            if r.status != 200:
-                return None
-            return await r.json(content_type=None)
-    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
-        logging.warning("data %s not loaded", name)
-        return None
+def live_games_near(now: datetime) -> list[dict]:
+    """Матчи вчера и сегодня из live/<дата>.json: матч мог кончиться после полуночи."""
+    out = []
+    for d in (now.date() - timedelta(days=1), now.date()):
+        out += [x for x in (read_live(f"{d.isoformat()}.json") or {}).get("games") or [] if isinstance(x, dict)]
+    return out
+
+
+async def results_step(bot: Bot, now: datetime) -> int:
+    """Один проход: финалы по протоколу (league.json с Pages) и по онлайну (live/ с диска).
+    Подписчикам — по их командам. Сначала отмечаем матч в announced, потом шлём: так протокол
+    и онлайн не пришлют один матч дважды и перезапуск посреди рассылки не повторит её."""
+    league = await published_league()
+    ready = live_finals(live_games_near(now), LIVE_ENDED, now)
+    announced = load_announced()
+    if announced is None:   # первый запуск: сыгранное раньше не присылаем
+        if league:
+            save_announced({g["id"] for g in played_games(league)} | set(LIVE_ENDED))
+        return 0
+    if quiet(now):
+        return 0
+    names = {**TEAMS, **{t["id"]: t["name"] for t in (league or {}).get("teams", []) if "id" in t}}
+    sent = 0
+    for g in pending_results(league, ready, announced, now.date()):
+        announced |= {x for x in (g.get("id"), g["key"]) if x}
+        save_announced(announced)
+        to = recipients(SUBS, g)
+        if not to:
+            continue
+        recap = {} if g["live"] else (await fetch_once(f"matches/{g['id']}.json") or {})
+        kb = recap_kb(g["id"]) if g.get("id") else app_kb()
+        for cid, team in to:
+            try:
+                await say(bot, cid, lambda team=team: (result_text(g, names, recap.get("story", ""), team, g["live"]), kb))
+                sent += 1
+            except TelegramForbiddenError:
+                unsubscribe(cid)
+            except Exception:
+                logging.exception("result to %s failed", cid)
+            await asyncio.sleep(0.05)
+    return sent
 
 
 async def results_loop(bot: Bot):
-    """Бот сам не качает протоколы: их собирает GitHub Actions и публикует вместе с мини-аппом."""
-    timeout = aiohttp.ClientTimeout(total=30)
-    async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-        while True:
-            data = await fetch_json(session, "league.json")
-            announced = load_announced()
-            if data and announced is None:   # первый запуск: сыгранное раньше не присылаем
-                save_announced({g["id"] for g in played_games(data)})
-            elif data and not quiet(datetime.now(TZ)):
-                names = {t["id"]: t["name"] for t in data.get("teams", [])}
-                for g in fresh_results(data, announced, datetime.now(TZ).date()):
-                    recap = await fetch_json(session, f"matches/{g['id']}.json") or {}
-                    for cid in list(SUBS):
-                        try:
-                            await say(bot, cid, lambda: (result_text(g, names, recap.get("story", "")), recap_kb(g["id"])))
-                        except TelegramForbiddenError:
-                            SUBS.discard(cid)
-                            save_subs(SUBS)
-                        except Exception:
-                            logging.exception("result to %s failed", cid)
-                        await asyncio.sleep(0.05)
-                    announced.add(g["id"])
-                    save_announced(announced)
-            await asyncio.sleep(RESULTS_POLL)
+    """Бот сам не качает протоколы: их собирает GitHub Actions и публикует вместе с мини-аппом.
+    Живое (ADR-019) — файлы службы live на этом же сервере."""
+    while True:
+        try:
+            await results_step(bot, datetime.now(TZ))
+        except Exception:
+            logging.exception("results step failed")
+        await asyncio.sleep(RESULTS_POLL)
 
 
 async def load_custom_emoji(bot: Bot) -> None:
@@ -652,10 +1365,11 @@ async def main():
     logging.basicConfig(level=logging.INFO)
     # С VPS в России api.telegram.org закрыт: ходим через туннель deploy/tunnel.sh (socks5://127.0.0.1:1080)
     proxy = os.environ.get("TELEGRAM_PROXY")
+    # без превью ссылок: в «Матчах сегодня» и напоминаниях ссылки на трансляции — не карточки сайтов
     bot = Bot(os.environ["BOT_TOKEN"], session=AiohttpSession(proxy=proxy) if proxy else None,
-              default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+              default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True))
     await load_custom_emoji(bot)
-    await bot.delete_my_commands()   # меню команд пустое: всё — в мини-аппе
+    await bot.delete_my_commands()   # меню команд пустое: всё — в мини-аппе (ADR-005)
     try:   # описание не критично: без него бот работает
         await bot.set_my_description(DESCRIPTION)
         await bot.set_my_short_description(SHORT_DESCRIPTION)

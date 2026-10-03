@@ -610,6 +610,7 @@ function liveNeed() {
 let liveTimer = 0;
 function liveTick(force = false) {
   if (!state.data || document.visibilityState === "hidden") return;
+  feedPoll(force);   // те же часы ведут и ленту: раз в 5 минут, при возврате в мини-апп — сразу
   const need = liveNeed();
   const since = Date.now() - (state.liveAt || 0);
   const pull = liveOn() && (force ? since > 5e3 : need === "fast" || (need === "slow" && since >= LIVE_SLOW_MS));
@@ -1382,6 +1383,7 @@ function refreshHome() {
   nextFrame(() => {
     const box = $("#home-body");
     if (!box || state.tab !== "home") return;
+    feedApply();
     box.innerHTML = homeBody();
     primeLive(box);
     watchFeedImages(box);
@@ -1826,6 +1828,46 @@ function streamReady() {
   refreshStream();
   fadeIn($("#packs"));
   fadeIn($("#stream-wrap"));
+}
+
+// Свежие посты без перезахода: Pages пересобирает лист дня и ленту каждые 15 минут, а мини-апп держат
+// открытым часами. Раз в 5 минут и при возврате в мини-апп спрашиваем файлы заново (no-cache: Pages отдаёт
+// их с кэшем на 10 минут). Новое ждёт в стороне, пока его можно показать без прыжка под пальцем:
+// «Главная» у самого верха, лист и тур закрыты — или до следующего показа «Главной»
+const FEED_POLL_MS = 5 * 60e3;
+let feedPolledAt = Date.now();
+let feedNext = null;   // { feed, stream } — пришло новее, чем на экране
+function feedPoll(back = false) {
+  if (!state.fav || document.visibilityState === "hidden") return;
+  if (Date.now() - feedPolledAt < (back ? 60e3 : FEED_POLL_MS)) return;
+  feedPolledAt = Date.now();
+  const me = state.fav;
+  const get = (url) => fetch(url, { cache: "no-cache" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  Promise.all([get(`data/feed/${encodeURIComponent(me)}.json`), get("data/feed/stream.json")]).then(([f, s]) => {
+    const next = feedNext || {};
+    if (f && state.fav === me && f.built !== ((next.feed || state.feed[me]) || {}).built) next.feed = f;
+    if (s && s.built !== ((next.stream || state.stream) || {}).built) next.stream = s;
+    if (!next.feed && !next.stream) return;
+    feedNext = next;
+    if (state.tab === "home" && window.scrollY < 80 && !sheetOpen() && !state.tour) feedApply(true);
+  });
+}
+// paint — перерисовать то, что на экране; без него новое просто подхватит следующая отрисовка «Главной»
+function feedApply(paint = false) {
+  const next = feedNext;
+  if (!next) return;
+  feedNext = null;
+  if (next.feed && next.feed.club === state.fav) {
+    state.feed[state.fav] = next.feed;
+    feedLoading[state.fav] = Promise.resolve(next.feed);
+  }
+  if (next.stream) {
+    state.stream = next.stream;
+    streamLoading = Promise.resolve(next.stream);
+  }
+  if (!paint || state.tab !== "home") return;
+  if (next.feed) refreshFeed();
+  else refreshStream(true);
 }
 
 function refreshStream(keep = false) {
@@ -4587,11 +4629,21 @@ function sheetBack() {
 
 let sheetClosing = null;   // анимации ухода листа, пока он уезжает вниз
 
-// Пока лист открыт, Telegram не сворачивает мини-апп свайпом вниз: этот жест закрывает лист
-function tgSwipes(on) {
+// Telegram сворачивает мини-апп свайпом вниз — выключаем это, пока жест нужен нам самим:
+// открыт лист (свайп вниз закрывает лист) или вкладка «Раскат» (палец ведёт шайбу по полю, ADR-018).
+// Выключить приходится заранее, а не на касании: Telegram ловит жест раньше, чем до нас дойдёт событие
+const swipesOff = new Set();   // кто сейчас держит жест выключенным: "sheet", "raskat"
+function tgSwipes(on, who = "sheet") {
+  if (on) swipesOff.delete(who);
+  else swipesOff.add(who);
+  tgSwipesApply();
+}
+function tgSwipesApply() {
   if (!inTelegram || !tg.isVersionAtLeast || !tg.isVersionAtLeast("7.7")) return;
-  if (on && tg.enableVerticalSwipes) tg.enableVerticalSwipes();
-  if (!on && tg.disableVerticalSwipes) tg.disableVerticalSwipes();
+  const want = !swipesOff.size;
+  if (tg.isVerticalSwipesEnabled === want) return;
+  if (want && tg.enableVerticalSwipes) tg.enableVerticalSwipes();
+  if (!want && tg.disableVerticalSwipes) tg.disableVerticalSwipes();
 }
 
 function showSheet(html, dir = 0) {
@@ -4750,6 +4802,7 @@ function render(dir = 0) {
   const onboarding = !state.fav;
   $("#tabs").hidden = onboarding;
   document.body.dataset.tab = onboarding ? "" : state.tab;
+  tgSwipes(onboarding || state.tab !== "raskat", "raskat");
   if (onboarding) {
     screen.innerHTML = renderOnboarding();
     addThemeToggle();
@@ -4757,6 +4810,7 @@ function render(dir = 0) {
   }
   const cur = $("#tabs button.active");
   if (!cur || cur.dataset.tab !== state.tab || !$("#tabs").classList.contains("ready")) setTab(state.tab, false);
+  if (state.tab === "home") feedApply();   // свежие посты, пришедшие, пока «Главную» не трогали
   const views = { home: renderHome, calendar: renderCalendar, table: renderTable, raskat: renderRaskat, me: renderMe };
   screen.innerHTML = views[state.tab]();
   addThemeToggle();
@@ -5170,6 +5224,7 @@ function initTelegram() {
     tg.BackButton.show();
     tgSwipes(false);
   }
+  tgSwipesApply();   // по ссылке startapp=raskat вкладка «Раскат» открылась раньше, чем пришёл Telegram
   applyTheme();
   dropOldKeys();
   // вход Telegram пришёл после первой отрисовки — доли трибуны берём заново, уже со своим голосом

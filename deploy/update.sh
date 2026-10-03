@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Выложить свежий main на сервер и перезапустить службы bot, live и api. Ставится как
+# Выложить свежий main на сервер и перезапустить службы bot, live, api и pages. Ставится как
 # /usr/local/sbin/rhl-update (deploy/setup.sh, deploy/https.sh) и вызывается по ключу GitHub Actions
 # (.github/workflows/deploy.yml) или руками. Файлы состояния (subscribers.json, announced.json,
 # state.db, live/) не в git — git их не трогает.
@@ -7,7 +7,7 @@ set -euo pipefail
 APP=/opt/rhl
 SELF=/usr/local/sbin/rhl-update
 # служба:файл кода. Файла ещё нет в main — служба пропускается, выкладка не падает
-SERVICES="bot:bot.py live:live.py api:server.py"
+SERVICES="bot:bot.py live:live.py api:server.py pages:pages_kick.py"
 cd "$APP"
 
 if [ -z "${RHL_BEFORE:-}" ]; then

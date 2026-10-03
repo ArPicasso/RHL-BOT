@@ -1,0 +1,72 @@
+name: Снимок источников
+
+# Разработка не видит сайты лиги из своей песочницы (ADR-019, раздел 6): задание качает публичные
+# страницы rhl.fhr.ru, r-hockey и онлайна КХЛ с раннера GitHub и кладёт их артефактом — из них
+# делаются фикстуры tests/. Запускается руками или правкой этого файла. По одному запросу, пауза
+# секунда (CLAUDE.md). Онлайн КХЛ для зарубежных IP, скорее всего, закрыт — тогда в сводке 403.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/sources-snapshot.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Скачать страницы
+        shell: python
+        run: |
+          import re, time, urllib.request, urllib.error
+          from pathlib import Path
+          from urllib.parse import urljoin
+          out = Path("snapshot"); out.mkdir()
+          ua = "ryazan-vdv-schedule-bot (+https://github.com/ArPicasso/bogdanov)"
+          seen = {}
+          def get(url, name):
+              if url in seen or len(seen) >= 40:
+                  return None
+              seen[url] = name
+              time.sleep(1)
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": ua}), timeout=30) as r:
+                      raw = r.read()
+                      enc = r.headers.get_content_charset() or "utf-8"
+                      code = r.status
+              except urllib.error.HTTPError as e:
+                  raw, enc, code = e.read(), "utf-8", e.code
+              except Exception as e:
+                  print(f"{name:28} ОШИБКА {type(e).__name__}: {e} — {url}")
+                  return None
+              text = raw.decode(enc, errors="replace")
+              (out / f"{name}.html").write_text(text, encoding="utf-8")
+              title = re.search(r"<title>(.*?)</title>", text, re.S | re.I)
+              print(f"{name:28} {code} {len(raw):>8} {title.group(1).strip()[:70] if title else '—'} — {url}")
+              return text
+          home = get("https://rhl.fhr.ru/", "rhl_home") or ""
+          links = []
+          for href in re.findall(r'href="([^"#]+)"', home):
+              u = urljoin("https://rhl.fhr.ru/", href)
+              if "rhl.fhr.ru" in u and re.search(r"calendar|report|idgame|stat|tournament|match|game|table", u, re.I):
+                  links.append(u)
+          for i, u in enumerate(dict.fromkeys(links)):
+              if i >= 12:
+                  break
+              page = get(u, f"rhl_link{i:02d}")
+              if page and i < 4:
+                  for href in re.findall(r'href="([^"#]*(?:idgame|report)[^"#]*)"', page)[:3]:
+                      get(urljoin(u, href), f"rhl_link{i:02d}_report{len(seen):02d}")
+          for path in ("/calendar/", "/stat/calendar/"):
+              get("https://rhl.fhr.ru" + path, "rhl" + path.strip("/").replace("/", "_"))
+          get("https://r-hockey.ru/stat/temp/2027/30904/calendar?month=10", "rhockey_rhl_2026_10")
+          get("https://online.khl.ru/online/", "khl_online_day")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sources-snapshot
+          path: snapshot
+          retention-days: 7

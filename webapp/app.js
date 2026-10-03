@@ -4405,11 +4405,21 @@ function sheetBack() {
 
 let sheetClosing = null;   // анимации ухода листа, пока он уезжает вниз
 
-// Пока лист открыт, Telegram не сворачивает мини-апп свайпом вниз: этот жест закрывает лист
-function tgSwipes(on) {
+// Telegram сворачивает мини-апп свайпом вниз — выключаем это, пока жест нужен нам самим:
+// открыт лист (свайп вниз закрывает лист) или вкладка «Раскат» (палец ведёт шайбу по полю, ADR-018).
+// Выключить приходится заранее, а не на касании: Telegram ловит жест раньше, чем до нас дойдёт событие
+const swipesOff = new Set();   // кто сейчас держит жест выключенным: "sheet", "raskat"
+function tgSwipes(on, who = "sheet") {
+  if (on) swipesOff.delete(who);
+  else swipesOff.add(who);
+  tgSwipesApply();
+}
+function tgSwipesApply() {
   if (!inTelegram || !tg.isVersionAtLeast || !tg.isVersionAtLeast("7.7")) return;
-  if (on && tg.enableVerticalSwipes) tg.enableVerticalSwipes();
-  if (!on && tg.disableVerticalSwipes) tg.disableVerticalSwipes();
+  const want = !swipesOff.size;
+  if (tg.isVerticalSwipesEnabled === want) return;
+  if (want && tg.enableVerticalSwipes) tg.enableVerticalSwipes();
+  if (!want && tg.disableVerticalSwipes) tg.disableVerticalSwipes();
 }
 
 function showSheet(html, dir = 0) {
@@ -4568,6 +4578,7 @@ function render(dir = 0) {
   const onboarding = !state.fav;
   $("#tabs").hidden = onboarding;
   document.body.dataset.tab = onboarding ? "" : state.tab;
+  tgSwipes(onboarding || state.tab !== "raskat", "raskat");
   if (onboarding) {
     screen.innerHTML = renderOnboarding();
     addThemeToggle();
@@ -4988,6 +4999,7 @@ function initTelegram() {
     tg.BackButton.show();
     tgSwipes(false);
   }
+  tgSwipesApply();   // по ссылке startapp=raskat вкладка «Раскат» открылась раньше, чем пришёл Telegram
   applyTheme();
   dropOldKeys();
   // вход Telegram пришёл после первой отрисовки — доли трибуны берём заново, уже со своим голосом

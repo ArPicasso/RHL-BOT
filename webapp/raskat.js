@@ -12,7 +12,7 @@
 // Всё, что пришло из данных, вставляем только через esc(). Решения в данных нет: путь проверяем
 // сами по правилам контракта (раздел 1), а подсказку считает решатель на устройстве.
 
-const RS_DAYS_KEY = "rs_days";   // {дата: {ms, points, hint, path, train}} — на устройстве и в облаке
+const RS_DAYS_KEY = "rs_days";   // {дата: {ms, points, total, hint, path, train}} — на устройстве и в облаке
 const RS_HINT_KEY = "rs_hint";   // дата, в которую подсказку уже брали: она одна в день
 const RS_WOW_KEY = "rs_wow";     // дата, в которую «вау» уже показали: он один раз в день
 const RS_SET_KEY = "rs_set";     // {name, messages} — настройки зачёта
@@ -37,7 +37,6 @@ const RS_I = {
   hint: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v2M5.2 6.2l1.4 1.4M18.8 6.2l-1.4 1.4M9.5 20h5"/><path d="M12 8a4 4 0 0 1 2.4 7.2V17h-4.8v-1.8A4 4 0 0 1 12 8Z"/></svg>',
   chev: '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>',
   trash: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13"/></svg>',
-  cup: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10v4a5 5 0 0 1-10 0z"/><path d="M7 5.5H4.5V7a3 3 0 0 0 3 3M17 5.5h2.5V7a3 3 0 0 1-3 3M12 13v4M8.5 20h7"/></svg>',
   // Шайба на острие ленты: чёрный эллипс с белой каймой, как на заставке
   puck: '<svg viewBox="0 0 120 80" aria-hidden="true"><path d="M8 30v18a52 22 0 0 0 104 0V30z" fill="#000" stroke="#fff" stroke-width="9" stroke-linejoin="round" paint-order="stroke"/><ellipse cx="60" cy="30" rx="52" ry="22" fill="#000" stroke="#fff" stroke-width="5"/></svg>',
 };
@@ -393,6 +392,7 @@ function rsStep(to) {
   return true;
 }
 const rsWhere = (i) => `клетка ${(i % RS.day.w) + 1} по горизонтали, ${Math.floor(i / RS.day.w) + 1} по вертикали`;
+const rsWhereIn = (i) => rsWhere(i).replace("клетка", "клетке");
 function rsMoved(text) {
   if (!RS.t0) {
     RS.t0 = Date.now();   // время идёт от первого касания поля, без пауз (контракт, раздел 4)
@@ -515,14 +515,7 @@ function rsAfterPaint() {
 function rsWow(score) {
   const once = lsGet(rsKey(RS_WOW_KEY)) !== RS.date && !RS.train;
   if (!RS.train) lsSet(rsKey(RS_WOW_KEY), RS.date);
-  const goal = RS.el && RS.el.goal;
-  if (goal) goal.classList.add("on");
-  const puckTo = () => {
-    if (!RS.el) return;
-    const g = RS.geo;
-    RS.el.puck.style.transition = calm() ? "none" : "transform .34s cubic-bezier(.4, 0, 1, 1)";
-    RS.el.puck.style.transform = `translate(${g.w + g.cell * 0.5}px, ${g.h / 2}px) translate(-50%, -50%)`;
-  };
+  const puckTo = () => rsGoal(!calm());
   if (!once || calm()) {
     puckTo();
     return;
@@ -538,6 +531,15 @@ function rsWow(score) {
   }
   setTimeout(puckTo, 560);
   score.animate([{ opacity: 0, transform: "translateY(16px)" }, { opacity: 1, transform: "none" }], { duration: 260, delay: 420, easing: EASE_OUT, fill: "backwards" });
+}
+
+// Шайба в воротах у края поля: так выглядит собранный раскат — и сразу после финиша, и при
+// следующем заходе в этот день
+function rsGoal(animate) {
+  if (!RS.el || !RS.geo) return;
+  RS.el.goal.classList.add("on");
+  RS.el.puck.style.transition = animate ? "transform .34s cubic-bezier(.4, 0, 1, 1)" : "none";
+  RS.el.puck.style.transform = `translate(${RS.geo.w + 5}px, ${RS.geo.h / 2}px) translate(-50%, -50%)`;
 }
 
 function rsHintPress() {
@@ -669,13 +671,13 @@ function rsIceBody() {
     </div>
     <p class="sr-only" id="rs-say" aria-live="polite" role="status"></p>
     <div id="rs-score">${RS.solved ? rsScoreHTML() : ""}</div>
+    <div id="rs-cta">${RS.solved ? rsCtaHTML() : ""}</div>
     <div class="rs-acts">
       <button type="button" class="rs-pill" data-rs="restart">${RS_I.again}Заново</button>
       <button type="button" class="rs-pill" data-rs="hint"${RS.hint || RS.solved ? " disabled" : ""}>${RS_I.hint}Подсказка</button>
       ${back}
     </div>
-    <div id="rs-cta">${RS.solved ? rsCtaHTML() : ""}</div>
-    ${rsRules()}
+    ${Object.keys(rsRecords()).length ? "" : rsRules()}
     <div class="foot">Расклад один для всех и открывается в 00:00 по Москве. Время идёт от первого касания поля.</div>`;
 }
 
@@ -710,7 +712,7 @@ function rsBoardLabel() {
   const d = RS.day;
   if (!d) return "Поле «Раската»";
   const head = RS.path[RS.path.length - 1];
-  return esc(`Поле ${d.w} на ${d.h}, шайба в ${rsWhere(head == null ? d.dots[0] : head)}. Стрелки ведут шайбу, пробел — шаг назад`);
+  return esc(`Поле ${d.w} на ${d.h}, шайба в ${rsWhereIn(head == null ? d.dots[0] : head)}. Стрелки ведут шайбу, пробел — шаг назад`);
 }
 
 // Табло: время и итог дня крупно, серия — строкой. Очки дня (без серии) — в зачёте дня
@@ -766,6 +768,7 @@ function rsMount() {
     board.addEventListener("lostpointercapture", rsUp);
   }
   rsLayout();
+  if (RS.solved) rsGoal(false);
   if (RS.t0 && !RS.solved) rsStartTick();
 }
 // Размеры клетки считает CSS — JS их только измеряет: лента и шайба живут в тех же пикселях
@@ -821,6 +824,8 @@ function rsDraw() {
   RS.el.nums.forEach((b, k) => {
     b.classList.toggle("done", k < passed);
     b.classList.toggle("next", k === passed && !RS.solved);
+    // наклейка под шайбой не гаснет: иначе сквозь неё просвечивает шайба и номер не прочесть
+    b.classList.toggle("head", Number(b.dataset.n) === head && !RS.solved);
   });
   RS.el.board.setAttribute("aria-label", rsBoardLabel());
   RS.el.board.classList.toggle("done", RS.solved);
@@ -886,6 +891,13 @@ async function rsApi(method, path, body) {
 }
 function rsBoardLoad(force = false) {
   const date = rsLatest() ? rsLatest().date : "";
+  const code = lsGet(rsKey(RS_DUEL_KEY));
+  if (code && RS.srv.duel === undefined && !RS.srv.loading.duel) {
+    RS.srv.loading.duel = true;
+    rsApi("GET", `/duel/${encodeURIComponent(code)}`)
+      .then((d) => { RS.srv.duel = d || null; if (state.tab === "raskat" && RS.seg === "board") rsPaintBody(); })
+      .catch(() => { RS.srv.duel = null; });
+  }
   const key = RS.board === "clubs" ? `clubs:${date}` : RS.board === "day" ? `day:${date}` : "me";
   if (!date || (RS.srv.loading[key] && !force)) return;
   RS.srv.loading[key] = true;
@@ -910,7 +922,7 @@ function rsBoardBody() {
     </div>`;
   if (!rsServer()) return rsWaitBoard() + tools;
   const date = rsLatest() ? rsLatest().date : "";
-  const chips = `<div class="chips fill" role="group" aria-label="Что показать" data-run="rs-board">${RUN}
+  const chips = `<div class="chips rs-chips" role="group" aria-label="Что показать" data-run="rs-board">${RUN}
       ${segBtn(RS.board === "day", 'data-rs-board="day"', "День")}
       ${segBtn(RS.board === "clubs", 'data-rs-board="clubs"', "Кубок клубов")}
       ${segBtn(RS.board === "streak", 'data-rs-board="streak"', "Серия")}
@@ -963,25 +975,27 @@ function rsDayRow(r) {
   </div>`;
 }
 // Клуб ниже порога из приложения не исчезает: вместо среднего — честная строка (контракт, раздел 4)
-function rsClubRow(r) {
+function rsClubRow(r, season = false) {
   const fans = r.fans || 0;
   const low = fans < RS_CLUB_MIN;
   const avg = `<b class="pts num">${esc(String(Math.round((r.avg || 0) * 10) / 10))}</b>`;
   return `<div class="rs-row${r.me ? " me" : ""}">
       <span class="pos num">${esc(String(low ? "—" : r.place || "—"))}</span>${emblem(r.club)}
-      <span class="nm">${esc(team(r.club).name)}<small>${low ? `собрали ${fans}, кубок считается от ${RS_CLUB_MIN}` : `${fans} ${plural(fans, "болельщик", "болельщика", "болельщиков")}`}</small></span>
+      <span class="nm">${esc(team(r.club).name)}<small>${low ? `собрали ${fans}, кубок считается от ${RS_CLUB_MIN}` : `${fans} ${plural(fans, "болельщик", "болельщика", "болельщиков")}${season && r.days ? ` · по ${r.days} ${plural(r.days, "дню", "дням", "дням")}` : ""}`}</small></span>
       ${low ? "" : avg}</div>`;
 }
 function rsClubsTable(d) {
   if (!d) return rsSkeleton();
-  const day = Array.isArray(d.day) ? d.day : [];
+  // клубы ниже порога сервер шлёт отдельным списком; старый формат — те же строки внутри day
+  const low = [].concat(Array.isArray(d.low) ? d.low : [], Array.isArray(d.under) ? d.under : []);
+  const day = (Array.isArray(d.day) ? d.day : []).concat(low);
   if (!day.length) return `<div class="empty">Кубок клубов считается, когда за клуб собрали раскат хотя бы ${RS_CLUB_MIN} болельщиков.</div>`;
-  const rows = day.slice(0, 10);
+  const rows = day.filter((r) => (r.fans || 0) >= RS_CLUB_MIN).slice(0, 10);
   const mine = !rows.some((r) => r.me) && day.find((r) => r.me);
   const season = Array.isArray(d.season) ? d.season.slice(0, 10) : [];
   return `<div class="label">Кубок клубов<span class="aside">среднее очков дня</span></div>
-    <div class="rs-table">${mine ? rsClubRow(mine) + '<div class="rs-cut" aria-hidden="true"></div>' : ""}${rows.map(rsClubRow).join("")}</div>
-    ${season.length ? `<div class="label">За сезон<span class="aside">среднее дневных средних</span></div><div class="rs-table">${season.map(rsClubRow).join("")}</div>` : ""}
+    <div class="rs-table">${mine ? rsClubRow(mine) + '<div class="rs-cut" aria-hidden="true"></div>' : ""}${rows.map((r) => rsClubRow(r)).join("")}</div>
+    ${season.length ? `<div class="label">За сезон<span class="aside">среднее дневных средних</span></div><div class="rs-table">${season.map((r) => rsClubRow(r, true)).join("")}</div>` : ""}
     <div class="foot">Считается среднее, а не сумма: иначе кубок каждый день выигрывает клуб, у которого болельщиков в разы больше, а не самый упорный. Сезонный кубок — среднее дневных средних.</div>`;
 }
 // Серия — ряд дней кружками: залитый собран, пустой с контуром пропущен
@@ -1015,13 +1029,13 @@ function rsSheet() {
         <span><b>${esc(fmtLong(d.date))}</b><small>№ ${esc(String(d.n))}${rec ? ` · собран за ${esc(rsClock(rec.ms))}` : " · ещё не собран"}</small></span>
         <span class="rs-pill as-tag">${rec ? "Ещё раз" : "Собрать"}</span></button>`;
     }).join("")
-    : '<div class="menu-row off"><span><b>Прошлых раскатов пока нет</b><small>Они появятся со второго дня сезона</small></span></div>';
+    : '<div class="menu-row off rs-none-row"><span><b>Прошлых раскатов пока нет</b><small>Они появятся со второго дня сезона</small></span></div>';
   const s = rsSettings();
-  const sw = (on) => `<span class="rs-sw" aria-hidden="true"></span>`;
+  const sw = () => '<span class="rs-sw" aria-hidden="true"></span>';
   const set = `<button type="button" class="menu-row rs-set-row" data-rs="set-name" aria-pressed="${s.name}">
-      <span><b>Имя из Telegram в зачёте</b><small>${s.name ? "Показываем имя" : "В таблице — «Болельщик «клуба»»"}</small></span>${sw(s.name)}</button>
+      <span><b>Имя из Telegram в зачёте</b><small>${s.name ? "Показываем имя" : "В таблице — «Болельщик «клуба»»"}</small></span>${sw()}</button>
     <button type="button" class="menu-row rs-set-row" data-rs="set-msg" aria-pressed="${s.messages}">
-      <span><b>Сообщения о зачёте</b><small>Бот напишет, когда зачёт откроется</small></span>${sw(s.messages)}</button>
+      <span><b>Сообщения о зачёте</b><small>Бот напишет, когда зачёт откроется</small></span>${sw()}</button>
     <button type="button" class="menu-row" data-rs="del">${RS_I.trash}<span><b>Удалить мои раскаты</b><small>Записи, серия и место в зачёте</small></span>${RS_I.chev}</button>`;
   const ask = RS.ask
     ? `<div class="rs-confirm"><p>Сотрём все твои раскаты: записи дней, серию и результат в зачёте. Вернуть их будет нельзя.</p>
@@ -1040,6 +1054,7 @@ function rsSheet() {
 }
 function rsOpenSheet() {
   RS.sheetOpen = true;
+  RS.ask = false;
   showSheet(rsSheet());
 }
 function rsRedrawSheet() {
@@ -1073,7 +1088,7 @@ function rsShare() {
   const app = state.data && state.data.links && state.data.links.app;
   const link = app ? `${app}?startapp=raskat` : `${location.origin}${location.pathname}?startapp=raskat`;
   const what = RS.train ? "Тренировочный раскат" : `Раскат № ${d ? d.n : ""}`;
-  shareLink(link, `${what} — ${rsClock(r.ms || RS.ms)}, ${rsPts(r.points || 0)}${r.hint ? ", с подсказкой" : ""}. Собери свой!`);
+  shareLink(link, `${what} — ${rsClock(r.ms || RS.ms)}, ${rsPts(r.total != null ? r.total : r.points || 0)}${r.hint ? ", с подсказкой" : ""}. Собери свой!`);
 }
 function rsBot(start) {
   const bot = state.data && state.data.links && state.data.links.bot;
@@ -1131,7 +1146,9 @@ function rsAct(what, arg, el) {
     case "del":
       haptic();
       RS.ask = true;
-      return rsRedrawSheet();
+      rsRedrawSheet();
+      // подтверждение внизу того же листа: подводим к нему, а не оставляем искать
+      return void $("#sheet").scrollTo({ top: $("#sheet").scrollHeight, behavior: calm() ? "auto" : "smooth" });
     case "del-no":
       RS.ask = false;
       return rsRedrawSheet();
@@ -1151,7 +1168,16 @@ document.addEventListener("click", (e) => {
     if (seg.dataset.rsSeg === RS.seg) return;
     RS.seg = seg.dataset.rsSeg;
     haptic();
-    return rsPaintBody();
+    // сегмент стоит в полосе-шапке, а перерисовываем мы тело: выбор переставляем на месте,
+    // бегунок перетекает к новой кнопке
+    const group = seg.parentNode;
+    const prev = runnerState(group.parentNode)[group.dataset.run];
+    group.querySelectorAll("[data-rs-seg]").forEach((b) => {
+      b.classList.toggle("on", b === seg);
+      b.setAttribute("aria-pressed", b === seg);
+    });
+    placeRunner(group, prev);
+    return nextFrame(rsPaintBody);
   }
   const chip = e.target.closest("[data-rs-board]");
   if (chip) {

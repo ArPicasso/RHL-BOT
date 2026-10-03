@@ -71,13 +71,14 @@
   transition: opacity .18s;
 }
 .rs-num.done { opacity: .55; }
+.rs-num.head { opacity: 1; }
 .rs-num.next { outline: 2px solid var(--ink); outline-offset: 2px; }
 
 .rs-puck { position: absolute; left: 0; top: 0; display: block; aspect-ratio: 120 / 80; pointer-events: none; transition: transform .09s linear; }
 .rs-puck svg { display: block; width: 100%; height: 100%; }
 /* Ворота у края поля: шайба влетает в них, когда раскат собран */
 .rs-goal {
-  position: absolute; right: -11px; top: 50%; width: 9px; height: 38%;
+  position: absolute; right: -7px; top: 50%; width: 9px; height: 38%;
   border: 2px solid var(--ink); border-left: 0; border-radius: 0 8px 8px 0;
   transform: translateY(-50%); opacity: 0; transition: opacity .2s;
 }
@@ -99,6 +100,7 @@
 .rs-pill.as-tag { pointer-events: none; min-height: 32px; padding: 0 12px; }
 
 #rs-cta .btn { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 12px; }
+#rs-cta:empty { display: none; }
 #rs-cta .btn svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
 /* Табло собранного раската: время и итог дня крупно — после финиша это главное на экране */
@@ -138,6 +140,9 @@
 
 /* ---------- зачёт ---------- */
 
+.rs-chips { margin-bottom: 16px; }
+.rs-chips button { white-space: nowrap; }
+
 .rs-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
 .rs-table { border: var(--line); border-radius: 20px; overflow: hidden; background: var(--paper); }
 .rs-row { display: grid; grid-template-columns: 26px auto 1fr auto auto; gap: 10px; align-items: center; min-height: 48px; padding: 8px 12px; }
@@ -165,6 +170,7 @@
 /* ---------- лист тренировки и настроек ---------- */
 
 .rs-train-row { grid-template-columns: 1fr auto; }
+.rs-none-row { grid-template-columns: 1fr; }
 .rs-set .rs-set-row { grid-template-columns: 1fr auto; }
 .rs-sw { position: relative; flex: none; width: 44px; height: 26px; border: var(--line); border-radius: 9999px; background: var(--mist); transition: background-color .2s; }
 .rs-sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: var(--paper); border: 1px solid var(--edge); transition: transform .2s cubic-bezier(.2, .8, .2, 1); }

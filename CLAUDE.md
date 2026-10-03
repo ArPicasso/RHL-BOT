@@ -46,6 +46,7 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `build_data.py` | Собирает `webapp/data/league.json` (команды, матчи, результаты, таблица), `h2h.json`, разборы матчей `matches/<id>.json` (ADR-008) и `leaders.json` (ADR-009). Время матча — московское: `time`, `start`, у арены в другом поясе ещё `local`; источники — `schedule.json`, протокол (в нём местное), пост клуба. Плюс `online` и `watch` (ADR-019) |
 | `khl_online.py` | Разбор онлайна КХЛ без сети (ADR-019): заголовок страницы матча, список дня, статус, счёт и события текстовой трансляции. Вёрстку подтверждает `tools/probe_sources.py` |
 | `live.py` | Служба `live` на VPS: опрос онлайна КХЛ и календаря сайта РХЛ → `live/today.json`, `live/<дата>.json`, `live/schedule.json`, `live/sources.json` (не в git, ADR-019, раздел 5). Ночью и без матчей не опрашивает |
+| `pages_kick.py` | Служба `pages` на VPS: раз в 15 минут запускает сборку Pages (`workflow_dispatch`), потому что cron GitHub теряет запуски. Токен `PAGES_TOKEN` в `/etc/rhl/bot.env`, нет его — молчит (ADR-015, дополнение 03.10) |
 | `tools/probe_sources.py` | Запустить на VPS руками: сохранить страницы онлайна и `rhl.fhr.ru` в `probe/` (не в git) и показать, что из них разобрано — из этого делаются фикстуры `tests/` |
 | `matchday.py` | «Смотреть» и время начала из постов каналов клубов и лиги в день матча (ADR-019, разделы 2 и 7): привязка поста к матчу, белый список видеохостингов, не больше трёх ссылок. Без сети, его вызывает `build_data.py` |
 | `schedule.json` | Время матчей и ссылки на онлайн на 14 дней — копия `$LIVE_API/live/schedule.json` с сервера (ADR-019, раздел 5). Кладёт шаг Pages, если задана переменная `LIVE_API`. Не в git; нет файла — сборка без него |
@@ -69,7 +70,7 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `tools/render_stickers.js` | Перерисовать стикеры и эмодзи (Playwright, запускается руками) |
 | `tools/upload_emoji.py` | Опубликовать эмодзи набором `t.me/addemoji/rhl_u21_by_<бот>` |
 | `.claude/agents/bot-logic.md` | Агент для логики бота: онбординг, хендлеры, напоминания |
-| `deploy/` | Сервер: `setup.sh` — первая настройка VPS, `update.sh` — выкладка (`rhl-update`), службы `bot.service`, `live.service`, `api.service`, `https.sh` — Caddy и HTTPS для API, `tunnel.sh` и `tg-tunnel.service` — выход в Telegram через зарубежный сервер (`TELEGRAM_PROXY`) |
+| `deploy/` | Сервер: `setup.sh` — первая настройка VPS, `update.sh` — выкладка (`rhl-update`), службы `bot.service`, `live.service`, `api.service`, `pages.service`, `https.sh` — Caddy и HTTPS для API, `tunnel.sh` и `tg-tunnel.service` — выход в Telegram через зарубежный сервер (`TELEGRAM_PROXY`) |
 | `.github/workflows/deploy.yml` | После слияния в `main` выкладывает бота на сервер по ключу, который умеет только `rhl-update` |
 | `calendar.pdf` | Календарь на печать, отдаётся по кнопке |
 | `docs/SYSTEM.md` | Как система работает сейчас: части, выкладка, секреты, сервер, что делать при сбоях |

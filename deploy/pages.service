@@ -1,0 +1,32 @@
+# Сборка мини-аппа на GitHub Pages по таймеру с сервера (pages_kick.py, ADR-015, дополнение 03.10.2026):
+# cron GitHub теряет запуски, поэтому сервер раз в 15 минут сам зовёт workflow_dispatch задания pages.yml.
+# Токен PAGES_TOKEN — в /etc/rhl/bot.env; нет его — служба просто ждёт. Ставит и перезапускает rhl-update.
+[Unit]
+Description=RHL U21 Pages rebuild kicker (pages_kick.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rhl
+Group=rhl
+WorkingDirectory=/opt/rhl
+EnvironmentFile=/etc/rhl/bot.env
+ExecStart=/opt/rhl/venv/bin/python pages_kick.py
+Restart=always
+RestartSec=30
+UMask=0027
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

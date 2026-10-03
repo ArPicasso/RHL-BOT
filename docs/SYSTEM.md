@@ -29,7 +29,9 @@
 - Вкладки: «Главная» (лист дня и лента лиги), «Календарь», «Таблица», «Раскат», «Я». Экран команды
   открывается из таблицы и календаря.
 - Данные собирает задание **«Мини-апп»** (`.github/workflows/pages.yml`) при каждом слиянии в `main`
-  и раз в час. Шаги задания:
+  и раз в час, а с сервера ещё каждые 15 минут: служба `pages` (`pages_kick.py`) зовёт
+  `workflow_dispatch`, потому что cron GitHub теряет запуски (ADR-015, дополнение 03.10). Нужен токен
+  `PAGES_TOKEN` в `/etc/rhl/bot.env`. Шаги задания:
   1. `league.py` — протоколы и лидеры. Включится, когда откроется сайт РХЛ (переменная `LEAGUE_SITE`).
   2. `tg_channels.py` — посты каналов клубов.
   3. `build_data.py` — `league.json`, `h2h.json`, `matches/`, `feed/`. Календарь пока берётся с r-hockey.ru.
@@ -98,7 +100,7 @@
 
 - Слияние в `main` запускает задание **«Выложить бота на сервер»** (`deploy.yml`). Задание по ssh
   запускает на сервере `rhl-update`: `git reset --hard origin/main`, pip, установка и перезапуск
-  служб `bot`, `live`, `api` из `deploy/` и проверка каждой (у `api` — `/api/health`). Службу, чьего
+  служб `bot`, `live`, `api`, `pages` из `deploy/` и проверка каждой (у `api` — `/api/health`). Службу, чьего
   файла кода ещё нет в `main`, выкладка пропускает с сообщением. Правки только в `webapp/`,
   `docs/`, `art/`, `stickers/` и `*.md` служб не перезапускают.
 - `rhl-update` обновляет сам себя: новая `deploy/update.sh` в `main` ставится и сразу продолжает
@@ -125,11 +127,11 @@
 | `/opt/rhl` | Клон репозитория, venv, файлы состояния бота: `subscribers.json`, `announced.json`, `raskat_waitlist.json` |
 | `/opt/rhl/state.db` | Зачёт «Раската» и прогнозы (SQLite, рядом `state.db-wal`, `-shm`) |
 | `/opt/rhl/live/` | Живые файлы матч-центра: пишет `live`, отдаёт `api`, читает бот |
-| `/etc/rhl/bot.env` | Общий для служб `bot`, `live`, `api`: `BOT_TOKEN`, `WEBAPP_URL`, `TELEGRAM_PROXY`, `RASKAT_SALT`, `RASKAT_API`, `PAGES_ORIGIN`. Права 640 |
+| `/etc/rhl/bot.env` | Общий для служб `bot`, `live`, `api`, `pages`: `BOT_TOKEN`, `WEBAPP_URL`, `TELEGRAM_PROXY`, `RASKAT_SALT`, `RASKAT_API`, `PAGES_ORIGIN`, `PAGES_TOKEN`. Права 640 |
 | `/etc/rhl/tunnel.env` | Куда идёт туннель |
 | `/etc/caddy/Caddyfile` | HTTPS: `/api/*` → `127.0.0.1:8080`, остальное 404. Пишет `https.sh` |
 | `/usr/local/sbin/rhl-update` | Выкладка (копия `deploy/update.sh`) |
-| службы `bot`, `live`, `api`, `tg-tunnel`, `caddy` | systemd, перезапускаются сами |
+| службы `bot`, `live`, `api`, `pages`, `tg-tunnel`, `caddy` | systemd, перезапускаются сами |
 
 Наружу открыты SSH и, после `https.sh`, 80 и 443 для Caddy (ufw).
 

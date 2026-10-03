@@ -9,13 +9,14 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import feed
 import league
 import matchday
+import rhl_media
 import rhl_site
 import rhockey
 
@@ -33,6 +34,8 @@ OUT = BASE / "webapp" / "data" / "league.json"
 CHANNELS_FILE = BASE / "channels.json"       # каналы клубов для листа «Главной» (ADR-015)
 POSTS_FILE = BASE / "channel_posts.json"     # их посты: собирает tg_channels.py перед этим шагом
 SCHEDULE_FILE = BASE / "schedule.json"       # время матчей с сервера (ADR-019, раздел 5), кладёт шаг Pages
+EVENTS_FILE = BASE / "channel_events.json"   # лента матчей из постов каналов: копится между запусками (кэш Pages)
+EVENTS_DAYS = 3                              # и держится три дня
 MOSCOW = "Europe/Moscow"
 HIDDEN_NAME = "Игрок скрыт"
 H2H_LAST = 5
@@ -197,6 +200,56 @@ def apply_matchday(games: list[dict], teams: "Teams", channels: list[dict], post
             set_start(g, got["start"], teams.tz.get(g["home"], MOSCOW))
     return len(found)
 
+
+def apply_media(games: list[dict], store: dict) -> int:
+    """«Смотреть» от лиги (ADR-019, раздел 7): видео из вкладки «Видео» сайта лиги, а пока его нет — сама вкладка,
+    если трансляция объявлена, — первой кнопкой. Ссылки из постов клубов (apply_matchday) — после неё, без
+    повторов того же ролика, всего не больше трёх. Матч сайта — по league_url, его ставит apply_site."""
+    site_games = (store or {}).get("games", {})
+    n = 0
+    for g in games:
+        m = rhl_site.LINK_RE.search(g.get("league_url") or "")
+        first = rhl_media.watch_item(site_games.get(m.group(2))) if m else None
+        if not first:
+            continue
+        same = matchday.same_video(first["url"])
+        rest = [w for w in g.get("watch", []) if matchday.same_video(w["url"]) != same]
+        g["watch"] = [first, *rest][:matchday.WATCH_MAX]
+        n += 1
+    return n
+
+
+def apply_channel_events(games: list[dict], teams: "Teams", channels: list[dict], posts: dict,
+                         cache: dict | None = None, now: datetime | None = None) -> int:
+    """Лента матча из постов каналов клубов и лиги (matchday.match_events) → `events` у матча в league.json.
+    cache — ленты прошлых запусков по ключу «<дата>|<хозяева>|<гости>» (channel_events.json): t.me/s отдаёт
+    только последние ~20 постов канала, а клуб по ходу матча пишет больше. Возвращает число матчей с лентой."""
+    found = matchday.match_events(games, teams.all, channels, posts)
+    store = cache.setdefault("games", {}) if cache is not None else {}
+    n = 0
+    for g in games:
+        key = f"{g['date']}|{g['home']}|{g['away']}"
+        events = matchday.merge_feed(store.get(key) or [], found.get(g["id"]) or [], channels, posts)
+        if events:
+            store[key] = g["events"] = events
+            n += 1
+        else:
+            store.pop(key, None)
+    if now is not None:
+        oldest = (now.astimezone(TZ).date() - timedelta(days=EVENTS_DAYS)).isoformat()
+        for key in [k for k in store if k[:10] < oldest]:
+            del store[key]
+    return n
+
+
+def load_events(path: Path = EVENTS_FILE) -> dict:
+    """Кэш ленты матчей из каналов. Нет файла или он битый — с чистого листа."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data.get("games"), dict) else {"games": {}}
+    except (FileNotFoundError, ValueError, AttributeError):
+        return {"games": {}}
+
 def site_rows(store: dict, teams: "Teams") -> list[dict]:
     """Матчи из rhl_site.json с id команд из teams.json. Не узнали команду — матч пропускаем с запиской."""
     rows = []
@@ -214,10 +267,13 @@ def site_rows(store: dict, teams: "Teams") -> list[dict]:
     return rows
 
 
-def apply_site(games: list[dict], store: dict, teams: "Teams") -> int:
+def apply_site(games: list[dict], store: dict, teams: "Teams", protocols: dict[str, dict] | None = None,
+               hidden: set[int] = frozenset()) -> int:
     """Сайт лиги (ADR-019, раздел 2): номер матча, начало по Москве, ссылки матч-центра и счёт
-    сыгранного матча, если протокола ещё нет. Матч сайта, которого нет в календаре r-hockey, добавляется:
-    лига — источник истины по календарю (CLAUDE.md). Возвращает число матчей с сайта."""
+    сыгранного матча. Протокол с сайта (`report`, rhl_protocol.py) главнее счёта ленты: счёт с периодами
+    и решением, голы и разбор — как у протокола results.json (ADR-008); protocols, если передан, собирает
+    его по id матча. Нет протокола — счёт из ленты. Матч сайта, которого нет в календаре r-hockey,
+    добавляется: лига — источник истины по календарю (CLAUDE.md). Возвращает число матчей с сайта."""
     by_key = {(g["date"], g["home"], g["away"]): g for g in games}
     by_pair: dict[tuple[str, str], list[dict]] = {}
     for g in games:
@@ -247,12 +303,28 @@ def apply_site(games: list[dict], store: dict, teams: "Teams") -> int:
         g.setdefault("online", base + "live/")
         if r.get("arena"):
             g["arena"] = r["arena"]
+        report = r.get("report")
+        if isinstance(report, dict) and "home_score" in report:
+            fill_result(g, report, hidden, teams.tz, timed=False)   # начало уже по календарю сайта или schedule
+            g.pop("score_src", None)
+            if protocols is not None:
+                protocols[g["id"]] = report
         score = r.get("score")
         if r.get("status") == "final" and isinstance(score, list) and len(score) == 2 and not g.get("score"):
             g["score"] = {"home": int(score[0]), "away": int(score[1]), "decision": r.get("decision"),
                           "periods": []}
             g["score_src"] = "rhl.fhr.ru"
-        elif not g.get("score"):
+        if g.get("score_src") == "rhl.fhr.ru":
+            # до протокола — авторы голов с карточки матча сайта, минутой «29'» (скрытых — без имени)
+            sg = [{"team": side, "min": x["min"], "no": x.get("no"),
+                   "name": HIDDEN_NAME if x.get("player") in hidden else x["name"]}
+                  for side, key in (("home", "home"), ("away", "away"))
+                  for x in ((r.get("goals") or {}).get(key) or []) if isinstance(x, dict) and x.get("min") is not None]
+            if sg:
+                g["site_goals"] = sorted(sg, key=lambda x: x["min"])
+        if r.get("status") == "final" or g.get("score"):
+            g["protocol"] = base + "protocol/"
+        if not g.get("score"):
             lv = rhl_site.live_state(r)
             if lv:
                 lv["seen"] = lv["seen"] or (store or {}).get("updated")
@@ -293,12 +365,15 @@ def sticker(player: dict | None, team: str, goalies: set[tuple[str, int]], hidde
     return out
 
 
-def fill_result(g: dict, p: dict, hidden: set[int] = frozenset(), zones: dict[str, str] | None = None) -> None:
-    """Счёт, голы и сведения из протокола — в матч, как их ждёт мини-апп. Время в протоколе — местное
-    время арены (ADR-001): по поясу хозяев из zones оно становится московским."""
+def fill_result(g: dict, p: dict, hidden: set[int] = frozenset(), zones: dict[str, str] | None = None,
+                *, timed: bool = True) -> None:
+    """Счёт, голы и сведения из протокола — в матч, как их ждёт мини-апп. Время в протоколе nmhl.fhr.ru —
+    местное время арены (ADR-001): по поясу хозяев из zones оно становится московским. У протокола
+    rhl.fhr.ru пояс записан в `zone` (Москва) — время не сдвигается второй раз. timed=False — начало не
+    трогаем: его уже поставил источник главнее протокола (schedule.json, календарь сайта лиги)."""
     g["n"] = g.get("n") or p.get("n")
     zone = (zones or {}).get(g.get("home"), MOSCOW)
-    start = local_start(p.get("date") or g.get("date"), p.get("time"), zone)
+    start = local_start(p.get("date") or g.get("date"), p.get("time"), p.get("zone") or zone) if timed else None
     if start:
         set_start(g, start, zone)
     else:
@@ -796,19 +871,23 @@ def links(env=os.environ) -> dict[str, str]:
 
 def build(teams: Teams, raw: list[rhockey.RawGame], results: league.Results,
           hidden: set[int] = frozenset(), *, schedule: list[dict] = (), channels: list[dict] = (),
-          posts: dict | None = None, site: dict | None = None) -> tuple[dict, list[str], dict[str, dict]]:
+          posts: dict | None = None, site: dict | None = None,
+          events: dict | None = None) -> tuple[dict, list[str], dict[str, dict]]:
     """league.json, непривязанные протоколы и разборы сыгранных матчей по id матча.
 
     schedule — строки schedule.json сервера, channels и posts — каналы клубов и их посты: время начала,
-    онлайн и «Смотреть» (ADR-019). Всё необязательно: без них у матча только время из протокола."""
+    онлайн, «Смотреть» и лента матча (ADR-019), events — кэш этой ленты (channel_events.json), его сборка
+    дополняет. Всё необязательно: без них у матча только время из протокола."""
     games = merge_calendar(teams, raw, official_games(teams))
     protocols: dict[str, dict] = {}
     unmatched = attach_results(games, teams, results, protocols, hidden)
     apply_schedule(games, list(schedule), teams.tz)        # главнее протокола: онлайн лиги, время по Москве
-    apply_site(games, site or {}, teams)                   # сайт лиги: номер, время, счёт до протокола
+    apply_site(games, site or {}, teams, protocols, hidden)   # сайт лиги: номер, время, протокол или счёт ленты
     for g in games:
         g.pop("src_time", None)
     apply_matchday(games, teams, list(channels), posts or {})
+    apply_media(games, site or {})                         # «Смотреть» от лиги — первой кнопкой
+    apply_channel_events(games, teams, list(channels), posts or {}, events, datetime.now(TZ))
     names = {t["id"]: t["name"] for t in teams.all}
     details = {g["id"]: match_detail(g, protocols[g["id"]], names, hidden) for g in games if g["id"] in protocols}
     data = {
@@ -878,9 +957,11 @@ def main() -> None:
     teams = load_teams()
     raw = asyncio.run(rhockey.fetch_season())
     channels, posts = load_channels(), load_posts()
+    events = load_events()
     data, unmatched, details = build(teams, raw, league.load_results(args.results), load_hidden(),
                                      schedule=load_schedule(), channels=channels, posts=posts,
-                                     site=rhl_site.load_store())
+                                     site=rhl_site.load_store(), events=events)
+    EVENTS_FILE.write_text(json.dumps(events, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     history, past_protocols = load_history(), load_history_protocols()
@@ -907,7 +988,8 @@ def main() -> None:
     played = sum(1 for g in data["games"] if g.get("score"))
     print(f"Матчей: {len(data['games'])}, сыграно: {played} → {args.out}")
     count = lambda k: sum(1 for g in data["games"] if g.get(k))   # noqa: E731
-    print(f"Время начала: {count('start')}, онлайн: {count('online')}, «Смотреть»: {count('watch')} (ADR-019)")
+    print(f"Время начала: {count('start')}, онлайн: {count('online')}, «Смотреть»: {count('watch')}, "
+          f"лента из каналов: {count('events')} (ADR-019)")
     for u in unmatched:
         print("Протокол не привязан к матчу:", u)
 

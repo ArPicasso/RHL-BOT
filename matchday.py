@@ -14,6 +14,9 @@
 и без повторов. Время — только с явной привязкой: «начало в 17:00», «стартуем в 17:00», «17:00 МСК»,
 «в 19:30 по местному». Без пояса — если пояс канала и пояс арены совпадают. Разные времена в одном посте
 не берём: это расписание или анонс нескольких событий.
+
+Лента матча (`match_events`, ADR-019, раздел 5): посты тех же каналов, вышедшие по ходу игры («Шайбу забросил
+…», «Перерыв после 40 минут», «Третий период окончен»), — событиями `kind: "text"` со ссылкой на пост.
 """
 import re
 from datetime import date, datetime, time, timedelta
@@ -50,7 +53,7 @@ def video(url: str) -> tuple[str, bool] | None:
     if h in VK_HOSTS and (path.startswith("/video") or re.search(r"(^|&)z=video", q)):
         return "VK Видео", False
     if h == "vkvideo.ru" and len(path) > 1:
-        return "VK Видео", False
+        return "VK Видео", path.startswith("/live-")
     if h == "live.vkvideo.ru" and len(path) > 1:
         return "VK Видео", True
     if h in ("youtube.com", "m.youtube.com") and path == "/watch" and "v=" in q:
@@ -78,10 +81,11 @@ def canonical(url: str) -> str:
 
 
 def same_video(url: str) -> str:
-    """Ключ повтора: один ролик ВК по vk.com, vk.ru и vkvideo.ru, один ролик YouTube по youtu.be и watch?v=."""
+    """Ключ повтора: один ролик ВК по vk.com, vk.ru и vkvideo.ru (и эфир `live-X_Y` — тот же ролик), один ролик
+    YouTube по youtu.be и watch?v=."""
     p, h = urlsplit(url), tg.host(url)
     if h in VK_HOSTS or h.endswith("vkvideo.ru"):
-        m = re.search(r"video(-?\d+_\d+)", p.path + "?" + p.query)
+        m = re.search(r"(?:video|live)(-?\d+_\d+)", p.path + "?" + p.query)
         if m:
             return "vk" + m.group(1)
     if h in ("youtube.com", "m.youtube.com", "youtu.be"):
@@ -335,3 +339,127 @@ def attach(games: list[dict], teams: list[dict], channels: list[dict], posts: di
         if got:
             out[gid] = got
     return out
+
+
+# ---------- лента матча: посты по ходу игры (ADR-019, раздел 5) ----------
+
+FEED_BEFORE = timedelta(minutes=15)   # окно матча: от 15 минут до начала, как у службы live
+FEED_AFTER = timedelta(hours=4)       # и 4 часа после: дольше матч не идёт, даже с задержкой начала
+FEED_MAX = 60                         # событий у матча не больше (ADR-019, раздел 5)
+FEED_LETTERS = 3                      # «💥💥💥» и «0️⃣*️⃣1️⃣» без слов — не событие
+KEYCAP_RE = re.compile("([0-9#*])️?⃣")
+LEAD_TAGS_RE = re.compile(r"^(?:#\w+\s*)+")
+POST_URL_RE = re.compile(r"https://t\.me/\w+/\d+")
+
+
+def feed_text(p: dict) -> str:
+    """Текст события из превью поста: заголовок и текст, без хэштегов в начале («#РХЛ Первый период за нами»),
+    цифры-эмодзи — цифрами: «0️⃣*️⃣1️⃣» → «0:1»."""
+    parts = []
+    for s in (p.get("title") or "", p.get("text") or ""):
+        s = re.sub(r"(?<=\d)\*(?=\d)", ":", KEYCAP_RE.sub(r"\1", s))
+        s = LEAD_TAGS_RE.sub("", s.strip()).strip()
+        if s:
+            parts.append(s)
+    if len(parts) == 2 and re.search(r"[\w)»]$", parts[0]):
+        return f"{parts[0]} — {parts[1]}"
+    return " ".join(parts)
+
+
+def feed_game(at: datetime, club: str | None, names: set[str], slots: dict) -> dict | None:
+    """Матч, по ходу которого вышел пост. Канал клуба: матч клуба, в окно которого попал пост, и в посте нет
+    третьей команды. Канал лиги: названы одна или обе команды матча, идущего в это время, и никто больше."""
+    if club:
+        g = next((g for lo, hi, g in slots.get(club, []) if lo <= at <= hi), None)
+        return g if g and names <= {g["home"], g["away"]} else None
+    if not names or len(names) > 2:
+        return None
+    hits = {g["id"]: g for t in names for lo, hi, g in slots.get(t, [])
+            if lo <= at <= hi and names <= {g["home"], g["away"]}}
+    return next(iter(hits.values())) if len(hits) == 1 else None
+
+
+def match_events(games: list[dict], teams: list[dict], channels: list[dict], posts: dict) -> dict[str, list[dict]]:
+    """Лента матча из постов каналов по id матча: событие `kind: "text"` на пост — текст превью, когда вышел
+    (`at`), канал (`src`, `from`) и ссылка на пост (`url`). Сторону (`team`) не ставим: канал «Ростова» пишет
+    и о голах гостей. Начала матча (`start`) нет — ленты нет. Реклама и букмекеры — мимо, как в attach; один
+    и тот же текст (репост лиги из канала клуба) — один раз, по первому посту."""
+    patterns = name_patterns(teams)
+    slots: dict[str, list[tuple[datetime, datetime, dict]]] = {}
+    for g in games:
+        try:
+            start = datetime.fromisoformat(g["start"]).astimezone(TZ)
+        except (KeyError, TypeError, ValueError):
+            continue
+        for club in (g["home"], g["away"]):
+            slots.setdefault(club, []).append((start - FEED_BEFORE, start + FEED_AFTER, g))
+    rows: dict[str, list[tuple]] = {}
+    for c in shown(channels):
+        got = posts.get(c["handle"]) or {}
+        if not got.get("ok"):
+            continue
+        for p in got.get("posts", []) + got.get("extra", []):
+            try:
+                at = datetime.fromisoformat(p["at"]).astimezone(TZ)
+            except (KeyError, TypeError, ValueError):
+                continue
+            text, full = feed_text(p), post_text(p)
+            if not POST_URL_RE.fullmatch(p.get("url") or "") or tg.letters(text) < FEED_LETTERS:
+                continue
+            if tg.AD_RE.search(full) or tg.BET_RE.search(full) or any(tg.link_reason(u) for u in p.get("links", [])):
+                continue
+            g = feed_game(at, c.get("club"), mentioned(full, patterns), slots)
+            if g:
+                rows.setdefault(g["id"], []).append((at, p["url"], text, c))
+    out = {}
+    for gid, items in rows.items():
+        feed, seen = [], set()
+        for at, url, text, c in sorted(items, key=lambda r: (r[0], r[1])):
+            same = re.sub(r"\W+", "", text.lower())
+            if same in seen:
+                continue
+            seen.add(same)
+            feed.append({"kind": "text", "text": text, "at": at.isoformat(timespec="minutes"),
+                         "src": f"t.me/{c['handle']}", "from": channel_label(c, posts), "url": url})
+        out[gid] = feed[-FEED_MAX:]
+    return out
+
+
+def merge_feed(old: list[dict], new: list[dict], channels: list[dict], posts: dict) -> list[dict]:
+    """Лента прошлых запусков (кэш сборки) и новая — по ссылке на пост, новое главнее: клуб мог поправить текст.
+    Из кэша уходит пост канала, который больше не показываем, и пост, который сейчас должен быть на странице
+    канала по времени, а его там нет: удалён или больше не проходит фильтры."""
+    keep = {f"t.me/{c['handle']}" for c in shown(channels)}
+    on_page = {}
+    for c in shown(channels):
+        got = posts.get(c["handle"]) or {}
+        rows = got.get("posts", []) + got.get("extra", []) if got.get("ok") else []
+        ats = []
+        for p in rows:
+            try:
+                ats.append(datetime.fromisoformat(p["at"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+        if ats:
+            on_page[f"t.me/{c['handle']}"] = (min(ats), {p.get("url") for p in rows})
+    by_url = {}
+    for e in old:
+        try:
+            at = datetime.fromisoformat(e["at"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if e.get("src") not in keep or not isinstance(e.get("url"), str) or not isinstance(e.get("text"), str):
+            continue
+        page = on_page.get(e["src"])
+        if page and at >= page[0] and e["url"] not in page[1]:
+            continue
+        by_url[e["url"]] = e
+    for e in new:
+        by_url[e["url"]] = e
+    feed, seen = [], set()
+    for e in sorted(by_url.values(), key=lambda e: (datetime.fromisoformat(e["at"]), e["url"])):
+        same = re.sub(r"\W+", "", e["text"].lower())
+        if same not in seen:
+            seen.add(same)
+            feed.append(e)
+    return feed[-FEED_MAX:]

@@ -171,9 +171,11 @@ def app_kb(team: str | None = None, today: bool = False) -> InlineKeyboardMarkup
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def recap_kb(match: str) -> InlineKeyboardMarkup:
-    """Одна кнопка — карточка сыгранного матча в мини-аппе."""
-    return InlineKeyboardMarkup(inline_keyboard=[[btn(B_RECAP, "goal", web_app=WebAppInfo(url=app_url(match=match)))]])
+def recap_kb(match: str, recap: bool = True) -> InlineKeyboardMarkup:
+    """Одна кнопка — карточка сыгранного матча в мини-аппе. Протокола ещё нет — «Матч в приложении»:
+    разбора «Как это было» там пока нет, только счёт."""
+    label = B_RECAP if recap else B_MATCH
+    return InlineKeyboardMarkup(inline_keyboard=[[btn(label, "goal", web_app=WebAppInfo(url=app_url(match=match)))]])
 
 
 def leaders_kb() -> InlineKeyboardMarkup:
@@ -514,6 +516,25 @@ def live_fresh(live: dict | None, now: datetime) -> bool:
     return bool(at) and now - at <= LIVE_STALE
 
 
+SITE = "rhl.fhr.ru"
+SITE_MC_RE = re.compile(r"https://rhl\.fhr\.ru/matchcenter/\d+/\d+/")
+SRC_GEN = {SITE: "сайта лиги", "online.khl.ru": "онлайна лиги"}
+
+
+def site_only(g: dict) -> bool:
+    """Счёт сыгранного матча есть только с ленты сайта лиги: протокола (периодов, голов) у нас ещё нет."""
+    sc = g.get("score") or {}
+    return g.get("score_src") == SITE and not sc.get("periods")
+
+
+def protocol_url(g: dict) -> str | None:
+    """Протокол матча на сайте лиги: из данных, а нет — вкладка «Протокол» его матч-центра."""
+    if url := _url(g.get("protocol")):
+        return url
+    base = g.get("league_url")
+    return f"{base}protocol/" if isinstance(base, str) and SITE_MC_RE.fullmatch(base) else None
+
+
 def day_matches(day: date, league: dict | None, live: dict | None = None, schedule: dict | None = None,
                 now: datetime | None = None) -> list[dict]:
     """Матчи лиги за день одним списком: календарь league.json, время и онлайн из schedule.json,
@@ -531,7 +552,8 @@ def day_matches(day: date, league: dict | None, live: dict | None = None, schedu
     def row(x: dict) -> dict:
         k = match_key(x)
         return rows.setdefault(k, {"key": k, "id": None, "date": d, "home": x["home"], "away": x["away"],
-                                   "watch": [], "status": None, "period": None, "score": None})
+                                   "watch": [], "status": None, "period": None, "score": None, "src": None,
+                                   "protocol_url": None})
 
     def timed(r: dict, x: dict) -> None:
         if x.get("time") or x.get("start"):
@@ -550,10 +572,14 @@ def day_matches(day: date, league: dict | None, live: dict | None = None, schedu
             r["local"] = g["local"]
         r["watch"] = [w for w in g.get("watch") or [] if isinstance(w, dict) and _url(w.get("url"))]
         if sc := _score(g.get("score")):
-            r.update(score=sc, status="final", protocol=True)
+            r.update(score=sc, status="final", protocol=True, src=SITE if site_only(g) else None,
+                     protocol_url=protocol_url(g))
+        elif isinstance(g.get("live"), dict):
+            r["snapshot"] = g["live"]     # снимок идущего из часовой сборки — если службы live нет
     for x in (schedule or {}).get("games") or []:
         if ok(x):
             timed(row(x), x)
+    seen_live: set[str] = set()
     if live and live.get("date") == d:
         fresh = live_fresh(live, now)
         for x in live.get("games") or []:
@@ -561,15 +587,27 @@ def day_matches(day: date, league: dict | None, live: dict | None = None, schedu
                 continue
             r = row(x)
             timed(r, x)
-            if r.get("protocol"):         # протокол лиги главнее онлайна
+            if r.get("protocol"):         # итог из league.json главнее живого
                 continue
             st, sc = x.get("status"), _score(x.get("score"))
             if st in LIVE_DONE and sc:
-                r.update(status="ended", score=sc, period=None)
+                r.update(status="ended", score=sc, period=None, src=x.get("src"),
+                         protocol_url=_url(x.get("protocol")) or r.get("protocol_url"))
             elif st in LIVE_ON and fresh:
-                r.update(status=st, score=sc, period=x.get("period"))
+                r.update(status=st, score=sc, period=x.get("period"), src=x.get("src"))
             elif st in ("moved", "off"):
                 r.update(status=st, score=None)
+            if fresh and st:
+                seen_live.add(r["key"])
+    # Служба live молчит — снимок идущего матча с сайта лиги из league.json, если он не старше LIVE_STALE
+    for r in rows.values():
+        snap = r.pop("snapshot", None)
+        if not snap or r["status"] or r["key"] in seen_live:
+            continue
+        seen = _dt(snap.get("seen"))
+        if snap.get("status") in LIVE_ON and seen and now - seen <= LIVE_STALE:
+            r.update(status=snap["status"], score=_score(snap.get("score")), period=snap.get("period"),
+                     src=snap.get("src"), seen=seen)
     return list(rows.values())
 
 
@@ -623,12 +661,24 @@ def status_text(m: dict, now: datetime) -> str:
 
 
 def links_html(m: dict) -> list[str]:
+    """До и во время матча — текстовая трансляция, после — протокол на сайте лиги; и видео, если есть."""
     out = []
-    if url := _url(m.get("online")):
+    if m.get("status") in LIVE_DONE:
+        if url := _url(m.get("protocol_url")):
+            out.append(f'<a href="{html.escape(url)}">протокол</a>')
+    elif url := _url(m.get("online")):
         out.append(f'<a href="{html.escape(url)}">текстовая трансляция</a>')
     if m.get("watch"):
         out.append(f'<a href="{html.escape(m["watch"][0]["url"])}">смотреть</a>')
     return out
+
+
+def score_source(ms: list[dict]) -> str:
+    """Откуда живой счёт (по ходу и «окончен» до итога в league.json): «сайту лиги», «онлайну лиги»
+    или обоим. Живого счёта в списке нет — пусто: итоги взяты из опубликованных данных."""
+    srcs = {m.get("src") or "online.khl.ru" for m in ms if m.get("status") in LIVE_ON + ("ended",)}
+    names = [n for s, n in ((SITE, "сайту"), ("online.khl.ru", "онлайну")) if s in srcs]
+    return f"{' и '.join(names)} лиги" if names else ""
 
 
 def today_line(m: dict, mine: bool, now: datetime) -> str:
@@ -674,8 +724,10 @@ def today_text(league: dict | None, live: dict | None = None, schedule: dict | N
     if len(ms) > TODAY_MAX:
         lines += ["", f"И ещё {len(ms) - TODAY_MAX} — в приложении."]
     lines.append("")
-    if ms and ms[0]["date"] == today.isoformat() and live_fresh(live, now):
-        lines.append(f"Счёт — по онлайну лиги на {_dt(live['updated']):%H:%M}.")
+    if ms and ms[0]["date"] == today.isoformat() and live_fresh(live, now) and (src := score_source(ms)):
+        lines.append(f"Счёт — по {src} на {_dt(live['updated']):%H:%M}.")
+    elif seen := [m["seen"] for m in ms if m.get("seen")]:     # снимок сайта лиги из сборки
+        lines.append(f"Счёт по ходу — по {score_source(ms) or 'сайту лиги'} на {min(seen):%H:%M}.")
     lines.append("Карточки матчей — в приложении 👇")
     return "\n".join(lines)
 
@@ -784,9 +836,10 @@ def match_kb(m: dict) -> InlineKeyboardMarkup:
 # ---------- после матча (ADR-008, ADR-019) ----------
 
 def result_text(g: dict, names: dict[str, str], story: str = "", team: str | None = REMIND_TEAM_ID,
-                live: bool = False) -> str:
+                live: bool = False, src: str | None = None, protocol: str | None = None) -> str:
     """Сообщение после матча: счёт, исход для команды болельщика, фраза-сюжет из разбора (ADR-008).
-    live — счёт по онлайну лиги, протокола ещё нет (ADR-019, раздел 8)."""
+    live — протокола у нас ещё нет, счёт по онлайну лиги или по сайту лиги (src, ADR-019, раздел 8);
+    protocol — его страница на сайте лиги: там он уже есть, пока до нас не дошёл."""
     sc = g["score"]
     dec_ = sc.get("decision") or ""
     how = {"ОТ": " в овертайме", "Б": " по буллитам"}.get(dec_, "")
@@ -799,9 +852,12 @@ def result_text(g: dict, names: dict[str, str], story: str = "", team: str | Non
     home, away = (html.escape(names.get(g[k], tname(g[k]))) for k in ("home", "away"))
     text = f"<b>{head}</b>\n\n{home} <b>{sc['home']}:{sc['away']}</b>{dec} {away}"
     if live:
-        text += "\n<i>по данным онлайна лиги</i>"
+        text += f"\n<i>по данным {SRC_GEN.get(src or '', 'онлайна лиги')}</i>"
     if story:
         text += f"\n\n{html.escape(story)}"
+    if live and (url := _url(protocol)):
+        return (text + f'\n\nПротокол — <a href="{html.escape(url)}">на сайте лиги</a>. '
+                "Голы и составы в приложении появятся по кнопке, когда он дойдёт до нас 👇")
     if live:
         return text + "\n\nГолы и составы появятся по кнопке, когда лига выложит протокол 👇"
     return text + "\n\nГолы, ход матча и составы — по кнопке 👇"
@@ -832,16 +888,21 @@ def live_finals(live_games: list[dict], seen: dict[str, tuple[datetime, tuple]],
 def pending_results(league: dict | None, ready: list[dict], announced: set[str], today: date) -> list[dict]:
     """Что пора отправить: протоколы (fresh_results), а где протокола нет — финал по онлайну.
     Один матч — одно сообщение: в announced и id матча, и ключ <дата>|<хозяева>|<гости>."""
-    out = [{**g, "key": match_key(g), "live": False} for g in fresh_results(league or {}, announced, today)]
-    ids = {match_key(g): g.get("id") for g in (league or {}).get("games") or [] if isinstance(g, dict)}
+    # счёт с ленты сайта лиги без протокола — как финал по живому: «по данным сайта лиги» и где протокол
+    out = [{**g, "key": match_key(g), "live": site_only(g), "src": SITE if site_only(g) else None,
+            "protocol": protocol_url(g) if site_only(g) else None}
+           for g in fresh_results(league or {}, announced, today)]
+    by_key = {match_key(g): g for g in (league or {}).get("games") or [] if isinstance(g, dict)}
     done = {x["key"] for x in out}
     for x in ready:
-        gid = ids.get(x["key"])
+        lg = by_key.get(x["key"]) or {}
+        gid = lg.get("id")
         if x["key"] in announced or x["key"] in done or (gid and gid in announced):
             continue
         done.add(x["key"])
         out.append({"id": gid, "key": x["key"], "date": x["date"], "home": x["home"], "away": x["away"],
-                    "score": x["score"], "live": True})
+                    "score": x["score"], "live": True, "src": x.get("src"),
+                    "protocol": _url(x.get("protocol")) or protocol_url(lg)})
     return out
 
 # ---------- «Раскат»: игра дня и лист ожидания зачёта ----------
@@ -1326,10 +1387,11 @@ async def results_step(bot: Bot, now: datetime) -> int:
         if not to:
             continue
         recap = {} if g["live"] else (await fetch_once(f"matches/{g['id']}.json") or {})
-        kb = recap_kb(g["id"]) if g.get("id") else app_kb()
+        kb = recap_kb(g["id"], not g["live"]) if g.get("id") else app_kb()
         for cid, team in to:
             try:
-                await say(bot, cid, lambda team=team: (result_text(g, names, recap.get("story", ""), team, g["live"]), kb))
+                await say(bot, cid, lambda team=team: (result_text(g, names, recap.get("story", ""), team, g["live"],
+                                                                   g.get("src"), g.get("protocol")), kb))
                 sent += 1
             except TelegramForbiddenError:
                 unsubscribe(cid)

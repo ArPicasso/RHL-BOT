@@ -8,6 +8,7 @@
 - `/matchcenter/<турнир>/<id>/` — счёт, «2-й период» по ходу, номер, дата и арена, авторы голов;
 - `/matchcenter/<турнир>/<id>/protocol/` — протокол сыгранного матча (rhl_protocol.py): голы, удаления,
   составы, судьи. Лежит в хранилище у матча в `report` в формате `league.Protocol.to_json()`;
+- `/matchcenter/<турнир>/<id>/video/` и `/translations/` — видео матча для «Смотреть» (разбор — rhl_media.py);
 - `/stat/leaders/…/nomination/<номинация>/` — лидеры сезона (ADR-009) → leaders.json.
 
 Разбор — регулярками по классам вёрстки, как rhockey.py: вложенность div неровная. Снимок страниц —
@@ -30,6 +31,7 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 
+import rhl_media
 import rhl_protocol
 from league import LEADERS_FILE, PAUSE, SETTLE_DAYS, USER_AGENT
 
@@ -38,6 +40,7 @@ TZ = ZoneInfo("Europe/Moscow")
 SITE = "https://rhl.fhr.ru"
 STORE = BASE / "rhl_site.json"
 MAX_PAGES = 24          # страниц матч-центра за запуск, не больше: остальные — в следующий час
+MAX_VIDEO = 12          # вкладок «Видео» за запуск (rhl_media.py, ADR-019, раздел 7)
 REPORT_EVERY = timedelta(hours=3)   # протокол перечитываем не чаще, пока лига может его поправить (SETTLE_DAYS)
 REPORT_DAYS = 7         # протокола всё нет — ищем его столько дней после матча, каждый запуск
 LEADERS_EVERY = timedelta(hours=6)  # лидеров перечитываем не чаще, если за запуск не пришло новых протоколов
@@ -347,11 +350,39 @@ async def update(path: Path = STORE, site: str = SITE, now: datetime | None = No
         # протоколы — в остаток лимита страниц: счёт и «идёт» важнее
         fresh = await fetch_reports(s, site, store, now, MAX_PAGES - len(pages))
         await fetch_leaders(s, site, store, now, fresh)
+        await update_media(s, store, site, now)
     store["updated"] = now.isoformat(timespec="minutes")
     save_store(store, path)
     if leaders_path:
         write_leaders(store, leaders_path)
     return store
+
+
+async def update_media(s: aiohttp.ClientSession, store: dict, site: str, now: datetime) -> None:
+    """«Смотреть» от лиги (rhl_media.py): страница «Трансляции» — раз за запуск, вкладка «Видео» — у матчей
+    сегодня и завтра и у только что сыгранных, пока ссылка не найдётся. По одному запросу с паузой."""
+    games = store["games"]
+    await asyncio.sleep(PAUSE)
+    try:
+        cards = rhl_media.parse_translations(await _get(s, f"{site}/translations/"))
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        logging.warning("страница трансляций не скачалась: %s", e)
+        cards = []
+    for c in cards:
+        if str(c["id"]) in games:
+            games[str(c["id"])]["translation"] = True
+    todo = [g for g in games.values() if rhl_media.need_video(g, now)]
+    for g in sorted(todo, key=lambda g: g.get("start") or "")[:MAX_VIDEO]:
+        await asyncio.sleep(PAUSE)
+        if g.get("status") == "final":
+            g["video_tries"] = g.get("video_tries", 0) + 1
+        try:
+            v = rhl_media.parse_video(await _get(s, f"{site}/matchcenter/{g['t']}/{g['id']}/video/"))
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            logging.warning("видео матча %s не скачалось: %s", g["id"], e)
+            continue
+        if v:
+            g["video"], g["video_kind"] = v["url"], v["kind"]
 
 
 def main() -> None:
@@ -366,7 +397,8 @@ def main() -> None:
     done = [g for g in games if g.get("status") == "final" and g.get("score")]
     print(f"Сайт РХЛ: матчей {len(store['games'])}, сыграно со счётом {len(done)}, "
           f"с протоколом {sum(bool(g.get('report')) for g in games)}, "
-          f"идёт {sum(g.get('status') == 'live' for g in games)} → {args.out}")
+          f"идёт {sum(g.get('status') == 'live' for g in games)}, с видео лиги {sum(bool(g.get('video')) for g in games)} "
+          f"→ {args.out}")
     top = store.get("leaders") or {}
     if any((top.get("categories") or {}).values()):
         counts = ", ".join(f"{k} {len(v)}" for k, v in top["categories"].items())

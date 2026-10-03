@@ -229,7 +229,8 @@ class Reports(unittest.TestCase):
         self.assertTrue(any("905113" in x for x in logs.output))
         self.assertEqual(len(games["905113"]["report"]["goals"]), 6)    # прежний протокол не затёрт
         self.assertEqual(len(urls), len(set(urls)))                     # каждая страница — один раз
-        self.assertLessEqual(sum("/matchcenter/" in u for u in urls), rhl_site.MAX_PAGES)
+        self.assertLessEqual(sum("/matchcenter/" in u and not u.endswith("/video/") for u in urls), rhl_site.MAX_PAGES)
+        self.assertLessEqual(sum(u.endswith("/video/") for u in urls), rhl_site.MAX_VIDEO)   # «Смотреть» — свой лимит
         # лидеры: шесть номинаций, у сайта пока только бомбардиры
         self.assertEqual(sum("/stat/leaders/season/2026-2027/tournament/1432/nomination/" in u for u in urls), 6)
         self.assertEqual((top["site"], top["tournament"], top["name"]), ("https://rhl.fhr.ru", 1432, "26/27 | Регулярный чемпионат"))

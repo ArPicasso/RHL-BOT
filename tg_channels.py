@@ -5,7 +5,8 @@
 подходит ленте (реклама, букмекеры, дни рождения, трансляция матча по минутам, посты не о
 молодёжке в канале взрослого клуба), отбрасывается здесь, полный текст дальше не уходит.
 Для матч-центра (ADR-019, `matchday.py`) к превью добавлены внешние ссылки поста (`links`) и
-строки со временем (`times`); короткие посты со ссылкой, которые лента не берёт, — в `extra` канала.
+строки со временем (`times`); короткие посты со ссылкой или со словами («ГООООЛ!»), которые лента не берёт, —
+в `extra` канала: для «Смотреть» и ленты матча.
 
     python tg_channels.py            # все каналы из channels.json → channel_posts.json
     python tg_channels.py samara     # только каналы одного клуба, для проверки
@@ -327,10 +328,15 @@ def collect(parsed: dict, channel: dict, hidden_names: list[str] = ()) -> tuple[
 
 
 def extras(parsed: dict, channel: dict, hidden_names: list[str] = ()) -> list[dict]:
-    """Посты со ссылками, которые лента не берёт только за вид («Трансляция 👇» и ссылка): для «Смотреть»
-    в матч-центре (ADR-019). Остальные фильтры — те же, что у ленты."""
-    return [entry(p, channel) for p in parsed["posts"]
-            if p.get("links") and skip_reason(p, channel, hidden_names) in QUIET]
+    """Посты, которые лента не берёт только за вид: со ссылкой («Трансляция 👇») — для «Смотреть», короткие
+    со словами («ГООООЛ!», «Игра 4 на 4») — для ленты матча (ADR-019, matchday.py). Остальные фильтры — те же,
+    что у ленты."""
+    out = []
+    for p in parsed["posts"]:
+        why = skip_reason(p, channel, hidden_names)
+        if why in QUIET and (p.get("links") or why == "коротко" and letters(p["text"]) >= 3):
+            out.append(entry(p, channel))
+    return out
 
 
 async def fetch_all(channels: list[dict]) -> dict[str, str | None]:

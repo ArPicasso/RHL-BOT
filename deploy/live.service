@@ -1,0 +1,33 @@
+# Живой слой матч-центра (live.py, ADR-019): опрос онлайна КХЛ и сайта РХЛ → /opt/rhl/live/*.json.
+# Их отдаёт служба api, бот читает с диска. Ставит и перезапускает rhl-update (deploy/update.sh);
+# пока live.py нет в main, выкладка службу пропускает.
+[Unit]
+Description=RHL U21 live match data (live.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rhl
+Group=rhl
+WorkingDirectory=/opt/rhl
+EnvironmentFile=/etc/rhl/bot.env
+ExecStart=/opt/rhl/venv/bin/python live.py
+Restart=always
+RestartSec=30
+UMask=0027
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/rhl
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

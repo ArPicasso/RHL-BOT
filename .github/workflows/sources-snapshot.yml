@@ -1,7 +1,7 @@
 name: Снимок источников
 
 # Разработка не видит сайты лиги из своей песочницы (ADR-019, раздел 6): задание качает публичные
-# страницы rhl.fhr.ru, r-hockey и онлайна КХЛ с раннера GitHub и кладёт их артефактом — из них
+# страницы rhl.fhr.ru, r-hockey и онлайна КХЛ с раннера GitHub и кладёт их в ветку snapshots/sources — из них
 # делаются фикстуры tests/. Запускается руками или правкой этого файла. По одному запросу, пауза
 # секунда (CLAUDE.md). Онлайн КХЛ для зарубежных IP, скорее всего, закрыт — тогда в сводке 403.
 on:
@@ -11,7 +11,7 @@ on:
       - ".github/workflows/sources-snapshot.yml"
 
 permissions:
-  contents: read
+  contents: write   # снимок кладётся в отдельную ветку snapshots/sources, не в main
 
 jobs:
   snapshot:
@@ -60,13 +60,23 @@ jobs:
               if page and i < 4:
                   for href in re.findall(r'href="([^"#]*(?:idgame|report)[^"#]*)"', page)[:3]:
                       get(urljoin(u, href), f"rhl_link{i:02d}_report{len(seen):02d}")
-          for path in ("/calendar/", "/stat/calendar/"):
-              get("https://rhl.fhr.ru" + path, "rhl" + path.strip("/").replace("/", "_"))
+          # Матч-центр: по каждому матчу из главной и календаря — страница матча и её «онлайн»
+          cal = (out / "rhl_link00.html").read_text(encoding="utf-8") if (out / "rhl_link00.html").exists() else ""
+          games = list(dict.fromkeys(re.findall(r"/matchcenter/(\d+)/(\d+)/", home + cal)))
+          print("матчей в матч-центре:", len(games), games[:12])
+          for t, g in games[:8]:
+              get(f"https://rhl.fhr.ru/matchcenter/{t}/{g}/", f"rhl_mc_{g}")
+              get(f"https://rhl.fhr.ru/matchcenter/{t}/{g}/live/", f"rhl_mc_{g}_live")
           get("https://r-hockey.ru/stat/temp/2027/30904/calendar?month=10", "rhockey_rhl_2026_10")
           get("https://online.khl.ru/online/", "khl_online_day")
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sources-snapshot
-          path: snapshot
-          retention-days: 7
+      # Ветка snapshots/sources — только снимки, без истории кода: git fetch и смотреть
+      - name: Положить в ветку snapshots/sources
+        run: |
+          cd snapshot
+          git init -q -b snapshots/sources
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Снимок источников $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" snapshots/sources

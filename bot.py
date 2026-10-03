@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -491,7 +492,10 @@ async def load_custom_emoji(bot: Bot) -> None:
 
 async def main():
     logging.basicConfig(level=logging.INFO)
-    bot = Bot(os.environ["BOT_TOKEN"], default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    # С VPS в России api.telegram.org закрыт: ходим через туннель deploy/tunnel.sh (socks5://127.0.0.1:1080)
+    proxy = os.environ.get("TELEGRAM_PROXY")
+    bot = Bot(os.environ["BOT_TOKEN"], session=AiohttpSession(proxy=proxy) if proxy else None,
+              default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     await load_custom_emoji(bot)
     await bot.delete_my_commands()   # меню команд пустое: всё — в мини-аппе
     try:   # описание не критично: без него бот работает

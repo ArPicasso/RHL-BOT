@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Первая настройка VPS под бота РХЛ U21. Запускать от root на самом сервере:
 #
-#   curl -fsSL https://raw.githubusercontent.com/ArPicasso/bogdanov/main/deploy/setup.sh -o setup.sh
+#   curl -fsSL https://raw.githubusercontent.com/ArPicasso/RHL-BOT/main/deploy/setup.sh -o setup.sh
 #   bash setup.sh
 #
 # Повторный запуск безопасен: что уже сделано, пропускается. Токен бота скрипт спросит
@@ -10,7 +10,7 @@
 # Порядок и пояснения — BOT_README.md.
 set -euo pipefail
 
-REPO=https://github.com/ArPicasso/bogdanov.git
+REPO=https://github.com/ArPicasso/RHL-BOT.git
 APP=/opt/rhl
 ENV_DIR=/etc/rhl
 DEPLOY_KEY=/root/.ssh/rhl_actions

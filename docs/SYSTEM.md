@@ -6,7 +6,7 @@
 ## Схема
 
 ```
-                     GitHub (ArPicasso/bogdanov)
+                     GitHub (ArPicasso/RHL-BOT)
    слияние в main ──┬──▶ «Тесты»
                     ├──▶ «Мини-апп» (pages.yml, ещё раз в час) ──▶ GitHub Pages
                     │      сайт лиги, r-hockey, t.me/s  ──▶  webapp/data/*.json
@@ -25,7 +25,7 @@
 
 ### Мини-апп — GitHub Pages
 
-- Код — `webapp/`, без сборки. Адрес — `https://arpicasso.github.io/bogdanov/`.
+- Код — `webapp/`, без сборки. Адрес — `https://arpicasso.github.io/RHL-BOT/`.
 - Вкладки: «Главная» (лист дня и лента лиги), «Календарь», «Таблица», «Раскат», «Я». Экран команды
   открывается из таблицы и календаря.
 - Данные собирает задание **«Мини-апп»** (`.github/workflows/pages.yml`) при каждом слиянии в `main`
@@ -170,6 +170,7 @@
 | Зачёт «временно выключен» | Опубликованный расклад дня не читается: `curl -s 127.0.0.1:8080/api/health` → `raskat.note`. Если там про соль — выровнять `RASKAT_SALT` в `/etc/rhl/bot.env` под секрет Pages, `systemctl restart api` |
 | HTTPS не открывается, сертификат | `journalctl -u caddy -n 50`; открыты ли 80 и 443 у хостинга и в `ufw status`; повторить `bash /opt/rhl/deploy/https.sh` |
 | Живого счёта нет | `systemctl status live`, `journalctl -u live -n 50`, `ls -l /opt/rhl/live` |
+| Мини-апп открывается с 404 «There isn't a GitHub Pages site here» | Адрес Pages сменился (репозиторий переименовали: `bogdanov` → `RHL-BOT`). `WEBAPP_URL=https://arpicasso.github.io/RHL-BOT/` в `/etc/rhl/bot.env`, `systemctl restart bot api`, и тот же адрес в @BotFather → `/myapps` → Edit Web App URL |
 | Пульт: «Нет доступа» | Свой id — боту `/admin`; вписать в `ADMIN_IDS` в `/etc/rhl/bot.env`, `systemctl restart bot api` |
 | Пульт: «Бот не пишет пульс» | `ls -l /opt/rhl/status`; нет каталога — `rhl-update` его создаст |
 

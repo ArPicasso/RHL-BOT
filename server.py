@@ -164,7 +164,7 @@ def short_name(user: dict) -> str | None:
 
 def pages_base(url: str) -> str:
     """Адрес Pages без ?v=… и с косой чертой в конце: к нему приклеиваются пути data/…"""
-    p = urlsplit(url or "https://arpicasso.github.io/bogdanov/")
+    p = urlsplit(url or "https://arpicasso.github.io/RHL-BOT/")
     path = p.path if p.path.endswith("/") else p.path + "/"
     return urlunsplit((p.scheme, p.netloc, path, "", ""))
 
@@ -172,7 +172,7 @@ def pages_base(url: str) -> str:
 class Config:
     def __init__(self, token: str = "", live_dir: Path | str = BASE / "live",
                  db_path: Path | str = BASE / "state.db",
-                 webapp_url: str = "https://arpicasso.github.io/bogdanov/",
+                 webapp_url: str = "https://arpicasso.github.io/RHL-BOT/",
                  origins=("https://arpicasso.github.io",), teams_file: Path | str = BASE / "teams.json",
                  admins=(), status_dir: Path | str = admin.STATUS_DIR,
                  subs_file: Path | str = BASE / "subscribers.json"):
@@ -203,7 +203,7 @@ class Config:
         return cls(token=(env("BOT_TOKEN") or "").strip(),
                    live_dir=env("LIVE_DIR") or BASE / "live",
                    db_path=env("STATE_DB") or BASE / "state.db",
-                   webapp_url=env("WEBAPP_URL") or "https://arpicasso.github.io/bogdanov/",
+                   webapp_url=env("WEBAPP_URL") or "https://arpicasso.github.io/RHL-BOT/",
                    origins=(env("PAGES_ORIGIN") or "https://arpicasso.github.io").split(","),
                    admins=cls.parse_admins(env("ADMIN_IDS") or ""),
                    status_dir=env("STATUS_DIR") or admin.STATUS_DIR)

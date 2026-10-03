@@ -17,7 +17,7 @@ TZ = ZoneInfo("Europe/Moscow")
 RESULTS_FILE = BASE / "results.json"
 SETTLE_DAYS = 3   # столько дней после матча протокол ещё перезапрашиваем: лига может его поправить
 DEFAULT_SITE = "https://nmhl.fhr.ru"
-USER_AGENT = "ryazan-vdv-schedule-bot (+https://github.com/ArPicasso/bogdanov)"
+USER_AGENT = "ryazan-vdv-schedule-bot (+https://github.com/ArPicasso/RHL-BOT)"
 PAUSE = 1.0
 
 MONTHS = {m: i for i, m in enumerate(

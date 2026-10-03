@@ -89,6 +89,9 @@ html, body {
   letter-spacing: -0.01em;
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
+  /* Без приближения двойным касанием: два быстрых нажатия по историям («дальше», «дальше») iOS
+     принимал за двойное касание и приближал, а потом отдалял экран. Масштаб щипком остаётся */
+  touch-action: manipulation;
 }
 button { font: inherit; color: inherit; letter-spacing: inherit; }
 

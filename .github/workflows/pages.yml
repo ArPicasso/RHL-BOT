@@ -51,6 +51,13 @@ jobs:
           key: rhl-site-${{ github.run_id }}
           restore-keys: rhl-site-
 
+      # Календарь r-hockey прошлой удачной сборки: не ответил — собираем по нему, а не падаем
+      - uses: actions/cache@v4
+        with:
+          path: rhockey.json
+          key: rhockey-${{ github.run_id }}
+          restore-keys: rhockey-
+
       # Протоколы — движок старого nmhl.fhr.ru (league.py). У rhl.fhr.ru движок новый, его читает rhl_site.py
       # ниже. Включить для старого сайта: Settings → Variables → LEAGUE_SITE
       - name: Скачать протоколы матчей

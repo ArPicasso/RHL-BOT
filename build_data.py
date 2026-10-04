@@ -4,7 +4,6 @@
 местное время арены, если её пояс (`tz` хозяев в teams.json) не московский. Источники по старшинству:
 schedule.json сервера, протокол лиги (в нём местное время), пост клуба в день игры (matchday.py)."""
 import argparse
-import asyncio
 import json
 import os
 import re
@@ -947,7 +946,7 @@ def build(teams: Teams, raw: list[rhockey.RawGame], results: league.Results,
     apply_media(games, site or {})                         # «Смотреть» от лиги — первой кнопкой
     apply_channel_events(games, teams, list(channels), posts or {}, events, datetime.now(TZ))
     apply_goal_authors(games, protocols, list(channels), hidden)   # авторы голов по ходу из постов (ADR-026)
-    names ={t["id"]: t["name"] for t in teams.all}
+    names = {t["id"]: t["name"] for t in teams.all}
     details = {g["id"]: match_detail(g, protocols[g["id"]], names, hidden) for g in games if g["id"] in protocols}
     data = {
         "season": "2026/27",
@@ -1014,7 +1013,7 @@ def main() -> None:
         ap.error("--now нужен с поясом: 2026-10-03T12:00+03:00")
     now = args.now or datetime.now(TZ)
     teams = load_teams()
-    raw = asyncio.run(rhockey.fetch_season())
+    raw = rhockey.season()   # не ответил — календарь прошлой сборки
     channels, posts = load_channels(), load_posts()
     events = load_events()
     data, unmatched, details = build(teams, raw, league.load_results(args.results), load_hidden(),

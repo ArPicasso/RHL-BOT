@@ -36,6 +36,8 @@ BEAT_STALE = timedelta(minutes=3)
 PAGES_STALE = timedelta(minutes=90)
 LEAGUE_STALE = timedelta(hours=2)
 SOURCE_ERRORS = 3
+BLOCKED_HOURS = 6   # live.BLOCKED_PAUSE: admin только stdlib и live не импортирует
+UNBLOCK = {"online.khl.ru": "письмо на access_deny@khl.ru"}   # адрес — со страницы 403 онлайна КХЛ
 DISK_LOW = 1 << 30
 NIGHT_FROM, NIGHT_TO = 2, 7   # с 2:00 до 7:00 МСК сборку не будят (pages_kick.py) — не тревожимся
 
@@ -398,7 +400,8 @@ def build_status(*, now: datetime, teams: dict[str, str], services: dict | None,
     for name, s in (sources or {}).items():
         if isinstance(s, dict):
             src_rows.append({"name": name, "ok": s.get("ok"), "fail": s.get("fail"),
-                             "errors": s.get("errors", 0), "games": s.get("games", 0), "note": no_ids(str(s.get("note") or ""))})
+                             "errors": s.get("errors", 0), "games": s.get("games", 0), "note": no_ids(str(s.get("note") or "")),
+                             "blocked": s.get("blocked")})
     info = (bot or {}).get("info") or {}
     status = {
         "now": iso(now),
@@ -412,6 +415,7 @@ def build_status(*, now: datetime, teams: dict[str, str], services: dict | None,
             "builds_at": (pages or {}).get("info", {}).get("runs_at"),
             "kick": {"ok": (pages or {}).get("info", {}).get("kick_ok"),
                      "fail": (pages or {}).get("info", {}).get("kick_fail"),
+                     "error": (pages or {}).get("info", {}).get("kick_error"),
                      "token": (pages or {}).get("info", {}).get("token")} if pages else None,
             "league_updated": league_updated,
             "live": {"updated": (live_today or {}).get("updated") if isinstance(live_today, dict) else None,
@@ -538,13 +542,23 @@ def problems(status: dict, now: datetime) -> list[dict]:
     kick = sysm.get("kick")
     if kick is not None and not kick.get("token"):
         warn("kick:token", "У службы pages нет PAGES_TOKEN: сборку не будим, за сборками не следим")
+    elif kick is not None:
+        ok, fail = parse_iso(kick.get("ok")), parse_iso(kick.get("fail"))
+        if fail and (not ok or fail > ok):
+            # причина «Мини-апп не собирался»: cron GitHub теряет запуски, а разбудить сборку не выходит
+            bad("kick:fail", f"Служба pages не может запустить сборку: {kick.get('error') or 'причина не записана'}")
     age = _ago(sysm.get("league_updated"), now)
     if sysm.get("league_updated") is None:
         warn("league", "league.json с Pages не прочитался")
     elif age > LEAGUE_STALE and not night:
         bad("league", f"Данные мини-аппа (league.json) собраны {_mins(age)} назад")
     for s in (sysm.get("live") or {}).get("sources") or []:
-        if (s.get("errors") or 0) >= SOURCE_ERRORS:
+        if s.get("blocked"):
+            # закрыл доступ (403) — не поломка, а данность: сказать раз, как снять, и работать без него
+            warn(f"blocked:{s['name']}", f"Источник {s['name']} закрыл доступ серверу (403): спрашиваем раз в "
+                 f"{BLOCKED_HOURS} ч, работаем без него. Снять: {UNBLOCK.get(s['name'], 'написать владельцу сайта')}"
+                 " и приложить IP сервера")
+        elif (s.get("errors") or 0) >= SOURCE_ERRORS:
             bad(f"source:{s['name']}",
                 f"Источник {s['name']}: ошибок подряд — {s['errors']}. {s.get('note') or 'Без пояснения'}")
     r = sysm.get("raskat") or {}

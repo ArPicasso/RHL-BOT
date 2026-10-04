@@ -1,8 +1,12 @@
 """Календарь турнира с r-hockey.ru. Временный источник до открытия rhl.fhr.ru (ADR-002)."""
 import asyncio
+import json
+import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 
 import aiohttp
 
@@ -11,6 +15,7 @@ from league import PAUSE, USER_AGENT
 SITE = "https://r-hockey.ru"
 RHL_2026 = "/stat/temp/2027/30904"
 SEASON_MONTHS = (10, 11, 12, 1, 2, 3)   # страница календаря отдаёт один месяц за раз
+CACHE = Path(__file__).parent / "rhockey.json"   # последний удачный календарь: кэш задания Pages, не в git
 
 MON = {"янв": 1, "фев": 2, "мар": 3, "апр": 4, "май": 5, "мая": 5, "июн": 6, "июл": 7,
        "авг": 8, "сен": 9, "окт": 10, "ноя": 11, "дек": 12}
@@ -64,3 +69,35 @@ async def fetch_season(tournament: str = RHL_2026, first_year: int = 2026) -> li
                     games[g.rh_id] = g
             await asyncio.sleep(PAUSE)
     return sorted(games.values(), key=lambda g: (g.date, g.rh_id))
+
+
+def save_cache(games: list[RawGame], path: Path = CACHE) -> None:
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps([[g.rh_id, g.date.isoformat(), g.home_rh, g.away_rh] for g in games]), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def load_cache(path: Path = CACHE) -> list[RawGame] | None:
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+        return [RawGame(int(i), date.fromisoformat(d), int(h), int(a)) for i, d, h, a in rows]
+    except (FileNotFoundError, ValueError, TypeError):
+        return None
+
+
+def season(fetch=fetch_season, path: Path = CACHE) -> list[RawGame]:
+    """Календарь для сборки: с сайта, а не ответил — последний удачный из кэша. r-hockey временный и
+    вторичный источник (ADR-002): его таймаут не должен ронять всю сборку мини-аппа, как 04.10.2026 в 12:43.
+    Кэша нет — ошибка как раньше: без календаря собирать нечего."""
+    try:
+        games = asyncio.run(fetch())
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        cached = load_cache(path)
+        if cached is None:
+            raise
+        logging.warning("r-hockey не ответил (%s): календарь из прошлой сборки, матчей %d", e.__class__.__name__, len(cached))
+        print(f"r-hockey не ответил ({e.__class__.__name__}): календарь из прошлой сборки, матчей {len(cached)}")
+        return cached
+    if games:
+        save_cache(games, path)
+    return games

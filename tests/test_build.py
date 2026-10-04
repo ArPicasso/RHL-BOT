@@ -30,6 +30,22 @@ class RHockeyCalendar(unittest.TestCase):
         self.assertEqual(rhockey._season_year(12, 2026), 2026)
         self.assertEqual(rhockey._season_year(1, 2026), 2027)
 
+    def test_timeout_falls_back_to_last_calendar(self):
+        # 04.10.2026 в 12:43 таймаут r-hockey уронил всю сборку мини-аппа
+        import asyncio
+        path = Path(tempfile.mkdtemp()) / "rhockey.json"
+        games = [rhockey.RawGame(9319019, date(2026, 10, 3), 2916, 2914)]
+
+        async def ok():
+            return games
+
+        async def timeout():
+            raise asyncio.TimeoutError
+        with self.assertRaises(asyncio.TimeoutError):
+            rhockey.season(timeout, path)              # кэша нет — падаем: собирать нечего
+        self.assertEqual(rhockey.season(ok, path), games)
+        self.assertEqual(rhockey.season(timeout, path), games)   # не ответил — прошлый удачный
+
 
 class TeamNames(unittest.TestCase):
     teams = b.load_teams()

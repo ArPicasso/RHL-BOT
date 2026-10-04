@@ -828,7 +828,8 @@ class Api:
             sources=self.live_file("sources"),
             raskat={"on": self.salt_ok is not False, "note": self.salt_note},
             disk=self.disk(), subs=admin.read_json(self.cfg.subs_file),
-            app_counts=self.adm.counts(since), games=admin.game_stats(self.conn, since, now.date()))
+            app_counts=self.adm.counts(since), games=admin.game_stats(self.conn, since, now.date()),
+            retention=self.adm.retention(now.date()))
         return reply(st)
 
     # ---------- обвязка ----------

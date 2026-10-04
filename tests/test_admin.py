@@ -256,5 +256,61 @@ class BuildStatusTest(unittest.TestCase):
         self.assertEqual(st["problems"], [{"level": "warn", "text": "Состояние служб не прочиталось: systemctl: FileNotFoundError"}])
 
 
+class Retention(unittest.TestCase):
+    """Возвращаются ли люди (ADR-021, дополнение 04.10): по трём числам на человека, без журнала."""
+
+    day = date(2026, 10, 4)
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:", isolation_level=None)
+        self.st = admin.AdminStore(self.conn)
+
+    def seen(self, fan: int, *back: int):
+        for b in sorted(back or (0,), reverse=True):
+            self.st.seen(fan, self.day - timedelta(days=b))
+
+    def test_new_back_and_cohorts(self):
+        self.seen(1, 7, 3, 0)      # пришёл неделю назад, возвращался, был сегодня
+        self.seen(2, 1, 0)         # пришёл вчера, вернулся сегодня
+        self.seen(3, 1)            # пришёл вчера и не вернулся
+        self.seen(4, 0)            # новый сегодня
+        self.seen(5, 4)            # уснул
+        r = self.st.retention(self.day)
+        self.assertEqual((r["new"], r["back"], r["known"]), (1, 2, 5))
+        self.assertEqual(r["d1"], {"of": 2, "back": 1})
+        self.assertEqual(r["week"], {"of": 1, "back": 1, "days": admin.COHORT_DAYS})
+        self.assertEqual(r["sleeping"], 1)
+
+    def test_empty_is_zeroes_not_a_crash(self):
+        r = self.st.retention(self.day)
+        self.assertEqual((r["new"], r["back"], r["known"], r["sleeping"]), (0, 0, 0, 0))
+        self.assertEqual((r["d1"], r["week"]["of"]), ({"of": 0, "back": 0}, 0))
+
+    def test_second_open_the_same_day_counts_once(self):
+        self.seen(1, 0)
+        self.st.seen(1, self.day)
+        fan = self.conn.execute("SELECT first, last, days FROM admin_fans WHERE fan = 1").fetchone()
+        self.assertEqual(fan, (self.day.isoformat(), self.day.isoformat(), 1))
+
+    def test_day_journal_still_lives_one_day(self):
+        """ADR-021: id в admin_seen живут до конца вчера. Удержание считается не по ним."""
+        self.seen(1, 7, 0)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM admin_seen").fetchone()[0], 1)
+        r = self.st.retention(self.day)
+        self.assertEqual((r["week"], r["known"]), ({"of": 1, "back": 1, "days": 7}, 1))
+
+    def test_forget_takes_the_fan_out(self):
+        self.seen(1, 1, 0)
+        self.st.forget(1)
+        self.assertEqual(self.st.retention(self.day)["known"], 0)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM admin_fans").fetchone()[0], 0)
+
+    def test_status_carries_it(self):
+        self.assertIsNone(healthy()["audience"]["retention"])
+        r = {"new": 2, "back": 5, "known": 40, "d1": {"of": 3, "back": 1},
+             "week": {"of": 4, "back": 2, "days": 7}, "sleeping": 6}
+        self.assertEqual(healthy(retention=r)["audience"]["retention"], r)
+
+
 if __name__ == "__main__":
     unittest.main()

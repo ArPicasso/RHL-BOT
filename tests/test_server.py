@@ -510,6 +510,9 @@ class AdminPanel(Base):
         self.assertEqual(st["audience"]["fans"], [{"id": "tambov", "name": "Тамбов", "n": 1}])
         self.assertEqual({p["id"] for p in st["audience"]["platforms"]}, {"ios", "android"})
         self.assertIsInstance(st["problems"], list)
+        self.assertEqual(st["audience"]["retention"],   # удержание: сегодня двое и оба впервые
+                         {"new": 2, "back": 0, "known": 2, "d1": {"of": 0, "back": 0},
+                          "week": {"of": 0, "back": 0, "days": 7}, "sleeping": 0})
         self.assertNotIn("1003", json.dumps(st))   # на пульте нет id болельщиков
 
     async def test_seen_needs_login_and_forget_clears_it(self):

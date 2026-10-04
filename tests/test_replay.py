@@ -146,6 +146,17 @@ class Build(unittest.TestCase):
         self.assertIn("replay", games[0]["goals"][1])
         self.assertNotIn("replay", games[0]["goals"][2])   # буллиты не размечаем
         self.assertNotIn("replay", games[1]["goals"][0])   # у другого матча повторов нет
+        self.assertNotIn("replays", games[0])
+
+    def test_replays_by_score_before_protocol(self):
+        # протокола ещё нет — повторы матча по счёту: мини-апп ставит их в ленту матча (ADR-028, раздел 4)
+        games = [{"id": "g1", "date": "2026-10-03", "home": "tverichi", "away": "metallurg"},
+                 {"id": "g2", "date": "2026-10-03", "home": "krasnodar", "away": "rostov"}]
+        replays = {GAME["key"]: replay.entry(GAME, VIDEO, {"1:0": 1800, "1:1": 2900}, msk("2026-10-03T21:00:00"))}
+        self.assertEqual(build_data.apply_replays(games, replays), 3)
+        self.assertEqual(games[0]["replays"]["1:0"], f"{PLAY}&t=1790")
+        self.assertEqual(set(games[0]["replays"]), {"1:0", "1:1", "2:1"})   # 2:1 — расчётный от опоры периода
+        self.assertNotIn("replays", games[1])
 
     def test_load_replays(self):
         with tempfile.TemporaryDirectory() as d:
@@ -297,3 +308,91 @@ class RealMarkup(unittest.TestCase):
         self.assertEqual(len(before), 4)
         self.assertLess(before[2], 0)    # 0:3 сайт отметил на 2 минуты позже — расчётный опоздает, нужна ручная поправка
         self.assertTrue(0 < before[3] <= 90, before)
+
+
+LEAGUE = {"games": [{"date": "2026-10-03", "home": "tverichi", "away": "metallurg",
+                     "watch": [{"title": "Трансляция лиги · VK Видео", "url": VIDEO, "src": "rhl.fhr.ru"},
+                               {"title": "Пост клуба", "url": "https://vk.com/video-1_2", "src": "t.me/hktverichi"}]}]}
+
+
+class Nag(unittest.TestCase):
+    """ADR-028: запись лиги подставляется в /replay сама, раз в день — напоминание о неразмеченных матчах."""
+
+    def setUp(self):
+        import admin
+        import bot
+        self.bot = bot
+        self.dir = Path(tempfile.mkdtemp())
+        (self.dir / "2026-10-03.json").write_text(json.dumps({"date": "2026-10-03", "games": [GAME]}), encoding="utf-8")
+        self.now = msk("2026-10-04T21:30:00")
+        self.track = admin.Tracker("bot", path=self.dir / "bot.json", clock=lambda: self.now)
+        for name, value in (("LIVE_DIR", self.dir), ("REPLAYS_FILE", self.dir / "replays.json"),
+                            ("ADMIN_IDS", frozenset({1001, 1002})), ("TRACK", self.track)):
+            p = mock.patch.object(bot, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def run_step(self, now=None, league=LEAGUE):
+        say = mock.AsyncMock()
+        with mock.patch.object(self.bot, "say", say), mock.patch.object(self.bot.asyncio, "sleep", mock.AsyncMock()), \
+                mock.patch.object(self.bot, "published_league", mock.AsyncMock(return_value=league)):
+            import asyncio
+            sent = asyncio.run(self.bot.replay_nag_step(mock.Mock(), now or self.now))
+        return sent, say
+
+    def test_league_video_only_from_league(self):
+        self.assertEqual(self.bot.league_video(LEAGUE, GAME), VIDEO)
+        club = {"games": [{**LEAGUE["games"][0], "watch": LEAGUE["games"][0]["watch"][1:]}]}
+        self.assertIsNone(self.bot.league_video(club, GAME))           # ссылка клуба — не запись лиги
+        tab = {"games": [{**LEAGUE["games"][0], "watch": [{"url": "https://rhl.fhr.ru/matchcenter/1/2/video/",
+                                                           "src": "rhl.fhr.ru"}]}]}
+        self.assertIsNone(self.bot.league_video(tab, GAME))            # вкладка без ролика
+        self.assertIsNone(self.bot.league_video(None, GAME))
+
+    def test_times_only_with_league_video(self):
+        err, e = self.bot.replay_save("2026-10-03", 0, "", "25:20\n57:04\n59:37\n1:20:40", self.now,
+                                      league_vid=VIDEO)
+        self.assertEqual(err, "")
+        self.assertEqual(e["video"], VIDEO)
+        # своя ссылка админа главнее записи лиги
+        err, e = self.bot.replay_save("2026-10-03", 0, "1:0", "https://vk.com/video-1_2?t=10m", self.now, league_vid=VIDEO)
+        self.assertEqual(e["video"], "https://vk.com/video-1_2")
+        text = self.bot.replay_text("2026-10-03", GAME, None, video=VIDEO)
+        self.assertIn("Запись лиги", text)
+        self.assertIn("Пришли времена всех", text)
+
+    def test_once_a_day_after_nine(self):
+        self.assertEqual(self.run_step(self.now.replace(hour=20))[0], 0)    # рано
+        self.assertEqual(self.track.today()["replays_todo"], 1)            # а на пульте уже видно
+        sent, say = self.run_step()
+        self.assertEqual(sent, 2)
+        text, kb = say.call_args.args[2]()
+        self.assertIn("Не размечены повторы: Тверичи-СШОР — Металлург", text)
+        self.assertEqual(kb.inline_keyboard[0][0].callback_data, "rp:m:2026-10-03:0")
+        self.assertEqual(self.run_step(self.now.replace(minute=45))[0], 0)  # второй раз за день — нет
+        self.assertEqual(json.loads((self.dir / "bot.json").read_text())["days"]["2026-10-04"]["replay_nag"], 2)
+
+    def test_restart_does_not_repeat(self):
+        self.run_step()
+        import admin
+        self.track = admin.Tracker("bot", path=self.dir / "bot.json", clock=lambda: self.now)   # новый процесс бота
+        with mock.patch.object(self.bot, "TRACK", self.track):
+            self.assertEqual(self.run_step()[0], 0)
+
+    def test_silent_when_nothing_to_do(self):
+        self.assertEqual(self.run_step(self.now.replace(hour=23, minute=10))[0], 0)   # ночь
+        self.assertEqual(self.run_step(league={"games": []})[0], 0)                  # записи лиги нет
+        self.bot.replay_save("2026-10-03", 0, "1:0", f"{VIDEO}?t=30m", self.now)
+        self.assertEqual(self.run_step()[0], 0)                                      # уже размечен
+        self.assertEqual(self.track.today()["replays_todo"], 0)
+
+    def test_unfinished_match_waits(self):
+        live = {**GAME, "status": "live"}
+        (self.dir / "2026-10-03.json").write_text(json.dumps({"date": "2026-10-03", "games": [live]}), encoding="utf-8")
+        self.assertEqual(self.run_step()[0], 0)
+
+    def test_many_matches_link_to_list(self):
+        todo = [("2026-10-03", k, GAME) for k in range(10)]
+        text, kb = self.bot.replay_nag(todo)
+        self.assertEqual(len(kb.inline_keyboard), self.bot.REPLAY_NAG_MAX + 1)
+        self.assertEqual(kb.inline_keyboard[-1][0].callback_data, "rp:list")

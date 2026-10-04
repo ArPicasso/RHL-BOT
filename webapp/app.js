@@ -1054,8 +1054,10 @@ function evRow(g, e) {
     // автора сайт по ходу матча не даёт: тогда крупно «Гол», а команда — под ним, без повтора названия
     const head = text || (e.kind === "goal" ? "Гол" : "Удаление");
     const sub = text ? `${what} · ${team(id).name}` : team(id).name;
+    // повтор до протокола — по счёту после гола из g.replays (сборка, ADR-028); после протокола ленты нет
+    const rp = sc && g.replays && typeof g.replays === "object" ? replayBtn({ replay: g.replays[sc], score: sc, author: text || team(id).name }) : "";
     return `<div class="goal ev${e.kind === "penalty" ? " pen" : ""}">${evTime(e)}<span class="ev-em">${emblem(id)}</span>
-      <div class="who">${esc(head)}<div class="as">${esc(sub)}</div></div><span class="sc num">${esc(sc)}</span></div>`;
+      <div class="who">${esc(head)}<div class="as">${esc(sub)}</div>${rp}</div><span class="sc num">${esc(sc)}</span></div>`;
   }
   const text = typeof e.text === "string" ? e.text : "";
   if (!text) return "";
@@ -4430,7 +4432,7 @@ function flowChart(g, d) {
     </svg></div>
     <div class="flow-cap" aria-live="polite">
       <div class="tm num">${esc(cur.time)}</div>${matchSticker(g, cur.team, cur.no, cur.gk)}
-      <div class="who">${esc(cur.author)}${strengthTag(cur, cur.i ?? g.goals.indexOf(cur), d)}<small>${cur.assists.length ? cur.assists.map(esc).join(", ") : "без передач"}</small></div>
+      <div class="who">${esc(cur.author)}${strengthTag(cur, cur.i ?? g.goals.indexOf(cur), d)}<small>${cur.assists.length ? cur.assists.map(esc).join(", ") : "без передач"}</small>${replayBtn(cur)}</div>
       <div class="sc num">${esc(cur.score)}</div>
     </div>
     <div class="legend"><span><i class="k-home"></i>ведут хозяева</span><span><i class="k-away"></i>ведут гости</span>
@@ -4451,9 +4453,10 @@ function matchSticker(g, side, no, gk) {
   return playerSticker({ team: id, kit: id, role: gk ? "G" : "F", number: no });
 }
 
-// Повтор гола (ADR-027): запись трансляции лиги в VK с секунды гола. Ссылку ставит сборка, только https
+// Повтор гола (ADR-027): запись трансляции лиги в VK с секунды гола. Ссылку ставит сборка, только https.
+// Вторичная пилюля, как «Смотреть»: в разборе, в подписи под «Ходом матча» и в ленте матча (ADR-028)
 function replayBtn(x) {
-  if (!x.replay || !HTTPS.test(x.replay)) return "";
+  if (typeof x.replay !== "string" || !HTTPS.test(x.replay)) return "";
   return `<button type="button" class="go replay" data-out="${esc(x.replay)}" aria-label="${esc(`Повтор гола ${x.score}, ${x.author}`)}">${LV_ICON.watch}<span>Повтор</span></button>`;
 }
 

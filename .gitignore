@@ -11,6 +11,7 @@ channel_posts.json
 channel_events.json
 raskat_waitlist.json
 reminded.json
+goals_off.json
 schedule.json
 schedule.tmp
 state.db

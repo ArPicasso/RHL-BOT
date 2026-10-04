@@ -52,6 +52,9 @@ RASKAT_CALL_FROM, RASKAT_CALL_TO = time(11, 0), time(21, 0)
 RASKAT_CALL_DAYS = 7               # не играл столько дней — не зовём: это уже не удержание
 PREDICT_CALL_BEFORE = timedelta(hours=2)      # за столько до начала зовём голосовать
 PREDICT_CALL_LAST = timedelta(minutes=15)     # ближе к свистку уже не успеть
+GOALS_OFF_FILE = BASE / "goals_off.json"      # кто отказался от голов по ходу матча (ADR-024)
+GOAL_FRESH = timedelta(minutes=10)            # гол старше — молча пропускаем: нужен счёт, а не лента
+GOAL_BURST = 3                                # больше голов одного матча за проход не шлём
 REMIND_TRIES = 6                   # столько раз возвращаемся к слоту, у которого были неудачи
 CATCHUP_EVERY = 300                # как часто цикл напоминаний проверяет, не пропустил ли слот
 REMINDED_KEEP = 3                  # дней истории напоминаний держим в reminded.json
@@ -386,13 +389,40 @@ def turn_on(chat_id: int, team: str = REMIND_TEAM_ID) -> str:
     return follow(chat_id, team)
 
 
+def load_goals_off() -> set[int]:
+    """Кто отказался от голов по ходу матча (ADR-024, раздел 2). Файла нет — никто."""
+    try:
+        return {int(x) for x in json.loads(GOALS_OFF_FILE.read_text(encoding="utf-8"))}
+    except (FileNotFoundError, ValueError, TypeError):
+        return set()
+
+
+GOALS_OFF = load_goals_off()
+
+
+def goals_on(chat_id: int) -> bool:
+    return chat_id not in GOALS_OFF
+
+
+def goals_set(chat_id: int, on: bool) -> bool:
+    """Включить или выключить голы. Возвращает, как стало."""
+    if on == (chat_id in GOALS_OFF):
+        GOALS_OFF.symmetric_difference_update({chat_id})
+        write_atomic(GOALS_OFF_FILE, sorted(GOALS_OFF))
+        TRACK.add("goals_on" if on else "goals_off")
+    return on
+
+
 def remind_kb(chat_id: int) -> InlineKeyboardMarkup:
-    """Включены — «Выключить» и «Команды»; выключены — сразу выбор конференции."""
+    """Включены — «Выключить», «Команды» и выключатель голов; выключены — сразу выбор конференции."""
     if not SUBS.get(chat_id):
         return team_kb(chat_id)
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🔕 Выключить", callback_data="r:toggle"),
-        InlineKeyboardButton(text="✏️ Команды", callback_data="t:home")]])
+    goals = goals_on(chat_id)
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔕 Выключить", callback_data="r:toggle"),
+         InlineKeyboardButton(text="✏️ Команды", callback_data="t:home")],
+        [InlineKeyboardButton(text="🥅 Голы: выключить" if goals else "🥅 Голы: включить",
+                              callback_data="g:toggle")]])
 
 
 def next_game(today: date) -> Game | None:
@@ -442,8 +472,10 @@ def remind_text(chat_id: int, today: date | None = None, games: list[dict] | Non
     if not teams:
         return (f"{head}{e('bell')} Напоминания о матчах ❌ выключены\n\n"
                 f"Выбери команду — напомню {when}, а после игры пришлю счёт. Можно до трёх.")
+    goals = ("Голы по ходу матча пришлю тоже." if goals_on(chat_id)
+             else "Голы по ходу матча не присылаю.")
     text = (f"{head}{e('bell')} Напоминания о матчах {quoted(teams)} ✅ включены\n\n"
-            f"Пришлю сообщение {when}, а после игры — счёт.")
+            f"Пришлю сообщение {when}, а после игры — счёт. {goals}")
     today = today or datetime.now(TZ).date()
     games = games if games is not None else games_of(None)
     near = [(t, m) for t in teams if (m := next_match(t, today, games))]
@@ -1273,6 +1305,16 @@ async def h_team(m: Message):
     await say(m.bot, cid, lambda: (team_text(cid), team_kb(cid)))
 
 
+@dp.callback_query(F.data == "g:toggle")
+async def cb_goals(c: CallbackQuery):
+    """Голы по ходу матча (ADR-024): выключатель рядом с напоминаниями."""
+    cid = c.message.chat.id
+    on = goals_set(cid, not goals_on(cid))
+    games = games_of(await published_league())
+    await safe_edit(c, lambda: (remind_text(cid, games=games), remind_kb(cid)))
+    await c.answer("Голы буду присылать" if on else "Голы присылать не буду")
+
+
 @dp.callback_query(F.data == "r:toggle")
 async def cb_remind(c: CallbackQuery):
     """Включены — выключить совсем (подписка удаляется). Выключены — старая кнопка «Включить»
@@ -1791,12 +1833,106 @@ async def results_step(bot: Bot, now: datetime) -> int:
     return sent
 
 
+# ---------- гол по ходу матча (ADR-024) ----------
+
+def goal_key(m: dict, ev: dict) -> str:
+    """Ключ события: матч, когда служба его заметила, кто забил и счёт. Номера события в списке в
+    ключе нет: список обрезается по длине, и номер бы сполз."""
+    score = ev.get("score") if isinstance(ev.get("score"), str) else "?"
+    return f"{m.get('key') or match_key(m)}|goal|{ev.get('at')}|{ev.get('team')}|{score}"
+
+
+def fresh_goals(games: list[dict], announced: set[str], now: datetime) -> list[tuple[dict, dict, str]]:
+    """Голы, о которых стоит написать: (матч, событие, ключ). Правила — ADR-024, раздел 3.
+
+    Старше GOAL_FRESH — молча мимо: болельщику нужен счёт, а не лента за полчаса. Событий без счёта
+    (сайт заметил голы обеих сторон между опросами) от одного матча берём одно: несколько
+    одинаковых сообщений хуже, чем одно с текущим счётом."""
+    out = []
+    for m in games:
+        if not isinstance(m, dict) or not isinstance(m.get("home"), str):
+            continue
+        mine, blind = [], None
+        for ev in m.get("events") or []:
+            if not isinstance(ev, dict) or ev.get("kind") != "goal":
+                continue
+            at = admin.parse_iso(ev.get("at"))
+            key = goal_key(m, ev)
+            if at is None or now - at > GOAL_FRESH or now < at or key in announced:
+                continue
+            if isinstance(ev.get("score"), str):
+                mine.append((m, ev, key))
+            else:
+                blind = (m, {**ev, "score": None}, key)
+        if blind:
+            mine.append(blind)
+        out += mine[:GOAL_BURST]
+    return out
+
+
+PERIOD_WORDS = {"1": "Первый период", "2": "Второй период", "3": "Третий период",
+                "ОТ": "Овертайм", "Б": "Буллиты"}
+
+
+def goal_text(m: dict, ev: dict, team: str | None) -> str:
+    """Гол: кто забил, какой счёт, период и минута с автором — если они известны."""
+    score = ev.get("score") if isinstance(ev.get("score"), str) else _score_line(m)
+    head = f"{e('goal')} <b>Гол!</b> {teams_html(m, team)}"
+    if score:
+        head += f" <b>{html.escape(score)}</b>"
+    where = [x for x in (PERIOD_WORDS.get(str(ev.get("period"))),
+                         f"{ev['minute']}-я минута" if isinstance(ev.get("minute"), int) else None) if x]
+    who = str(ev.get("text") or "").strip()
+    line = ", ".join(where) + (f" · {html.escape(who)}" if who else "") if where else (html.escape(who) if who else "")
+    return f"{head}\n{line}" if line else head
+
+
+def _score_line(m: dict) -> str | None:
+    sc = _score(m.get("score"))
+    return f"{sc['home']}:{sc['away']}" if sc else None
+
+
+async def goals_step(bot: Bot, now: datetime) -> int:
+    """Один проход: новые голы из live/ подписчикам их команд. Сначала отмечаем событие, потом
+    шлём — перезапуск посреди рассылки не повторит гол тем, кто его получил."""
+    if quiet(now):
+        return 0
+    games = live_games_near(now)
+    day = now.astimezone(TZ).date()
+    rec = ledger(day, "goals")
+    announced = set(rec["sent"])
+    sent = 0
+    for m, ev, key in fresh_goals(games, announced, now):
+        remember(rec, key, now)
+        kb = match_kb(m)
+        for cid, team in recipients(SUBS, m):
+            if not goals_on(cid):
+                continue
+            try:
+                await say(bot, cid, lambda m=m, ev=ev, team=team: (goal_text(m, ev, team), kb))
+                sent += 1
+            except TelegramForbiddenError:
+                unsubscribe(cid, blocked=True)
+            except Exception:
+                logging.exception("goal to %s failed", cid)
+            await asyncio.sleep(0.05)
+    if sent:
+        TRACK.add("goal_sent", sent)
+        TRACK.flush()
+    return sent
+
+
 async def results_loop(bot: Bot):
     """Бот сам не качает протоколы: их собирает GitHub Actions и публикует вместе с мини-аппом.
     Живое (ADR-019) — файлы службы live на этом же сервере."""
     while True:
+        now = datetime.now(TZ)
         try:
-            await results_step(bot, datetime.now(TZ))
+            await goals_step(bot, now)   # голы по ходу матча (ADR-024) — из тех же файлов live/
+        except Exception:
+            logging.exception("goals step failed")
+        try:
+            await results_step(bot, now)
         except Exception:
             logging.exception("results step failed")
         await asyncio.sleep(RESULTS_POLL)

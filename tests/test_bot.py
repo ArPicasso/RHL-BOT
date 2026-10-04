@@ -1278,5 +1278,113 @@ class Calls(unittest.TestCase):
             self.assertEqual(self.run_call(bot.predict_call, self.at("15:10"), subs={7: ["ryazan-vdv"]})[0], 0)
 
 
+class Goals(unittest.TestCase):
+    """Гол по ходу матча (ADR-024): из live/, подписчикам, один раз и с выключателем."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        for name, value in (("REMINDED_FILE", self.dir / "reminded.json"), ("REMINDED", {}),
+                            ("GOALS_OFF_FILE", self.dir / "goals_off.json"), ("GOALS_OFF", set()),
+                            ("LIVE_DIR", self.dir)):
+            patch = mock.patch.object(bot, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def at(self, hhmm, day="2026-10-04"):
+        return datetime.fromisoformat(f"{day}T{hhmm}:00+03:00")
+
+    def match(self, events, score=(2, 1), status="live"):
+        return {"key": "2026-10-04|ryazan-vdv|belgorod", "date": "2026-10-04", "home": "ryazan-vdv",
+                "away": "belgorod", "status": status, "score": {"home": score[0], "away": score[1],
+                                                                "decision": ""}, "events": events}
+
+    def goal(self, at, score="2:1", team="home", **kw):
+        return {"kind": "goal", "team": team, "score": score, "period": "2", "time": None,
+                "at": at.isoformat(), "src": "rhl.fhr.ru", **kw}
+
+    def write_live(self, games, now):
+        (self.dir / "2026-10-04.json").write_text(
+            json.dumps({"date": "2026-10-04", "updated": now.isoformat(), "games": games}), encoding="utf-8")
+
+    def run_step(self, now, games, subs=None, say=None):
+        say = say or mock.AsyncMock()
+        self.write_live(games, now)
+        with mock.patch.object(bot, "say", say), mock.patch.object(bot.asyncio, "sleep", mock.AsyncMock()), \
+                mock.patch.object(bot, "SUBS", subs if subs is not None else {1: ["ryazan-vdv"], 2: ["ermak"]}), \
+                mock.patch.object(bot, "save_subs"):
+            sent = asyncio.run(bot.goals_step(mock.Mock(), now))
+        return sent, say
+
+    def test_goal_goes_to_the_subscribers_once(self):
+        now = self.at("17:20")
+        m = self.match([self.goal(self.at("17:19"), minute=34, text="Иванов")])
+        sent, say = self.run_step(now, [m])
+        self.assertEqual((sent, say.call_args.args[1]), (1, 1))     # у 2 другая команда
+        text, kb = say.call_args.args[2]()
+        self.assertIn("Гол!", text)
+        self.assertIn("Рязань-ВДВ — <b>Белгород</b> <b>2:1</b>", text)
+        self.assertIn("Второй период, 34-я минута · Иванов", text)
+        self.assertTrue(kb.inline_keyboard)
+        self.assertEqual(self.run_step(self.at("17:21"), [m])[0], 0)   # тот же гол второй раз — нет
+
+    def test_switch_in_remind_screen(self):
+        self.assertTrue(bot.goals_on(1))
+        with mock.patch.object(bot, "SUBS", {1: ["ryazan-vdv"]}):
+            kb = bot.remind_kb(1).inline_keyboard
+            self.assertEqual(kb[1][0].text, "🥅 Голы: выключить")
+            self.assertIn("Голы по ходу матча пришлю тоже", bot.remind_text(1, games=[]))
+            bot.goals_set(1, False)
+            self.assertEqual(bot.remind_kb(1).inline_keyboard[1][0].text, "🥅 Голы: включить")
+            self.assertIn("Голы по ходу матча не присылаю", bot.remind_text(1, games=[]))
+        self.assertEqual(json.loads(bot.GOALS_OFF_FILE.read_text()), [1])
+        self.assertEqual(self.run_step(self.at("17:20"), [self.match([self.goal(self.at("17:19"))])])[0], 0)
+        bot.goals_set(1, True)
+        self.assertEqual(json.loads(bot.GOALS_OFF_FILE.read_text()), [])
+
+    def test_old_goal_is_skipped_silently(self):
+        now = self.at("17:40")
+        sent, say = self.run_step(now, [self.match([self.goal(self.at("17:20"))])])
+        self.assertEqual((sent, say.call_count), (0, 0))
+
+    def test_burst_is_capped(self):
+        now = self.at("17:20")
+        events = [self.goal(self.at("17:19"), score=f"{i}:0") for i in range(1, 6)]
+        sent, _ = self.run_step(now, [self.match(events)], subs={1: ["ryazan-vdv"]})
+        self.assertEqual(sent, bot.GOAL_BURST)
+        self.assertEqual(len(bot.REMINDED["2026-10-04:goals"]["sent"]), bot.GOAL_BURST)
+
+    def test_unknown_score_sends_one_message_with_the_table(self):
+        now = self.at("17:20")
+        events = [self.goal(self.at("17:19"), score=None), self.goal(self.at("17:19"), score=None, team="away")]
+        sent, say = self.run_step(now, [self.match(events)], subs={1: ["ryazan-vdv"]})
+        self.assertEqual(sent, 1)
+        self.assertIn("<b>2:1</b>", say.call_args.args[2]()[0])   # счёт берём с табло матча
+
+    def test_period_and_text_events_are_not_pushed(self):
+        now = self.at("17:20")
+        events = [{"kind": "period", "period": "2", "text": "Второй период", "at": self.at("17:19").isoformat()},
+                  {"kind": "text", "text": "Счёт на сайте лиги исправлен: 2:1",
+                   "at": self.at("17:19").isoformat()}]
+        self.assertEqual(self.run_step(now, [self.match(events)])[0], 0)
+
+    def test_night_is_silent(self):
+        self.assertEqual(self.run_step(self.at("23:30"), [self.match([self.goal(self.at("23:29"))])])[0], 0)
+
+    def test_blocked_fan_loses_the_subscription(self):
+        err = bot.TelegramForbiddenError(method=mock.Mock(), message="bot was blocked")
+        subs = {1: ["ryazan-vdv"]}
+        sent, _ = self.run_step(self.at("17:20"), [self.match([self.goal(self.at("17:19"))])],
+                                subs=subs, say=mock.AsyncMock(side_effect=err))
+        self.assertEqual((sent, subs), (0, {}))
+
+    def test_fresh_goals_is_pure(self):
+        now = self.at("17:20")
+        m = self.match([self.goal(self.at("17:19")), self.goal(self.at("17:25"))])   # второй из будущего
+        got = bot.fresh_goals([m, {"home": None}, "мусор"], set(), now)
+        self.assertEqual([k for _, _, k in got],
+                         ["2026-10-04|ryazan-vdv|belgorod|goal|2026-10-04T17:19:00+03:00|home|2:1"])
+        self.assertEqual(bot.fresh_goals([m], {got[0][2]}, now), [])
+
+
 if __name__ == "__main__":
     unittest.main()

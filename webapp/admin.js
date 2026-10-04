@@ -186,6 +186,8 @@ function sends(st, now) {
   let html = `<div class="label">Рассылки</div><div class="tiles">
     ${tile(v(t, "remind_sent"), `напоминаний ушло сегодня${v(t, "remind_fail") ? `, не ушло ${v(t, "remind_fail")}` : ""}`)}
     ${tile(v(t, "final_sent"), `финалов ушло сегодня${v(t, "final_fail") ? `, не ушло ${v(t, "final_fail")}` : ""}`)}
+    ${tile(v(t, "replays_todo"), "матчей ждут разметки повторов (/replay)")}
+    ${tile(v(t, "replay_nag"), "напоминаний о повторах админам сегодня")}
   </div>`;
   html += `<section class="card" style="margin-top:12px">${table(days, [["remind_sent", "Напом."], ["final_sent", "Финалы"], [(d) => v(d, "remind_fail") + v(d, "final_fail"), "Не ушло"], ["errors", "Ошибки"]])}</section>`;
   html += `<section class="card"><div class="card-title">Последние рассылки</div>`;

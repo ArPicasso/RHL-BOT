@@ -10,6 +10,7 @@ webapp/data/
 channel_posts.json
 channel_events.json
 raskat_waitlist.json
+alerted.json
 reminded.json
 goals_off.json
 schedule.json

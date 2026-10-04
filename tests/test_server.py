@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import raskat  # noqa: E402
+import admin
 import server  # noqa: E402
 
 logging.getLogger("api").addHandler(logging.NullHandler())   # предупреждения сверки соли — не в вывод тестов
@@ -511,6 +512,30 @@ class AdminPanel(Base):
         self.assertEqual({p["id"] for p in st["audience"]["platforms"]}, {"ios", "android"})
         self.assertIsInstance(st["problems"], list)
         self.assertNotIn("1003", json.dumps(st))   # на пульте нет id болельщиков
+
+    async def test_alerts_file_for_the_bot(self):
+        """Тревоги (ADR-022): список проблем api кладёт в status/alerts.json, разносит его бот."""
+        found = await self.api.write_alerts()
+        data = json.loads((self.status / "alerts.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["at"], "2026-10-03T12:00:00+03:00")
+        self.assertEqual(data["problems"], found)
+        keys = {p["key"] for p in found}
+        self.assertIn("bot:beat", keys)        # пульса бота в этом тесте нет — это и есть тревога
+        self.assertTrue(all(p.get("key") and p.get("text") for p in found), found)
+
+    async def test_alerts_file_written_even_when_all_is_well(self):
+        """Пустой свежий файл — тоже сообщение: он говорит боту, что служба api жива."""
+        (self.status / "bot.json").write_text(json.dumps({
+            "beat": "2026-10-03T11:59:30+03:00", "info": {"tg_ok": "2026-10-03T11:59:30+03:00"},
+            "days": {}, "log": []}), encoding="utf-8")
+
+        async def services():
+            return {u: {"state": "active", "sub": "running", "since": None, "restarts": 0}
+                    for u in admin.UNITS}, ""
+        self.api.services = services
+        found = await self.api.write_alerts()
+        self.assertEqual([p["key"] for p in found], [])
+        self.assertEqual(json.loads((self.status / "alerts.json").read_text())["problems"], [])
 
     async def test_seen_needs_login_and_forget_clears_it(self):
         await self.call("POST", "/api/seen", body={"platform": "ios"}, status=401)

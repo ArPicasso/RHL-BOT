@@ -52,6 +52,8 @@ LIVE_STALE = timedelta(minutes=20)        # live/ без обновления д
 TODAY_MAX = 14                     # матчей в одном сообщении «Матчи сегодня»
 STATUS_EVERY = 60                  # пульс для пульта (ADR-021): getMe через туннель и запись status/bot.json
 ADMIN_IDS = frozenset(int(x) for x in re.split(r"[,\s]+", os.environ.get("ADMIN_IDS", "")) if x.isdigit())
+ALERTS_FILE = admin.STATUS_DIR / admin.ALERTS_NAME   # список проблем пишет служба api (ADR-022)
+ALERTED_FILE = BASE / "alerted.json"                 # о чём бот уже сказал админам: не повторяемся
 TRACK = admin.Tracker("bot")       # счётчики за день для пульта: без id и имён
 QUIET_FROM, QUIET_TO = time(23, 0), time(9, 0)   # ночью молчим, результат уйдёт утром
 
@@ -1501,8 +1503,71 @@ async def load_custom_emoji(bot: Bot) -> None:
     logging.info("custom emoji: %d", len(CUSTOM))
 
 
+# ---------- тревоги админу (ADR-022) ----------
+
+ALERT_HEADS = {"broke": "🔴 <b>Сломалось</b>", "still": "🔴 <b>Не починилось</b>",
+               "watch": "🟡 <b>Посмотреть</b>", "fixed": "✅ <b>Починилось</b>"}
+
+NO_API_PROBLEM = {"level": "bad", "key": "alerts",
+                  "text": "Пульт молчит: служба api не пишет тревоги (status/alerts.json). "
+                          "Проверь systemctl status api"}
+
+
+def load_alerted() -> dict:
+    was = admin.read_json(ALERTED_FILE, {})
+    return was if isinstance(was, dict) else {}
+
+
+ALERTED = load_alerted()
+
+
+def alert_text(groups: dict[str, list[str]]) -> str:
+    """Одно сообщение на проверку: разделами, по строке на причину. В текстах проблем бывают и
+    ошибки со сторонних сайтов, поэтому каждая строка — через html.escape."""
+    parts = [ALERT_HEADS[g] + "\n" + "\n".join(f"• {html.escape(t)}" for t in groups[g])
+             for g in admin.ALERT_GROUPS if groups.get(g)]
+    return "\n\n".join(parts)
+
+
+def alerts_now(now: datetime) -> list[dict]:
+    """Список проблем от службы api. Файла нет или он старый — молчит сам api, и это тревога."""
+    data = admin.read_json(ALERTS_FILE, {})
+    found = data.get("problems") if isinstance(data, dict) else None
+    at = admin.parse_iso(data.get("at")) if isinstance(data, dict) else None
+    if not isinstance(found, list) or at is None or now - at > admin.ALERTS_STALE:
+        return [NO_API_PROBLEM]
+    return [p for p in found if isinstance(p, dict)]
+
+
+async def alerts_step(bot: Bot, now: datetime) -> int:
+    """Сказать админам, что сломалось и что починилось. Ночью молчим: тревога разбудит без дела."""
+    if not ADMIN_IDS or quiet(now):
+        return 0
+    groups, state = admin.alert_plan(alerts_now(now), ALERTED, now)
+    if not groups:
+        return 0
+    text = alert_text(groups)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Открыть пульт",
+                                                                     web_app=WebAppInfo(url=admin_url()))]])
+    sent = 0
+    for cid in sorted(ADMIN_IDS):
+        try:
+            await say(bot, cid, lambda: (text, kb))
+            sent += 1
+        except Exception:
+            logging.exception("alert to admin failed")
+        await asyncio.sleep(0.05)
+    if sent:   # не дошло ни до кого — память не трогаем, скажем на следующем проходе
+        ALERTED.clear()
+        ALERTED.update(state)
+        write_atomic(ALERTED_FILE, ALERTED)
+        TRACK.add("alerts_sent", sent)
+    return sent
+
+
 async def status_loop(bot: Bot):
-    """Пульс для пульта (ADR-021): раз в минуту getMe через туннель и запись status/bot.json."""
+    """Пульс для пульта (ADR-021): раз в минуту getMe через туннель и запись status/bot.json.
+    Тем же проходом — тревоги админам (ADR-022)."""
     while True:
         now = datetime.now(TZ)
         try:
@@ -1512,6 +1577,10 @@ async def status_loop(bot: Bot):
             TRACK.info(tg_fail=admin.iso(now), tg_error=admin.no_ids(f"{type(err).__name__}: {err}")[:200])
         TRACK.gauge("subs", len(SUBS))
         TRACK.flush()
+        try:
+            await alerts_step(bot, now)
+        except Exception:
+            logging.exception("alerts step failed")
         await asyncio.sleep(STATUS_EVERY)
 
 

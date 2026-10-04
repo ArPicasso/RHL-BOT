@@ -1018,5 +1018,88 @@ class LiveFinal(unittest.TestCase):
         self.assertEqual((counts, made, saved), ([0], [], [self.key]))   # первый запуск — только запомнили
 
 
+class AdminAlerts(unittest.TestCase):
+    """Тревоги админу (ADR-022): список пишет api, бот разносит — и не повторяется."""
+
+    now = datetime(2026, 10, 4, 10, 0, tzinfo=bot.TZ)
+    live = {"level": "bad", "key": "service:live", "text": "Живое: служба упала"}
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        for name, value in (("ALERTS_FILE", self.dir / "alerts.json"),
+                            ("ALERTED_FILE", self.dir / "alerted.json"),
+                            ("ADMIN_IDS", frozenset({1001, 1002})),
+                            ("ALERTED", {})):
+            patch = mock.patch.object(bot, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def put(self, problems, at=None):
+        bot.ALERTS_FILE.write_text(json.dumps({"at": bot.admin.iso(at or self.now), "problems": problems}),
+                                   encoding="utf-8")
+
+    def run_step(self, now=None, say=None):
+        say = say or mock.AsyncMock()
+        with mock.patch.object(bot, "say", say), mock.patch.object(bot.asyncio, "sleep", mock.AsyncMock()):
+            sent = asyncio.run(bot.alerts_step(mock.Mock(), now or self.now))
+        return sent, say
+
+    def test_tells_every_admin_once(self):
+        self.put([self.live])
+        sent, say = self.run_step()
+        self.assertEqual(sent, 2)
+        self.assertEqual([c.args[1] for c in say.call_args_list], [1001, 1002])
+        text, kb = say.call_args.args[2]()
+        self.assertIn("🔴 <b>Сломалось</b>", text)
+        self.assertIn("• Живое: служба упала", text)
+        self.assertIn("admin.html", kb.inline_keyboard[0][0].web_app.url)
+        self.assertEqual(json.loads(bot.ALERTED_FILE.read_text())["service:live"]["level"], "bad")
+        self.assertEqual(self.run_step()[0], 0)   # та же поломка через минуту — молчим
+
+    def test_night_is_silent(self):
+        self.put([self.live])
+        self.assertEqual(self.run_step(self.now.replace(hour=3))[0], 0)
+        self.assertEqual(bot.ALERTED, {})         # и не считаем сказанным: утром скажем
+
+    def test_no_admins_no_alerts(self):
+        self.put([self.live])
+        with mock.patch.object(bot, "ADMIN_IDS", frozenset()):
+            self.assertEqual(self.run_step()[0], 0)
+
+    def test_api_silence_is_itself_an_alert(self):
+        self.assertEqual(bot.alerts_now(self.now), [bot.NO_API_PROBLEM])        # файла нет
+        self.put([], at=self.now - timedelta(minutes=11))
+        self.assertEqual(bot.alerts_now(self.now), [bot.NO_API_PROBLEM])        # файл старый
+        bot.ALERTS_FILE.write_text("{оборвался}")
+        self.assertEqual(bot.alerts_now(self.now), [bot.NO_API_PROBLEM])
+        self.put([])
+        self.assertEqual(bot.alerts_now(self.now), [])                          # свежий и пустой — тишина
+        sent, say = self.run_step()
+        self.assertEqual((sent, say.call_count), (0, 0))
+
+    def test_all_is_well_message_after_a_breakage(self):
+        self.put([self.live])
+        self.run_step()
+        self.put([])
+        sent, say = self.run_step(self.now + timedelta(minutes=5))
+        self.assertEqual(sent, 2)
+        text, _ = say.call_args.args[2]()
+        self.assertIn("✅ <b>Починилось</b>", text)
+        self.assertIn("• Живое: служба упала", text)
+        self.assertEqual(json.loads(bot.ALERTED_FILE.read_text()), {})
+
+    def test_nothing_sent_nothing_remembered(self):
+        """Не дошло ни до кого — память не трогаем: скажем на следующем проходе."""
+        self.put([self.live])
+        sent, _ = self.run_step(say=mock.AsyncMock(side_effect=RuntimeError("туннель лёг")))
+        self.assertEqual((sent, bot.ALERTED), (0, {}))
+        self.assertFalse(bot.ALERTED_FILE.exists())
+
+    def test_text_escapes_what_came_from_data(self):
+        text = bot.alert_text({"broke": ["Источник <online> & Co"], "watch": ["тесты"]})
+        self.assertIn("• Источник &lt;online&gt; &amp; Co", text)
+        self.assertLess(text.index("Сломалось"), text.index("Посмотреть"))
+
+
 if __name__ == "__main__":
     unittest.main()

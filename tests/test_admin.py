@@ -253,7 +253,71 @@ class BuildStatusTest(unittest.TestCase):
     def test_no_systemctl_is_a_warning_not_a_crash(self):
         st = healthy(services=None, services_note="systemctl: FileNotFoundError")
         self.assertIsNone(st["system"]["services"])
-        self.assertEqual(st["problems"], [{"level": "warn", "text": "Состояние служб не прочиталось: systemctl: FileNotFoundError"}])
+        self.assertEqual(st["problems"], [{"level": "warn", "key": "services",
+                                           "text": "Состояние служб не прочиталось: systemctl: FileNotFoundError"}])
+
+
+class Alerts(unittest.TestCase):
+    """Тревоги админу (ADR-022, раздел 3): новое — сразу, то же — раз в час, ушло — «починилось»."""
+
+    tg = {"level": "bad", "key": "bot:telegram", "text": "Бот не достучался до Telegram. Проверь tg-tunnel"}
+    tests_red = {"level": "warn", "key": "build:tests", "text": "Последний прогон тестов красный"}
+    live = {"level": "bad", "key": "service:live", "text": "Живое: служба упала"}
+
+    def test_new_problem_goes_out_at_once(self):
+        groups, state = admin.alert_plan([self.tg, self.tests_red], {}, NOW)
+        self.assertEqual(groups, {"broke": [self.tg["text"]], "watch": [self.tests_red["text"]]})
+        self.assertEqual(set(state), {"bot:telegram", "build:tests"})
+        self.assertEqual(state["bot:telegram"]["at"], admin.iso(NOW))
+
+    def test_same_cause_waits_an_hour(self):
+        _, state = admin.alert_plan([self.tg], {}, NOW)
+        later = NOW + timedelta(minutes=59)
+        groups, kept = admin.alert_plan([self.tg], state, later)
+        self.assertEqual(groups, {})
+        self.assertEqual(kept["bot:telegram"]["at"], admin.iso(NOW))   # час считаем от первой тревоги
+        groups, after = admin.alert_plan([self.tg], state, NOW + timedelta(hours=1, seconds=1))
+        self.assertEqual(groups, {"still": [self.tg["text"]]})
+        self.assertEqual(after["bot:telegram"]["at"], admin.iso(NOW + timedelta(hours=1, seconds=1)))
+
+    def test_text_changes_but_cause_is_the_same(self):
+        """«молчит 7 мин» → «молчит 8 мин» — та же поломка, второй раз не пишем."""
+        a = {"level": "bad", "key": "bot:beat", "text": "Бот молчит: последний пульс 7 мин назад"}
+        b = {**a, "text": "Бот молчит: последний пульс 8 мин назад"}
+        _, state = admin.alert_plan([a], {}, NOW)
+        groups, kept = admin.alert_plan([b], state, NOW + timedelta(minutes=1))
+        self.assertEqual(groups, {})
+        self.assertEqual(kept["bot:beat"]["text"], b["text"])   # помним свежий текст
+
+    def test_warning_is_said_once(self):
+        _, state = admin.alert_plan([self.tests_red], {}, NOW)
+        groups, _ = admin.alert_plan([self.tests_red], state, NOW + timedelta(hours=5))
+        self.assertEqual(groups, {})
+
+    def test_warning_that_became_a_breakage_goes_out(self):
+        _, state = admin.alert_plan([{**self.live, "level": "warn", "text": "Живое: служба падала"}], {}, NOW)
+        groups, _ = admin.alert_plan([self.live], state, NOW + timedelta(minutes=1))
+        self.assertEqual(groups, {"broke": [self.live["text"]]})
+
+    def test_gone_means_fixed_and_forgotten(self):
+        _, state = admin.alert_plan([self.tg, self.live], {}, NOW)
+        groups, after = admin.alert_plan([self.live], state, NOW + timedelta(minutes=5))
+        self.assertEqual(groups, {"fixed": [self.tg["text"]]})
+        self.assertEqual(set(after), {"service:live"})
+        groups, empty = admin.alert_plan([], after, NOW + timedelta(minutes=10))
+        self.assertEqual(groups, {"fixed": [self.live["text"]]})
+        self.assertEqual(empty, {})
+
+    def test_junk_and_doubles_are_skipped(self):
+        groups, state = admin.alert_plan(
+            [{"level": "bad", "text": "без ключа"}, {"level": "bad", "key": "disk", "text": ""},
+             self.live, {**self.live, "text": "он же вторым разом"}], {}, NOW)
+        self.assertEqual(groups, {"broke": [self.live["text"]]})
+        self.assertEqual(list(state), ["service:live"])
+
+    def test_payload_for_the_bot(self):
+        self.assertEqual(admin.alerts_payload([self.live], NOW),
+                         {"at": admin.iso(NOW), "problems": [self.live]})
 
 
 if __name__ == "__main__":

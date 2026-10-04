@@ -57,6 +57,7 @@ GRACE_UNPUBLISHED = timedelta(hours=2)
 LEAGUE_TTL = 600                # league.json с Pages — раз в 10 минут (ADR-020)
 INDEX_TTL = 300                 # index.json «Раската» — есть ли уже файл нового дня
 SALT_EVERY = 3600               # сверка соли повторяется раз в час: вдруг секрет поменяли
+ALERTS_EVERY = 120              # тревоги (ADR-022): раз в две минуты пишем список проблем для бота
 
 LIVE_NAME = r"today|schedule|sources|\d{4}-\d{2}-\d{2}"
 
@@ -247,7 +248,7 @@ class Api:
         self._league_updated: str | None = None
         self._index: tuple[float, str] = (0.0, "")
         self._stand: dict[tuple, object] = {}
-        self._loop: asyncio.Task | None = None
+        self._loops: list[asyncio.Task] = []
 
     # ---------- жизнь процесса ----------
 
@@ -266,15 +267,16 @@ class Api:
         except asyncio.TimeoutError:
             self.salt_note = "Pages не ответил за 20 секунд — зачёт работает без сверки"
             log.warning("сверка соли: %s", self.salt_note)
-        self._loop = asyncio.create_task(self._salt_loop())
+        self._loops = [asyncio.create_task(self._salt_loop()), asyncio.create_task(self._alerts_loop())]
 
     async def cleanup(self, app=None) -> None:
-        if self._loop:
-            self._loop.cancel()
+        for task in self._loops:
+            task.cancel()
             try:
-                await self._loop
+                await task
             except asyncio.CancelledError:
                 pass
+        self._loops = []
         if self.session:
             await self.session.close()
         if self.conn:
@@ -287,6 +289,26 @@ class Api:
                 await self.salt_check()
             except Exception:
                 log.exception("сверка соли упала")
+
+    async def _alerts_loop(self) -> None:
+        """Тревоги (ADR-022): список проблем — в status/alerts.json, разносит его бот. Пишем и
+        когда всё хорошо: пустой свежий файл говорит боту, что служба api жива."""
+        while True:
+            await asyncio.sleep(ALERTS_EVERY)   # сперва пауза: при старте службе есть чем заняться
+            try:
+                await self.write_alerts()
+            except Exception:
+                log.exception("тревоги не записались")
+
+    async def write_alerts(self) -> list[dict]:
+        now = self.now()
+        found = (await self.status(now)).get("problems") or []
+        try:
+            self.cfg.status_dir.mkdir(parents=True, exist_ok=True)
+            admin.write_atomic(self.cfg.status_dir / admin.ALERTS_NAME, admin.alerts_payload(found, now))
+        except OSError as e:
+            log.warning("тревоги: %s не записался: %s", admin.ALERTS_NAME, e)
+        return found
 
     async def fetch(self, url: str):
         if self._fetch is not None:
@@ -816,11 +838,14 @@ class Api:
 
     async def admin_status(self, request):
         self.admin_user(request)
-        now = self.now()
+        return reply(await self.status(self.now()))
+
+    async def status(self, now: datetime) -> dict:
+        """Весь статус: его отдаёт пульт (ADR-021) и по нему считаются тревоги (ADR-022)."""
         await self.league()   # заодно время сборки league.json
         services, note = await self.services()
         since = now.date() - timedelta(days=admin.WEEK - 1)
-        st = admin.build_status(
+        return admin.build_status(
             now=now, teams=self.teams, services=services, services_note=note,
             bot=admin.read_json(self.cfg.status_dir / "bot.json"),
             pages=admin.read_json(self.cfg.status_dir / "pages.json"),
@@ -829,7 +854,6 @@ class Api:
             raskat={"on": self.salt_ok is not False, "note": self.salt_note},
             disk=self.disk(), subs=admin.read_json(self.cfg.subs_file),
             app_counts=self.adm.counts(since), games=admin.game_stats(self.conn, since, now.date()))
-        return reply(st)
 
     # ---------- обвязка ----------
 

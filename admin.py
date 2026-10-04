@@ -409,58 +409,106 @@ def _mins(td: timedelta) -> str:
     return f"{h} ч {m} мин" if h < 24 and m else f"{h} ч" if h < 24 else f"{h // 24} дн"
 
 
+# ---------- тревоги админу (ADR-022) ----------
+
+ALERTS_NAME = "alerts.json"              # его пишет служба api в STATUS_DIR, читает и разносит бот
+ALERT_REPEAT = timedelta(hours=1)        # о той же причине напоминаем не чаще
+ALERTS_STALE = timedelta(minutes=10)     # alerts.json старше — молчит сама служба api, и это тревога
+# порядок разделов в сообщении: что горит, что ещё горит, что посмотреть, что отпустило
+ALERT_GROUPS = ("broke", "still", "watch", "fixed")
+
+
+def alerts_payload(problems_: list[dict], now: datetime) -> dict:
+    """Что служба api пишет в status/alerts.json для бота."""
+    return {"at": iso(now), "problems": problems_}
+
+
+def alert_plan(problems_: list[dict], was: dict, now: datetime,
+               repeat: timedelta = ALERT_REPEAT) -> tuple[dict[str, list[str]], dict]:
+    """Что сказать админу и что после этого помнить (ADR-022, раздел 3).
+
+    `was` — что уже сказано: причина → {at, level, text}. Возвращает разделы сообщения (пустые
+    выброшены) и новую память. Новая причина — сразу; та же `bad` — не чаще `repeat`; `warn` —
+    один раз; исчезла — «починилось» и забыли."""
+    groups: dict[str, list[str]] = {g: [] for g in ALERT_GROUPS}
+    state: dict[str, dict] = {}
+    for p in problems_:
+        key, text = p.get("key"), str(p.get("text") or "").strip()
+        if not key or not text or key in state:
+            continue
+        level = "bad" if p.get("level") == "bad" else "warn"
+        prev = was.get(key) if isinstance(was.get(key), dict) else None
+        said = parse_iso((prev or {}).get("at"))
+        if prev is None or (prev.get("level") != "bad" and level == "bad"):
+            groups["broke" if level == "bad" else "watch"].append(text)
+        elif level == "bad" and (said is None or now - said >= repeat):
+            groups["still"].append(text)
+        else:                                   # ещё рано напоминать или это «посмотреть»
+            state[key] = {**prev, "level": level, "text": text}
+            continue
+        state[key] = {"at": iso(now), "level": level, "text": text}
+    groups["fixed"] = [str(v.get("text") or "").strip() for k, v in was.items()
+                       if k not in state and isinstance(v, dict) and str(v.get("text") or "").strip()]
+    return {g: v for g, v in groups.items() if v}, state
+
+
 def problems(status: dict, now: datetime) -> list[dict]:
-    """Что сломано (bad) и на что посмотреть (warn) — сводка наверху пульта, пороги — ADR-021, раздел 4."""
+    """Что сломано (bad) и на что посмотреть (warn) — сводка наверху пульта, пороги — ADR-021, раздел 4.
+
+    У каждой проблемы есть `key` — причина: по ней тревоги (ADR-022) понимают, что это та же
+    поломка, что минуту назад. Текст меняется («молчит 7 мин» → «8 мин»), ключ — нет."""
     out = []
-    bad = lambda text: out.append({"level": "bad", "text": text})   # noqa: E731
-    warn = lambda text: out.append({"level": "warn", "text": text})   # noqa: E731
+    bad = lambda key, text: out.append({"level": "bad", "key": key, "text": text})   # noqa: E731
+    warn = lambda key, text: out.append({"level": "warn", "key": key, "text": text})   # noqa: E731
     sysm = status.get("system") or {}
     for s in sysm.get("services") or []:
         if s.get("state") == "not-found":
             continue
         if s.get("state") not in ("active", "reloading"):
-            bad(f"{s['title']}: служба {STATE_WORDS.get(s.get('state'), s.get('state'))}")
+            bad(f"service:{s['name']}", f"{s['title']}: служба {STATE_WORDS.get(s.get('state'), s.get('state'))}")
         elif s.get("restarts"):
-            warn(f"{s['title']}: служба падала и поднималась {s['restarts']} {times(s['restarts'])} с последней выкладки")
+            warn(f"restarts:{s['name']}",
+                 f"{s['title']}: служба падала и поднималась {s['restarts']} {times(s['restarts'])} с последней выкладки")
     if sysm.get("services") is None and sysm.get("services_note"):
-        warn(f"Состояние служб не прочиталось: {sysm['services_note']}")
+        warn("services", f"Состояние служб не прочиталось: {sysm['services_note']}")
     b = sysm.get("bot")
     if b is None:
-        bad("Бот не пишет пульс (status/bot.json): бот не запущен или старая версия")
+        bad("bot:beat", "Бот не пишет пульс (status/bot.json): бот не запущен или старая версия")
     else:
         age = _ago(b.get("beat"), now)
         if age is None or age > BEAT_STALE:
-            bad(f"Бот молчит: последний пульс {_mins(age) + ' назад' if age else 'неизвестно когда'}")
+            bad("bot:beat", f"Бот молчит: последний пульс {_mins(age) + ' назад' if age else 'неизвестно когда'}")
         ok, fail = parse_iso(b.get("tg_ok")), parse_iso(b.get("tg_fail"))
         if fail and (not ok or fail > ok):
-            bad(f"Бот не достучался до Telegram: {b.get('tg_error') or 'ошибка'}. Проверь tg-tunnel")
+            bad("bot:telegram", f"Бот не достучался до Telegram: {b.get('tg_error') or 'ошибка'}. Проверь tg-tunnel")
     night = NIGHT_FROM <= now.hour < NIGHT_TO
     for run in sysm.get("builds") or []:
         if run.get("id") == "pages":
             age = _ago(run.get("last_ok"), now)
             if not night and (age is None or age > PAGES_STALE):
                 last = run.get("conclusion") or run.get("status")
-                bad(f"Мини-апп не собирался {_mins(age) if age else 'давно'}: последний запуск — "
+                bad("build:pages", f"Мини-апп не собирался {_mins(age) if age else 'давно'}: последний запуск — "
                     f"{RUN_WORDS.get(last, last or 'нет данных')}")
         elif run.get("id") == "deploy" and run.get("conclusion") == "failure":
-            bad("Последняя выкладка бота на сервер красная")
+            bad("build:deploy", "Последняя выкладка бота на сервер красная")
         elif run.get("id") == "tests" and run.get("conclusion") == "failure":
-            warn("Последний прогон тестов красный")
+            warn("build:tests", "Последний прогон тестов красный")
     kick = sysm.get("kick")
     if kick is not None and not kick.get("token"):
-        warn("У службы pages нет PAGES_TOKEN: сборку не будим, за сборками не следим")
+        warn("kick:token", "У службы pages нет PAGES_TOKEN: сборку не будим, за сборками не следим")
     age = _ago(sysm.get("league_updated"), now)
     if sysm.get("league_updated") is None:
-        warn("league.json с Pages не прочитался")
+        warn("league", "league.json с Pages не прочитался")
     elif age > LEAGUE_STALE and not night:
-        bad(f"Данные мини-аппа (league.json) собраны {_mins(age)} назад")
+        bad("league", f"Данные мини-аппа (league.json) собраны {_mins(age)} назад")
     for s in (sysm.get("live") or {}).get("sources") or []:
         if (s.get("errors") or 0) >= SOURCE_ERRORS:
-            bad(f"Источник {s['name']}: ошибок подряд — {s['errors']}. {s.get('note') or 'Без пояснения'}")
+            bad(f"source:{s['name']}",
+                f"Источник {s['name']}: ошибок подряд — {s['errors']}. {s.get('note') or 'Без пояснения'}")
     r = sysm.get("raskat") or {}
     if r and not r.get("on"):
-        bad(f"Зачёт «Раската» выключен: {r.get('note')}")
+        bad("raskat", f"Зачёт «Раската» выключен: {r.get('note')}")
     d = sysm.get("disk") or {}
     if d.get("free") is not None and d["free"] < DISK_LOW:
-        bad(f"На диске меньше 1 ГБ: {d['free'] // (1 << 20)} МБ")
+        bad("disk", f"На диске меньше 1 ГБ: {d['free'] // (1 << 20)} МБ")
     return out

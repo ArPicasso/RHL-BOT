@@ -136,6 +136,17 @@ jobs:
           mv schedule.tmp schedule.json
           python -c "import json; print('Матчей со временем:', len(json.load(open('schedule.json', encoding='utf-8'))['games']))"
 
+      # Повторы голов (ADR-027): ссылки на запись трансляции с секунды гола, их размечает админ в боте.
+      # Нет адреса или файла — сборка без повторов
+      - name: Скачать повторы голов
+        continue-on-error: true
+        run: |
+          if [ -z "${LIVE_API:-}" ]; then echo "Адреса API нет — без повторов"; exit 0; fi
+          curl -sS --fail --max-time 20 -o replays.tmp "${LIVE_API%/}/live/replays.json" || { echo "Повторов пока нет"; exit 0; }
+          python -c "import json; d = json.load(open('replays.tmp', encoding='utf-8')); assert isinstance(d.get('games'), dict)"
+          mv replays.tmp replays.json
+          python -c "import json; print('Матчей с повторами:', len(json.load(open('replays.json', encoding='utf-8'))['games']))"
+
       # Ссылки на бота и мини-апп (ADR-004) заданы в build_data.py; Variables BOT_LINK, APP_LINK их заменяют
       - name: Собрать данные
         env:

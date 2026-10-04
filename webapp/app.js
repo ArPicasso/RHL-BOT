@@ -4451,6 +4451,12 @@ function matchSticker(g, side, no, gk) {
   return playerSticker({ team: id, kit: id, role: gk ? "G" : "F", number: no });
 }
 
+// Повтор гола (ADR-027): запись трансляции лиги в VK с секунды гола. Ссылку ставит сборка, только https
+function replayBtn(x) {
+  if (!x.replay || !HTTPS.test(x.replay)) return "";
+  return `<button type="button" class="go replay" data-out="${esc(x.replay)}" aria-label="${esc(`Повтор гола ${x.score}, ${x.author}`)}">${LV_ICON.watch}<span>Повтор</span></button>`;
+}
+
 function goalsTab(g, d) {
   const items = (g.goals || []).map((x, i) => ({ kind: "g", x, i, s: x.period === "РБ" ? 1e9 : secs(x.time), p: x.period }));
   const pens = (d && d.penalties) || [];
@@ -4472,7 +4478,7 @@ function goalsTab(g, d) {
       html += `<div class="goal${it.i === recapView.pick ? " hl" : ""}">
         <div class="tm">${esc(x.period === "РБ" ? "Б" : x.time)}</div>
         ${matchSticker(g, x.team, x.no, x.gk)}
-        <div class="who">${esc(x.author)}${strengthTag(x, it.i, d)}${x.assists.length ? `<div class="as">${x.assists.map(esc).join(", ")}</div>` : ""}</div>
+        <div class="who">${esc(x.author)}${strengthTag(x, it.i, d)}${x.assists.length ? `<div class="as">${x.assists.map(esc).join(", ")}</div>` : ""}${replayBtn(x)}</div>
         <div class="sc">${esc(x.score)}</div>
       </div>`;
     } else {

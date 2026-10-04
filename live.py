@@ -140,8 +140,9 @@ def site_events(old: dict | None, new: dict, last_period: str | None, at: dateti
     """События между двумя опросами страницы матча на сайте лиги. По ходу матча сайт даёт только счёт и строку
     «2-й период» (снимки 03.10.2026), поэтому гол — это смена счёта, начало и конец периода — смена строки.
     Минуты гола сайт не даёт: `time` — null, `at` — когда служба заметила. Чего не видели, не выдумываем:
-    первый опрос уже идущего матча событий не даёт, после перерыва в опросе дольше STALE — голы без периода и
-    без событий периода, счёт вырос у обеих сторон — голы без счёта (порядок неизвестен)."""
+    первый опрос уже идущего матча событий не даёт, после перерыва в опросе дольше STALE — голы без периода,
+    с пометкой `late` (их `at` — не время гола, от него не считают повтор, ADR-027) и без событий периода,
+    счёт вырос у обеих сторон — голы без счёта (порядок неизвестен)."""
     if not old or not old.get("seen"):
         return []
     gap = at - old["seen"] > STALE
@@ -150,7 +151,7 @@ def site_events(old: dict | None, new: dict, last_period: str | None, at: dateti
 
     def ev(kind: str, **kw) -> dict:
         return {"kind": kind, "period": None if gap else period, "time": None, "team": None, "text": None,
-                "score": None, "at": iso(at), "src": "rhl.fhr.ru", **kw}
+                "score": None, "at": iso(at), "src": "rhl.fhr.ru", **({"late": True} if gap else {}), **kw}
     starts, goals, ends = [], [], []
     base, cur = old.get("score"), new.get("score")
     if base is None and o_st is None and n_st == "live" and n_per == "1":

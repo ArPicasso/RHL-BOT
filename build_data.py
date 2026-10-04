@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 import feed
 import league
 import matchday
+import replay
 import rhl_media
 import rhl_site
 import rhockey
@@ -33,6 +34,7 @@ OUT = BASE / "webapp" / "data" / "league.json"
 CHANNELS_FILE = BASE / "channels.json"       # каналы клубов для листа «Главной» (ADR-015)
 POSTS_FILE = BASE / "channel_posts.json"     # их посты: собирает tg_channels.py перед этим шагом
 SCHEDULE_FILE = BASE / "schedule.json"       # время матчей с сервера (ADR-019, раздел 5), кладёт шаг Pages
+REPLAYS_FILE = BASE / "replays.json"         # повторы голов с сервера (ADR-027), кладёт шаг Pages
 EVENTS_FILE = BASE / "channel_events.json"   # лента матчей из постов каналов: копится между запусками (кэш Pages)
 EVENTS_DAYS = 3                              # и держится три дня
 MOSCOW = "Europe/Moscow"
@@ -183,6 +185,31 @@ def apply_schedule(games: list[dict], schedule: list[dict], zones: dict[str, str
         if isinstance(online, str) and re.fullmatch(r"https://[^\s\"'<>]{4,300}", online):
             g["online"] = online
     return len(matched)
+
+
+def load_replays(path: Path = REPLAYS_FILE) -> dict:
+    """Повторы голов из live/replays.json сервера (ADR-027): ключ матча → запись. Нет файла — без повторов."""
+    try:
+        games = json.loads(path.read_text(encoding="utf-8"))["games"]
+    except (FileNotFoundError, ValueError, KeyError, TypeError):
+        return {}
+    return games if isinstance(games, dict) else {}
+
+
+def apply_replays(games: list[dict], replays: dict) -> int:
+    """Ссылка на повтор (`replay`) у гола матча: ключ «<дата>|<хозяева>|<гости>», гол — по счёту после него.
+    Счёт уникален в матче и одинаков у службы live и у протокола. Возвращает число голов с повтором."""
+    n = 0
+    for g in games:
+        links = replay.by_score(replays.get(f"{g['date']}|{g['home']}|{g['away']}") or {})
+        if not links:
+            continue
+        for x in g.get("goals") or []:
+            url = links.get(x.get("score")) if x.get("period") != "РБ" else None
+            if url:
+                x["replay"] = url
+                n += 1
+    return n
 
 
 def apply_matchday(games: list[dict], teams: "Teams", channels: list[dict], posts: dict) -> int:
@@ -929,12 +956,12 @@ def links(env=os.environ) -> dict[str, str]:
 def build(teams: Teams, raw: list[rhockey.RawGame], results: league.Results,
           hidden: set[int] = frozenset(), *, schedule: list[dict] = (), channels: list[dict] = (),
           posts: dict | None = None, site: dict | None = None,
-          events: dict | None = None) -> tuple[dict, list[str], dict[str, dict]]:
+          events: dict | None = None, replays: dict | None = None) -> tuple[dict, list[str], dict[str, dict]]:
     """league.json, непривязанные протоколы и разборы сыгранных матчей по id матча.
 
     schedule — строки schedule.json сервера, channels и posts — каналы клубов и их посты: время начала,
     онлайн, «Смотреть» и лента матча (ADR-019), events — кэш этой ленты (channel_events.json), его сборка
-    дополняет. Всё необязательно: без них у матча только время из протокола."""
+    дополняет, replays — повторы голов (ADR-027). Всё необязательно: без них у матча только время из протокола."""
     games = merge_calendar(teams, raw, official_games(teams))
     protocols: dict[str, dict] = {}
     unmatched = attach_results(games, teams, results, protocols, hidden)
@@ -946,6 +973,7 @@ def build(teams: Teams, raw: list[rhockey.RawGame], results: league.Results,
     apply_media(games, site or {})                         # «Смотреть» от лиги — первой кнопкой
     apply_channel_events(games, teams, list(channels), posts or {}, events, datetime.now(TZ))
     apply_goal_authors(games, protocols, list(channels), hidden)   # авторы голов по ходу из постов (ADR-026)
+    apply_replays(games, replays or {})                    # последним: голы уже на месте (ADR-027)
     names = {t["id"]: t["name"] for t in teams.all}
     details = {g["id"]: match_detail(g, protocols[g["id"]], names, hidden) for g in games if g["id"] in protocols}
     data = {
@@ -1018,7 +1046,7 @@ def main() -> None:
     events = load_events()
     data, unmatched, details = build(teams, raw, league.load_results(args.results), load_hidden(),
                                      schedule=load_schedule(), channels=channels, posts=posts,
-                                     site=rhl_site.load_store(), events=events)
+                                     site=rhl_site.load_store(), events=events, replays=load_replays())
     EVENTS_FILE.write_text(json.dumps(events, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
@@ -1048,6 +1076,7 @@ def main() -> None:
     count = lambda k: sum(1 for g in data["games"] if g.get(k))   # noqa: E731
     print(f"Время начала: {count('start')}, онлайн: {count('online')}, «Смотреть»: {count('watch')}, "
           f"лента из каналов: {count('events')} (ADR-019)")
+    print(f"Голов с повтором: {sum(1 for g in data['games'] for x in g.get('goals') or [] if x.get('replay'))} (ADR-027)")
     for u in unmatched:
         print("Протокол не привязан к матчу:", u)
 

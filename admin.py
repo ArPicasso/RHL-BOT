@@ -21,6 +21,7 @@ BASE = Path(__file__).resolve().parent
 TZ = ZoneInfo("Europe/Moscow")
 STATUS_DIR = Path(os.environ.get("STATUS_DIR") or BASE / "status")
 KEEP_DAYS = 35          # счётчики по дням храним пять недель
+COHORT_DAYS = 7         # на какой день смотрим возвраты: пришёл неделю назад — вернулся ли
 LOG_KEEP = 10           # последних рассылок в журнале службы
 WEEK = 7                # дней на пульте
 
@@ -174,6 +175,16 @@ CREATE TABLE IF NOT EXISTS admin_counts (
     n    INTEGER NOT NULL,
     PRIMARY KEY (day, key)
 );
+-- удержание (ADR-021, дополнение 04.10): на человека три числа — когда пришёл, когда был в
+-- последний раз, сколько всего дней заходил. Дневной журнал id (admin_seen) по-прежнему живёт
+-- один день: воронок по людям из этого не собрать, а «возвращаются ли» видно
+CREATE TABLE IF NOT EXISTS admin_fans (
+    fan   INTEGER PRIMARY KEY,
+    first TEXT NOT NULL,
+    last  TEXT NOT NULL,
+    days  INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS admin_fans_first ON admin_fans (first);
 """
 PLATFORM_RE = re.compile(r"^[a-z_]{1,20}$")
 
@@ -199,6 +210,9 @@ class AdminStore:
             c.execute("DELETE FROM admin_counts WHERE day < ?", ((day - timedelta(days=KEEP_DAYS)).isoformat(),))
             new = c.execute("INSERT OR IGNORE INTO admin_seen (day, fan) VALUES (?, ?)", (d, fan)).rowcount == 1
             if new:
+                c.execute("INSERT INTO admin_fans (fan, first, last) VALUES (?, ?, ?) "
+                          "ON CONFLICT (fan) DO UPDATE SET last = excluded.last, days = days + 1, "
+                          "first = MIN(first, excluded.first)", (fan, d, d))
                 self._bump(d, "app_users")
                 if platform and PLATFORM_RE.match(platform):
                     self._bump(d, f"platform:{platform}")
@@ -212,6 +226,33 @@ class AdminStore:
 
     def forget(self, fan: int) -> None:
         self.conn.execute("DELETE FROM admin_seen WHERE fan = ?", (fan,))
+        self.conn.execute("DELETE FROM admin_fans WHERE fan = ?", (fan,))
+
+    def retention(self, today: date) -> dict:
+        """Возвращаются ли люди (ADR-021, дополнение 04.10). Наружу — только числа.
+
+        Считается по трём числам на человека, без дневного журнала id: `first` даёт когорту,
+        `last` — вернулся ли. `new` и `back` — сегодняшние: впервые и те, кто уже был раньше.
+        `d1` — вчерашняя когорта новых и сколько из них зашло сегодня. `week` — когорта недели
+        назад и сколько из них заходило ещё хоть раз. `sleeping` — был от трёх дней до пяти
+        недель назад."""
+        d = today.isoformat()
+        yesterday = (today - timedelta(days=1)).isoformat()
+        cohort = (today - timedelta(days=COHORT_DAYS)).isoformat()
+        one = lambda sql, args=(): self.conn.execute(sql, args).fetchone()[0]   # noqa: E731
+        return {
+            "new": one("SELECT COUNT(*) FROM admin_fans WHERE first = ?", (d,)),
+            "back": one("SELECT COUNT(*) FROM admin_fans WHERE last = ? AND first < ?", (d, d)),
+            "known": one("SELECT COUNT(*) FROM admin_fans"),
+            "d1": {"of": one("SELECT COUNT(*) FROM admin_fans WHERE first = ?", (yesterday,)),
+                   "back": one("SELECT COUNT(*) FROM admin_fans WHERE first = ? AND last = ?", (yesterday, d))},
+            "week": {"of": one("SELECT COUNT(*) FROM admin_fans WHERE first = ?", (cohort,)),
+                     "back": one("SELECT COUNT(*) FROM admin_fans WHERE first = ? AND last > first", (cohort,)),
+                     "days": COHORT_DAYS},
+            "sleeping": one("SELECT COUNT(*) FROM admin_fans WHERE last < ? AND last >= ?",
+                            ((today - timedelta(days=2)).isoformat(),
+                             (today - timedelta(days=KEEP_DAYS)).isoformat())),
+        }
 
     def counts(self, since: date) -> dict[str, dict]:
         out: dict[str, dict] = {}
@@ -326,7 +367,7 @@ def match_title(key: str, teams: dict[str, str]) -> str:
 def build_status(*, now: datetime, teams: dict[str, str], services: dict | None, services_note: str = "",
                  bot: dict | None, pages: dict | None, league_updated: str | None, live_today: dict | None,
                  sources: dict | None, raskat: dict, disk: dict | None, subs, app_counts: dict[str, dict],
-                 games: dict) -> dict:
+                 games: dict, retention: dict | None = None) -> dict:
     """Один ответ пульта. Дни — последние WEEK, новые сверху: счётчики бота, открытия и игры вместе."""
     bot = bot if isinstance(bot, dict) else None
     pages = pages if isinstance(pages, dict) else None
@@ -385,6 +426,7 @@ def build_status(*, now: datetime, teams: dict[str, str], services: dict | None,
             "fans": split("fav:", days[0], teams),
             "links": split("start:", days[0]),
             "links_week": split("start:", week),
+            "retention": retention,
         },
         "sends": {"log": (bot or {}).get("log") or [], "last_error": info.get("last_error")},
         "games": {"raskat_players": games.get("raskat_players"),

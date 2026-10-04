@@ -142,6 +142,24 @@ function system(st, now) {
   return html + `</section>`;
 }
 
+function share(part, whole) {
+  if (!whole) return "—";
+  return `${num(part)} из ${num(whole)} · ${Math.round((100 * part) / whole)}%`;
+}
+
+function retention(r) {
+  if (!r) return "";
+  const d1 = r.d1 || {}, week = r.week || {};
+  return `<section class="card"><div class="card-title">Возвращаются ли</div>
+    ${row("ok", "Сегодня", "впервые и те, кто уже был", `${num(r.new)} новых · ${num(r.back)} вернулись`)}
+    ${row(d1.of && !d1.back ? "warn" : "ok", "На следующий день",
+          "из пришедших вчера впервые", share(v(d1, "back"), v(d1, "of")))}
+    ${row(week.of && !week.back ? "warn" : "ok", `Через ${num(week.days || 7)} дней`,
+          "из пришедших неделю назад впервые заходили ещё хоть раз", share(v(week, "back"), v(week, "of")))}
+    ${row(r.sleeping ? "warn" : "ok", "Уснули", "были от трёх дней до пяти недель назад", num(r.sleeping))}
+    ${row("ok", "Знаем всего", "людей, открывавших мини-апп", num(r.known))}</section>`;
+}
+
 function audience(st) {
   const a = st.audience || {};
   const days = st.days || [];
@@ -152,6 +170,7 @@ function audience(st) {
     ${tile(v(t, "starts"), "нажали «Старт» в боте", v(t, "starts") - v(y, "starts"))}
     ${tile(v(t, "sub_new") - v(t, "sub_off"), `подписок за день: +${v(t, "sub_new")} / −${v(t, "sub_off")}${v(t, "blocked") ? `, заблокировали ${v(t, "blocked")}` : ""}`)}
   </div>`;
+  html += retention(a.retention);
   html += `<section class="card" style="margin-top:12px">${table(days, [["app_users", "Открыли"], ["starts", "Старт"], ["sub_new", "+подп"], ["sub_off", "−подп"], ["blocked", "Блок"]])}</section>`;
   html += `<section class="card"><div class="card-title">Подписчики по командам</div>${bars(a.by_team, 6, "teams")}</section>`;
   html += `<section class="card"><div class="card-title">За кого болеют те, кто открыл сегодня</div>${bars(a.fans, 6, "fans")}</section>`;

@@ -473,7 +473,22 @@
     "name": "raskat",
     "n": 14
    }
-  ]
+  ],
+  "retention": {
+   "new": 1,
+   "back": 3,
+   "known": 180,
+   "d1": {
+    "of": 7,
+    "back": 0
+   },
+   "week": {
+    "of": 12,
+    "back": 1,
+    "days": 7
+   },
+   "sleeping": 96
+  }
  },
  "sends": {
   "log": [

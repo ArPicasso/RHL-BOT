@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -1152,6 +1153,129 @@ class StateFiles(unittest.TestCase):
             self.assertEqual(bot.load_announced(), {"2026-10-03|a|b"})
             bot.ANNOUNCED_FILE.write_text("{оборвалось")
             self.assertIsNone(bot.load_announced())   # не рассылаем всё заново
+
+
+class Calls(unittest.TestCase):
+    """Зовы (ADR-023): раскат дня по галочке и серии, прогноз — за два часа до матча."""
+
+    games = [{"id": "n1", "date": "2026-10-04", "home": "ryazan-vdv", "away": "belgorod", "time": "17:00"},
+             {"id": "n2", "date": "2026-10-04", "home": "tambov", "away": "sokol", "time": "19:00"}]
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.conn = sqlite3.connect(":memory:", isolation_level=None)
+        self.rs = bot.RaskatStore(self.conn)
+        self.pr = bot.predict.PredictStore(self.conn)
+        for name, value in (("REMINDED_FILE", self.dir / "reminded.json"),
+                            ("REMINDED", {}), ("LIVE_DIR", self.dir),
+                            ("_stores", (self.rs, self.pr))):
+            patch = mock.patch.object(bot, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+        env = mock.patch.dict(os.environ, {"RASKAT_API": "https://rhl.example/api/raskat"})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def at(self, hhmm, day="2026-10-04"):
+        return datetime.fromisoformat(f"{day}T{hhmm}:00+03:00")
+
+    def solve(self, fan, day):
+        self.rs.add(fan, day, None, 1000, False, lambda before: (10, 10), self.at("12:00"))
+
+    def run_call(self, which, now, say=None, subs=None):
+        say = say or mock.AsyncMock()
+        with mock.patch.object(bot, "say", say), mock.patch.object(bot.asyncio, "sleep", mock.AsyncMock()), \
+                mock.patch.object(bot, "SUBS", subs if subs is not None else {}), \
+                mock.patch.object(bot, "save_subs"), \
+                mock.patch.object(bot, "published_league", mock.AsyncMock(return_value={"games": self.games})):
+            sent = asyncio.run(which(mock.Mock(), now))
+        return sent, say
+
+    # ---------- раскат ----------
+
+    def test_raskat_call_once_a_day_in_its_window(self):
+        self.rs.settings(1)
+        self.solve(1, "2026-10-03")
+        self.assertEqual(self.run_call(bot.raskat_call, self.at("10:30"))[0], 0)   # ещё рано
+        self.assertEqual(self.run_call(bot.raskat_call, self.at("21:30"))[0], 0)   # уже поздно
+        sent, say = self.run_call(bot.raskat_call, self.at("11:00"))
+        self.assertEqual((sent, say.call_args.args[1]), (1, 1))
+        self.assertIn("Серия 1 день", say.call_args.args[2]()[0])
+        self.assertEqual(self.run_call(bot.raskat_call, self.at("12:00"))[0], 0)   # второй раз за день — нет
+        self.assertEqual(bot.REMINDED["2026-10-04:raskat"]["sent"], ["1"])
+
+    def test_raskat_call_needs_the_server(self):
+        self.rs.settings(1)
+        self.solve(1, "2026-10-03")
+        with mock.patch.dict(os.environ, {"RASKAT_API": ""}):
+            self.assertEqual(self.run_call(bot.raskat_call, self.at("11:00"))[0], 0)
+
+    def test_blocked_fan_is_muted_in_the_base(self):
+        self.rs.settings(1)
+        self.solve(1, "2026-10-03")
+        err = bot.TelegramForbiddenError(method=mock.Mock(), message="bot was blocked by the user")
+        sent, _ = self.run_call(bot.raskat_call, self.at("11:00"), mock.AsyncMock(side_effect=err))
+        self.assertEqual(sent, 0)
+        self.assertFalse(self.rs.fan(1)["messages"])      # больше не зовём
+        self.assertEqual(self.rs.to_call("2026-10-04", "2026-09-27"), [])
+
+    def test_never_started_a_chat_is_muted_too(self):
+        self.rs.settings(1)
+        self.solve(1, "2026-10-03")
+        err = bot.TelegramBadRequest(method=mock.Mock(), message="chat not found")
+        self.run_call(bot.raskat_call, self.at("11:00"), mock.AsyncMock(side_effect=err))
+        self.assertFalse(self.rs.fan(1)["messages"])
+        other = bot.TelegramBadRequest(method=mock.Mock(), message="can't parse entities")
+        self.rs.settings(2, messages=True)
+        self.solve(2, "2026-10-03")
+        bot.REMINDED.clear()
+        self.run_call(bot.raskat_call, self.at("11:05"), mock.AsyncMock(side_effect=other))
+        self.assertTrue(self.rs.fan(2)["messages"])       # ошибка не про доставку — галочку не трогаем
+
+    # ---------- прогноз ----------
+
+    def test_predict_call_two_hours_before(self):
+        subs = {7: ["ryazan-vdv"], 8: ["sokol"]}
+        self.assertEqual(self.run_call(bot.predict_call, self.at("14:00"), subs=subs)[0], 0)   # рано
+        self.assertEqual(self.run_call(bot.predict_call, self.at("16:50"), subs=subs)[0], 0)   # поздно
+        sent, say = self.run_call(bot.predict_call, self.at("15:10"), subs=subs)
+        self.assertEqual((sent, say.call_args.args[1]), (1, 7))                               # у 8 матч в 19:00
+        text, kb = say.call_args.args[2]()
+        self.assertIn("Голосов пока нет", text)
+        self.assertIn("Рязань-ВДВ — <b>Белгород</b>", text)
+        self.assertIn("Кто победит?", kb.inline_keyboard[0][0].text)
+
+    def test_predict_call_skips_those_who_voted(self):
+        self.pr.vote(7, "2026-10-04|ryazan-vdv|belgorod", "home", self.at("12:00"))
+        self.pr.vote(9, "2026-10-04|ryazan-vdv|belgorod", "away", self.at("12:00"))
+        sent, say = self.run_call(bot.predict_call, self.at("15:10"), subs={7: ["belgorod"], 10: ["belgorod"]})
+        self.assertEqual((sent, say.call_args.args[1]), (1, 10))
+        self.assertIn("Трибуна: 50% за «Рязань-ВДВ» · 2 голоса", say.call_args.args[2]()[0])
+
+    def test_one_predict_call_per_day_even_with_two_teams(self):
+        subs = {7: ["ryazan-vdv", "sokol"]}
+        sent, say = self.run_call(bot.predict_call, self.at("15:10"), subs=subs)
+        self.assertEqual(sent, 1)
+        self.assertEqual(bot.REMINDED["2026-10-04:predict"]["sent"], ["7"])
+        self.assertEqual(self.run_call(bot.predict_call, self.at("17:10"), subs=subs)[0], 0)   # матч в 19:00 — молчим
+
+    def test_started_match_gets_no_call(self):
+        live = {"date": "2026-10-04", "updated": "2026-10-04T15:05:00+03:00",
+                "games": [{"date": "2026-10-04", "home": "ryazan-vdv", "away": "belgorod",
+                           "start": "2026-10-04T17:00:00+03:00", "status": "live", "score": {"home": 1, "away": 0}}]}
+        (self.dir / "2026-10-04.json").write_text(json.dumps(live), encoding="utf-8")
+        self.assertEqual(self.run_call(bot.predict_call, self.at("15:10"), subs={7: ["ryazan-vdv"]})[0], 0)
+
+    def test_night_is_silent_for_both(self):
+        self.rs.settings(1)
+        self.solve(1, "2026-10-03")
+        self.assertEqual(self.run_call(bot.raskat_call, self.at("23:30"))[0], 0)
+        self.assertEqual(self.run_call(bot.predict_call, self.at("23:30"), subs={7: ["ryazan-vdv"]})[0], 0)
+
+    def test_no_base_no_calls(self):
+        with mock.patch.object(bot, "_stores", None), mock.patch.object(bot, "STATE_DB", self.dir / "нет.db"):
+            self.assertEqual(self.run_call(bot.raskat_call, self.at("11:00"))[0], 0)
+            self.assertEqual(self.run_call(bot.predict_call, self.at("15:10"), subs={7: ["ryazan-vdv"]})[0], 0)
 
 
 if __name__ == "__main__":

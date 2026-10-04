@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import re
+import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -20,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 import admin
+import predict
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -28,6 +30,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, Teleg
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup,
                            MenuButtonWebApp, Message, ReplyKeyboardRemove, WebAppInfo)
+from raskat_store import RaskatStore
 
 BASE = Path(__file__).parent
 TZ = ZoneInfo("Europe/Moscow")
@@ -43,6 +46,12 @@ WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://arpicasso.github.io/RHL-BO
 REMIND_TODAY_AT = time(10, 0)      # утром в день игры
 REMIND_TOMORROW_AT = time(19, 0)   # вечером накануне
 REMIND_CATCHUP = timedelta(hours=3)   # бот стоял в свой час — догоняем, пока напоминание не устарело
+# зовы (ADR-023): раскат дня — раз в день в это окно, прогноз — за это время до начала матча
+STATE_DB = Path(os.environ.get("STATE_DB") or BASE / "state.db")
+RASKAT_CALL_FROM, RASKAT_CALL_TO = time(11, 0), time(21, 0)
+RASKAT_CALL_DAYS = 7               # не играл столько дней — не зовём: это уже не удержание
+PREDICT_CALL_BEFORE = timedelta(hours=2)      # за столько до начала зовём голосовать
+PREDICT_CALL_LAST = timedelta(minutes=15)     # ближе к свистку уже не успеть
 REMIND_TRIES = 6                   # столько раз возвращаемся к слоту, у которого были неудачи
 CATCHUP_EVERY = 300                # как часто цикл напоминаний проверяет, не пропустил ли слот
 REMINDED_KEEP = 3                  # дней истории напоминаний держим в reminded.json
@@ -831,12 +840,10 @@ def reminder_text(m: dict | Game, kind: str, team: str | None = REMIND_TEAM_ID,
     home, away = m["home"], m["away"]
     city = (TEAM_INFO.get(home) or {}).get("city")
     at = f", {html.escape(city)}" if city else ""
+    teams_line = teams_html(m, team)
     if team in (home, away):
-        opp = away if team == home else home
-        teams_line = f"{html.escape(tname(team))} — <b>{html.escape(tname(opp))}</b>"
         where = (f"{e('home')} Дома" if team == home else f"{e('away')} На выезде") + at
     else:
-        teams_line = f"<b>{html.escape(tname(home))}</b> — <b>{html.escape(tname(away))}</b>"
         where = f"📍 {html.escape(city)}" if city else ""
     lines = [f"{e('bell')} <b>{head}</b>", "", teams_line, f"{DOW[d.weekday()]} {d:%d.%m} · {when}"]
     lines += [where] if where else []
@@ -845,6 +852,14 @@ def reminder_text(m: dict | Game, kind: str, team: str | None = REMIND_TEAM_ID,
     if warm := warmup_text(m, team, games):
         lines += ["", warm]
     return "\n".join(lines)
+
+
+def teams_html(m: dict, team: str | None) -> str:
+    """Строка «кто с кем»: своя команда обычным, соперник жирным; чужой матч — обе жирным."""
+    home, away = m["home"], m["away"]
+    if team in (home, away):
+        return f"{html.escape(tname(team))} — <b>{html.escape(tname(away if team == home else home))}</b>"
+    return f"<b>{html.escape(tname(home))}</b> — <b>{html.escape(tname(away))}</b>"
 
 
 def predict_on() -> bool:
@@ -936,8 +951,8 @@ def pending_results(league: dict | None, ready: list[dict], announced: set[str],
     return out
 
 # ---------- «Раскат»: игра дня и лист ожидания зачёта ----------
-# Игра живёт в мини-аппе; бот только ведёт в неё и зовёт, когда включат зачёт (контракт, раздел 6).
-# Ежедневных напоминаний про раскат нет: бот не знает, кто уже собрал.
+# Игра живёт в мини-аппе; бот ведёт в неё, зовёт, когда включат зачёт (контракт, раздел 6), и раз
+# в день напоминает тем, у кого серия и галочка «сообщения о Раскате» (ADR-023, раздел 2).
 
 def raskat_api() -> str:
     """Адрес сервера зачётов. Пусто — играем без зачёта, есть — зачёт включили."""
@@ -1455,6 +1470,17 @@ def remind_mark(cid: int, m: dict) -> str:
     return f"{cid}|{match_key(m)}"
 
 
+def ledger(day: date, kind: str) -> dict:
+    """Запись журнала дня: кому из рассылки или зова (ADR-023) уже написали."""
+    return REMINDED.setdefault(slot_key(day, kind), {"done": False, "tries": 0, "sent": []})
+
+
+def remember(rec: dict, mark: str, now: datetime) -> None:
+    """Отметить и сразу записать на диск: перезапуск посреди рассылки её не повторит."""
+    rec["sent"].append(mark)
+    save_reminded(REMINDED, now.date())
+
+
 async def send_reminders(bot: Bot, kind: str, day: date, league: dict | None,
                          rec: dict | None = None, now: datetime | None = None) -> tuple[int, int]:
     """Напоминания о матчах дня day подписчикам их команд. Утром — со стикером «Сегодня игра».
@@ -1483,9 +1509,8 @@ async def send_reminders(bot: Bot, kind: str, day: date, league: dict | None,
                 await send_sticker(bot, cid, "gameday")
             await say(bot, cid, lambda m=m, team=team: (reminder_text(m, kind, team, games), match_kb(m)))
             sent += 1
-            if rec is not None:   # после каждого: перезапуск посреди рассылки её не повторит
-                rec["sent"].append(mark)
-                save_reminded(REMINDED, now.date())
+            if rec is not None:
+                remember(rec, mark, now)
         except TelegramForbiddenError:   # бота заблокировали
             unsubscribe(cid, blocked=True)
             failed += 1
@@ -1522,6 +1547,144 @@ async def fire_reminder(bot: Bot, day: date, kind: str, now: datetime | None = N
     return sent
 
 
+# ---------- зовы: раскат дня и прогноз (ADR-023) ----------
+
+# Мини-апп обещает «сообщения о Раскате» галочкой в настройках (raskat_fans.messages), и исполнить
+# это обещание может только бот. База — та же, что у службы api: в WAL читателей сколько угодно.
+
+_stores: tuple | None = None
+
+
+def stores() -> tuple:
+    """(зачёт «Раската», прогнозы) из state.db. Базы нет — (None, None): зовов не будет."""
+    global _stores
+    if _stores is None:
+        if not STATE_DB.exists():
+            return None, None
+        conn = sqlite3.connect(STATE_DB, isolation_level=None, check_same_thread=False)
+        conn.execute("PRAGMA busy_timeout=5000")
+        _stores = (RaskatStore(conn), predict.PredictStore(conn))
+    return _stores
+
+
+def cant_reach(err: Exception) -> bool:
+    """Telegram этому человеку не доставит: заблокировал бота или не начинал диалог."""
+    if isinstance(err, TelegramForbiddenError):
+        return True
+    return isinstance(err, TelegramBadRequest) and bool(
+        re.search(r"chat not found|can't initiate|user is deactivated", str(err), re.I))
+
+
+def in_window(now: datetime, since: time, until: time) -> bool:
+    t = now.astimezone(TZ).time()
+    return since <= t < until
+
+
+def raskat_call_text(streak: int) -> str:
+    """Зов в раскат дня. Серия — единственная причина, по которой он работает."""
+    if streak:
+        days = plural(streak, "день", "дня", "дней")
+        head = f"{e('fire')} <b>Серия {streak} {days}</b>"
+        tail = "Раскат на сегодня готов. Не соберёшь — серия оборвётся."
+    else:
+        head = f"{e('stick')} <b>Раскат на сегодня готов</b>"
+        tail = "Поле дня уже ждёт: очки за скорость, серия за дни подряд."
+    return f"{head}\n\n{tail}"
+
+
+async def raskat_call(bot: Bot, now: datetime) -> int:
+    """Зов в раскат дня (ADR-023, раздел 2): раз в день тем, у кого стоит галочка и кто играл
+    на этой неделе, но сегодня ещё не собрал. Отказ Telegram снимает галочку: больше не зовём."""
+    rs, _ = stores()
+    if rs is None or not raskat_api() or quiet(now) or not in_window(now, RASKAT_CALL_FROM, RASKAT_CALL_TO):
+        return 0
+    day = now.astimezone(TZ).date()
+    rec = ledger(day, "raskat")
+    was = set(rec["sent"])
+    since = (day - timedelta(days=RASKAT_CALL_DAYS)).isoformat()
+    sent = off = 0
+    for fan, streak in rs.to_call(day.isoformat(), since):
+        if str(fan) in was:
+            continue
+        try:
+            await say(bot, fan, lambda st=streak: (raskat_call_text(st), raskat_kb()))
+            sent += 1
+        except Exception as err:
+            if cant_reach(err):
+                rs.settings(fan, messages=False)
+                off += 1
+            else:
+                logging.exception("raskat call failed")
+        remember(rec, str(fan), now)   # и при отказе: второй раз за день не пробуем
+        await asyncio.sleep(0.05)
+    if sent or off:
+        TRACK.add("raskat_call", sent)
+        TRACK.add("raskat_call_off", off)
+        TRACK.note({"kind": "raskat_call", "sent": sent, "off": off})
+        TRACK.flush()
+    return sent
+
+
+def predict_call_text(m: dict, team: str | None, home: int, away: int) -> str:
+    """Зов на прогноз: кто играет, когда, что думает трибуна. Голосуют в мини-аппе (ADR-020)."""
+    h, a = predict.shares(home, away)
+    votes = home + away
+    teams_line = teams_html(m, team)
+    when = start_of(m)
+    lines = [f"{e('fire')} <b>Кто победит?</b>", "", teams_line]
+    lines.append(f"Сегодня в {when.astimezone(TZ):%H:%M} МСК" if when else "Сегодня")
+    if votes:
+        side = m["home"] if h >= a else m["away"]
+        lines += ["", f"Трибуна: {max(h, a)}% за «{html.escape(tname(side))}» · "
+                      f"{votes} {plural(votes, 'голос', 'голоса', 'голосов')}"]
+    else:
+        lines += ["", "Голосов пока нет — твой будет первым."]
+    lines += ["", "Голос принимается до стартового свистка."]
+    return "\n".join(lines)
+
+
+async def predict_call(bot: Bot, now: datetime) -> int:
+    """Зов на прогноз (ADR-023, раздел 3): по одному на человека в день, за два часа до матча.
+    Матчи отсортированы по началу, поэтому зовём на ближайший неотголосованный."""
+    _, pr = stores()
+    if pr is None or not predict_on() or quiet(now):
+        return 0
+    day = now.astimezone(TZ).date()
+    rec = ledger(day, "predict")
+    was = set(rec["sent"])
+    ms = sort_matches(day_matches(day, await published_league(), read_live(f"{day.isoformat()}.json"),
+                                  read_live("schedule.json"), now))
+    sent = 0
+    for m in ms:
+        start = start_of(m)
+        if start is None or not (start - PREDICT_CALL_BEFORE <= now < start - PREDICT_CALL_LAST):
+            continue
+        if m.get("score") or m.get("status") in predict.CLOSED:   # уже идёт, кончился или перенесён
+            continue
+        key = match_key(m)
+        voted = pr.voted(key)
+        home, away = pr.counts(key)
+        for cid, team in recipients(SUBS, m):
+            if str(cid) in was or cid in voted:
+                continue
+            try:
+                await say(bot, cid, lambda m=m, team=team: (predict_call_text(m, team, home, away), match_kb(m)))
+                sent += 1
+            except Exception as err:
+                if cant_reach(err):
+                    unsubscribe(cid, blocked=True)
+                else:
+                    logging.exception("predict call failed")
+            was.add(str(cid))
+            remember(rec, str(cid), now)
+            await asyncio.sleep(0.05)
+    if sent:
+        TRACK.add("predict_call", sent)
+        TRACK.note({"kind": "predict_call", "sent": sent})
+        TRACK.flush()
+    return sent
+
+
 async def reminder_loop(bot: Bot):
     """Один путь и для напоминания в свой час, и для догона: слот уходит, как только пришло его
     время и он ещё не закрыт. Просыпаемся к ближайшему слоту, но не реже CATCHUP_EVERY — иначе
@@ -1532,6 +1695,11 @@ async def reminder_loop(bot: Bot):
         for day, kind in due_slots(now, REMINDED):
             logging.info("напоминание %s", slot_key(day, kind))
             await fire_reminder(bot, day, kind, now)
+        for call in (raskat_call, predict_call):   # зовы ADR-023: по одному на человека в день
+            try:
+                await call(bot, datetime.now(TZ))
+            except Exception:
+                logging.exception("%s failed", call.__name__)
         now = datetime.now(TZ)
         at, _ = next_reminder(now)
         await asyncio.sleep(max(1.0, min((at - now).total_seconds(), CATCHUP_EVERY)))

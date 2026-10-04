@@ -173,6 +173,22 @@ class RaskatStore:
                 return r[0]
         return 0
 
+    def to_call(self, today: str, since: str) -> list[tuple[int, int]]:
+        """Кого звать в раскат дня (ADR-023, раздел 2): (болельщик, серия сейчас).
+
+        Галочка `messages` включена, сегодняшнего результата нет, а за последние дни (с `since`)
+        хотя бы один есть: того, кто не играл неделю, ежедневный зов только раздражает. Серия —
+        вчерашняя: с ней её ещё можно продлить."""
+        yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
+        rows = self.conn.execute(
+            "SELECT f.fan, COALESCE(y.streak, 0) FROM raskat_fans f "
+            "JOIN raskat_results a ON a.fan = f.fan AND a.date >= ? AND a.date < ? "
+            "LEFT JOIN raskat_results y ON y.fan = f.fan AND y.date = ? "
+            "WHERE f.messages = 1 AND NOT EXISTS "
+            "  (SELECT 1 FROM raskat_results t WHERE t.fan = f.fan AND t.date = ?) "
+            "GROUP BY f.fan ORDER BY f.fan", (since, today, yesterday, today)).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
     def forget(self, fan: int) -> None:
         """Стереть всё о болельщике: результаты, серию, код дуэли, настройки (ADR-018, раздел 3.9)."""
         with self.conn:

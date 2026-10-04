@@ -185,3 +185,22 @@ class Bot(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProbeVk(unittest.TestCase):
+    """tools/probe_vk.py: метки времени со страницы VK и начало записи по опорам админа."""
+
+    def setUp(self):
+        sys.path.insert(0, str(ROOT / "tools"))
+        import probe_vk
+        self.p = probe_vk
+
+    def test_stamps_and_durations(self):
+        page = '{"date":1791040800,"duration":9000,"views":1234567890} var added = 1791040500; "len": "45"'
+        self.assertEqual(self.p.stamps(page), {"date": {1791040800}, "added": {1791040500}})
+        self.assertEqual(self.p.durations(page), {9000})   # 45 секунд — не матч
+
+    def test_true_start_from_first_anchor(self):
+        entry = {"anchors": {"1:0": 1800, "2:1": 4800}}
+        self.assertEqual(self.p.true_start(entry, GAME), msk("2026-10-03T16:51:30"))   # 17:21:30 минус 30 минут
+        self.assertIsNone(self.p.true_start({"anchors": {"2:2": 7000}}, GAME))       # опора без времени по часам

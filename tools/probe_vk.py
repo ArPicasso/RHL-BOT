@@ -9,6 +9,9 @@
 с настоящим началом. Метка, у которой расхождение на всех матчах в пределах полуминуты, — то, что нужно:
 повторы можно считать сами. Если задан VK_TOKEN — ещё и ответ video.get.
 
+В конце — сводка: поле → расхождение на каждом матче и вердикт по порогу ADR-028 (раздел 1): ±30 с на всех
+размеченных матчах, матчей не меньше трёх. Её и присылать целиком.
+
 Страницы кладёт в probe/vk/ — из них фикстуры tests/. Запросы по одному с паузой в секунду.
 """
 import argparse
@@ -32,6 +35,8 @@ TZ = ZoneInfo("Europe/Moscow")
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36"
 PAUSE = 1.0
 STAMP_RE = re.compile(r'"?([A-Za-z_]{2,40})"?\s*[:=]\s*"?(1[7-9]\d{8})\b')   # «"date":1791100000» — 2023–2033 годы
+AGREE = 30          # с: поле годится в опору, если расходится с началом записи не больше (ADR-028, раздел 1)
+MIN_GAMES = 3       # и так на каждом из стольких размеченных матчей
 DURATION_RE = re.compile(r'"?(duration|video_duration|len)"?\s*[:=]\s*"?(\d{2,5})\b')
 
 
@@ -68,7 +73,9 @@ def video_ids(video: str) -> tuple[str, str] | None:
     return (m.group(1), m.group(2)) if m else None
 
 
-def report(name: str, page: str, start: datetime | None) -> None:
+def report(name: str, page: str, start: datetime | None, sink: dict | None = None) -> None:
+    """Печатает метки страницы и их расхождение с началом записи. sink — {«источник поле»: [расхождения]}
+    для сводки: у поля бывает несколько значений, а метка «минус длительность» — отдельное поле."""
     found, lens = stamps(page), durations(page)
     print(f"  {name}: {len(page)} знаков, меток времени {sum(len(v) for v in found.values())}, длительности {sorted(lens) or '—'}")
     for key, vals in sorted(found.items()):
@@ -78,9 +85,14 @@ def report(name: str, page: str, start: datetime | None) -> None:
             ends = "".join(f"; минус {d} с — {round((dt - timedelta(seconds=d) - start).total_seconds()):+d} с"
                            for d in sorted(lens)) if start else ""
             print(f"    {key} = {dt:%d.%m %H:%M:%S}{diff}{ends}")
+            if start and sink is not None:
+                sink.setdefault(f"{name} {key}", []).append(round((dt - start).total_seconds()))
+                for d in lens:
+                    sink.setdefault(f"{name} {key} − duration", []).append(
+                        round((dt - timedelta(seconds=d) - start).total_seconds()))
 
 
-def probe_video(video: str, start: datetime | None, out: Path, token: str | None) -> None:
+def probe_video(video: str, start: datetime | None, out: Path, token: str | None, sink: dict | None = None) -> None:
     ids = video_ids(video)
     if not ids:
         print(f"  не ролик VK: {video}")
@@ -97,7 +109,7 @@ def probe_video(video: str, start: datetime | None, out: Path, token: str | None
         finally:
             time.sleep(PAUSE)
         (out / f"{oid}_{vid}_{name}.html").write_text(page, encoding="utf-8")
-        report(name, page, start)
+        report(name, page, start, sink)
     if token:
         url = (f"https://api.vk.com/method/video.get?videos={oid}_{vid}&extended=1&v=5.199&access_token={token}")
         try:
@@ -112,7 +124,19 @@ def probe_video(video: str, start: datetime | None, out: Path, token: str | None
             print(f"  video.get: ошибка {data['error'].get('error_code')} — {data['error'].get('error_msg')}")
             return
         (out / f"{oid}_{vid}_api.json").write_text(body, encoding="utf-8")
-        report("video.get", body, start)
+        report("video.get", body, start, sink)
+
+
+def verdict(seen: dict[str, dict[str, int]], games: list[str]) -> list[str]:
+    """Сводка: поле → лучшее расхождение на каждом матче (у поля бывает несколько значений) и вердикт.
+    seen — {поле: {матч: расхождение, с}}, games — матчи с началом по опоре."""
+    lines = []
+    for field, per in sorted(seen.items(), key=lambda x: (-len(x[1]), max(abs(v) for v in x[1].values()))):
+        worst = max(abs(v) for v in per.values())
+        ok = len(per) == len(games) and len(games) >= MIN_GAMES and worst <= AGREE
+        cells = ", ".join(f"{g.split('|', 1)[1]}: {per[g]:+d}" if g in per else f"{g.split('|', 1)[1]}: —" for g in games)
+        lines.append(f"  {'ГОДИТСЯ' if ok else 'нет':7} {field}: {cells}")
+    return lines
 
 
 def main() -> None:
@@ -135,6 +159,8 @@ def main() -> None:
         print(f"В {args.live / 'replays.json'} нет размеченных матчей: сначала /replay в боте, "
               "или --video <ссылка>, чтобы просто посмотреть метки")
         return
+    seen: dict[str, dict[str, int]] = {}
+    games_ok: list[str] = []
     for key, entry in sorted(marked.items()):
         day = key.split("|")[0]
         try:
@@ -145,8 +171,15 @@ def main() -> None:
         start = true_start(entry, game) if game else None
         print(f"\n{key} · {entry.get('video')}")
         print(f"  начало записи по опоре: {start:%d.%m %H:%M:%S}" if start else "  начала по опоре нет: гол-опора без времени по часам")
-        probe_video(entry.get("video") or "", start, args.out, token)
-    print(f"\nСтраницы — в {args.out}. Ищем поле, у которого расхождение на всех матчах в пределах ±30 с.")
+        sink: dict[str, list[int]] = {}
+        probe_video(entry.get("video") or "", start, args.out, token, sink)
+        if start:
+            games_ok.append(key)
+            for field, diffs in sink.items():
+                seen.setdefault(field, {})[key] = min(diffs, key=abs)
+    print(f"\nСводка: матчей с началом по опоре {len(games_ok)}, порог ±{AGREE} с на каждом, матчей не меньше {MIN_GAMES}")
+    print("\n".join(verdict(seen, games_ok)) or "  ни одной метки времени VK не нашлось")
+    print(f"\nСтраницы — в {args.out}. Пришли этот вывод целиком (ADR-028, раздел 1).")
 
 
 if __name__ == "__main__":

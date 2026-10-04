@@ -13,6 +13,7 @@ raskat_waitlist.json
 alerted.json
 reminded.json
 goals_off.json
+feedback.json
 schedule.json
 schedule.tmp
 state.db

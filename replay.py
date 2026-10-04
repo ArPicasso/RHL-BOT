@@ -8,13 +8,14 @@ VK открывает ролик с нужного места по `?t=14m32s`. 
 часам сменился счёт: `at` у события `goal` в live/<дата>.json. Разница по часам между двумя голами — это и
 разница между ними в записи, если трансляция шла без разрывов.
 
-Не хватает одной связки «секунда записи ↔ время по часам». Её даёт админ: в боте (/replay) выбирает гол,
-ставит запись на момент, когда шайба в воротах, и присылает ссылку VK «с текущим временем». Это опора:
-у самого этого гола повтор точный, у остальных — опора плюс разница по часам с ближайшей опорой. Опор может
-быть несколько, по одной на гол: трансляция прервалась в перерыве — отмечают по голу в каждом периоде.
+Не хватает одной связки «секунда записи ↔ время по часам». Её даёт админ в боте (/replay): ссылка на
+запись и времена всех голов по порядку одним сообщением — тогда все повторы точные, — или время одного гола.
+Отмеченный гол — опора: у него повтор точный, у остальных голов того же периода — опора плюс разница по часам.
 
-Точность расчётного: служба замечает гол в течение 30 секунд, поэтому расчётный повтор начинается за
-GUESS_LEAD до оценки — болельщик попадает за 15–75 секунд до гола. Точный — за EXACT_LEAD: видно атаку.
+Разметка 04.10.2026 (три матча, 13 голов) показала, почему только внутри периода: сайт лиги отмечает гол
+с запозданием от нуля до полутора минут, а между периодами разница по часам и в записи расходилась на 5–7
+минут (трансляцию прерывали в перерыве или сайт отметил гол сильно позже). Поэтому расчётный повтор
+начинается за GUESS_LEAD до оценки, а из другого периода не считается. Точный — за EXACT_LEAD: видно атаку.
 """
 import re
 from datetime import datetime
@@ -23,12 +24,12 @@ from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo("Europe/Moscow")
 EXACT_LEAD = 10    # секунд до отмеченного админом момента: видно, как развивалась атака
-GUESS_LEAD = 45    # у расчётного: 30 секунд — шаг опроса службы live, ещё 15 — начало атаки
+GUESS_LEAD = 60    # у расчётного: запоздание сайта лиги в одном периоде — до полутора минут (04.10.2026)
 MAX_T = 6 * 3600   # трансляция матча не длиннее шести часов: больше — ошибка в ссылке
 VK_HOSTS = ("vk.com", "vk.ru", "m.vk.com", "m.vk.ru", "vkvideo.ru", "m.vkvideo.ru")
 SCORE_RE = re.compile(r"\d{1,2}:\d{1,2}")
 
-_VIDEO_RE = re.compile(r"video(-?\d{1,12})_(\d{1,12})")
+_VIDEO_RE = re.compile(r"(?:video|live)(-?\d{1,12})_(\d{1,12})")   # запись эфира — vkvideo.ru/live-X_Y
 _T_RE = re.compile(r"(?:(\d{1,2})h)?(?:(\d{1,3})m)?(?:(\d{1,5})s?)?")
 _CLOCK_RE = re.compile(r"(?:(\d{1,2}):)?(\d{1,3}):(\d{2})")
 
@@ -55,7 +56,8 @@ def parse_clock(text: str) -> int | None:
 def parse_link(text: str) -> tuple[str, int | None] | None:
     """Ссылка VK на ролик → (страница ролика `https://vk.com/video-X_Y`, секунда из `t` или None).
 
-    Понимает vk.com и vkvideo.ru: `/video-X_Y?t=…`, `/video?z=video-X_Y…&t=…`, плеер `video_ext.php?oid=&id=`.
+    Понимает vk.com и vkvideo.ru: `/video-X_Y?t=…`, запись эфира `/live-X_Y`, `/video?z=video-X_Y…&t=…`, плеер
+    `video_ext.php?oid=&id=`. У записи эфира тот же номер ролика: лига публикует её как `vk.com/video-X_Y`.
     В тексте может быть что-то ещё: берём первую ссылку. Не VK или не ролик — None."""
     m = re.search(r"https?://[^\s<>\"']+", text or "")
     if not m:
@@ -80,6 +82,18 @@ def parse_link(text: str) -> tuple[str, int | None] | None:
         oid, vid = v.groups()
     t = q.get("t")
     return f"https://vk.com/video{oid}_{vid}", parse_t(t) if t else None
+
+
+def parse_times(text: str) -> list[int]:
+    """Времена в записи из сообщения админа по порядку: «25:20», «1:08:03» — по строке или через пробел.
+    Ссылки выбрасываем: в них тоже бывают цифры. Что не разобралось как время — пропускаем."""
+    text = re.sub(r"https?://\S+", " ", text or "")
+    out = []
+    for tok in re.findall(r"(?<![\d:])(?:\d{1,2}:)?\d{1,3}:\d{2}(?![\d:])", text):
+        t = parse_clock(tok)
+        if t is not None:
+            out.append(t)
+    return out
 
 
 def fmt_t(sec: int) -> str:
@@ -119,19 +133,39 @@ def goals_of(game: dict) -> list[dict]:
     return out
 
 
+def with_protocol(goals: list[dict], protocol: list[dict] | None) -> list[dict]:
+    """Голы службы live, сверенные с протоколом: порядок, команда и период — по протоколу, время по часам —
+    от службы. Гол, которого служба не узнала (счёт вырос у обеих сторон между опросами), — без времени.
+    protocol — голы протокола без буллитов: [{score, team, period, author}]. Нет протокола — как есть."""
+    if not protocol:
+        return goals
+    seen = {g["score"]: g for g in goals}
+    out = []
+    for p in protocol:
+        if not (isinstance(p.get("score"), str) and SCORE_RE.fullmatch(p["score"])):
+            continue
+        g = seen.get(p["score"]) or {}
+        out.append({"score": p["score"], "team": p.get("team") or g.get("team"), "text": g.get("text") or p.get("author"),
+                    "period": p.get("period") or g.get("period"), "at": g.get("at")})
+    return out
+
+
 def place(goals: list[dict], anchors: dict[str, int]) -> list[dict]:
     """Секунда записи для каждого гола. anchors — {счёт после гола: секунда записи}, их отметил админ.
 
-    Отмеченный гол — точно (за EXACT_LEAD). Остальные — от ближайшей по часам опоры: её секунда плюс
-    разница по часам, минус GUESS_LEAD. Гол без времени по часам или без опор — без повтора."""
-    at = {g["score"]: g["at"] for g in goals}
-    marks = [(at[s], t) for s, t in anchors.items() if at.get(s)]
+    Отмеченный гол — точно (за EXACT_LEAD). Остальные — от ближайшей по часам опоры того же периода: её
+    секунда плюс разница по часам, минус GUESS_LEAD. Опоры в этом периоде нет, у гола нет времени по часам
+    или периода — без повтора: между периодами запись и часы расходятся на минуты."""
+    by = {g["score"]: g for g in goals}
+    marks = [(by[s]["at"], t, by[s].get("period")) for s, t in anchors.items()
+             if s in by and by[s].get("at") and by[s].get("period")]
     out = []
     for g in goals:
+        same = [m for m in marks if g.get("period") and m[2] == g["period"]]
         if g["score"] in anchors:
             t, exact = anchors[g["score"]] - EXACT_LEAD, True
-        elif g["at"] and marks:
-            a, mt = min(marks, key=lambda x: abs((g["at"] - x[0]).total_seconds()))
+        elif g.get("at") and same:
+            a, mt, _ = min(same, key=lambda x: abs((g["at"] - x[0]).total_seconds()))
             t, exact = mt + (g["at"] - a).total_seconds() - GUESS_LEAD, False
         else:
             continue
@@ -141,9 +175,9 @@ def place(goals: list[dict], anchors: dict[str, int]) -> list[dict]:
     return out
 
 
-def entry(game: dict, video: str, anchors: dict[str, int], now: datetime) -> dict:
+def entry(game: dict, video: str, anchors: dict[str, int], now: datetime, protocol: list[dict] | None = None) -> dict:
     """Запись матча в replays.json: ролик, опоры админа и готовые ссылки по голам."""
-    goals = place(goals_of(game), anchors)
+    goals = place(with_protocol(goals_of(game), protocol), anchors)
     for g in goals:
         g["url"] = at_link(video, g["t"])
     return {"video": video, "anchors": dict(sorted(anchors.items())), "goals": goals,

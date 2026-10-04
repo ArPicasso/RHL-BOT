@@ -80,7 +80,8 @@ jobs:
           for i, src in enumerate(dict.fromkeys(re.findall(r'<script[^>]+src="(/local/[^"]+\.js[^"]*)"', mc + home))):
               get(urljoin("https://rhl.fhr.ru/", src), f"rhl_js_{i}_" + re.sub(r"[^A-Za-z0-9]+", "_", src.split("/")[-1].split("?")[0]))
           # Каналы клубов в день матча: посты о ходе игры (t.me/s — превью без входа)
-          for ch in ("nmhlpervenstvo", "hcryazan_official", "rostovhc", "HCGvardiaKrd", "mhkbelgorod31"):
+          for ch in ("nmhlpervenstvo", "hcryazan_official", "rostovhc", "HCGvardiaKrd", "mhkbelgorod31",
+                     "hktverichi", "hcseverstal"):
               get(f"https://t.me/s/{ch}", f"tg_{ch}")
           get("https://r-hockey.ru/stat/temp/2027/30904/calendar?month=10", "rhockey_rhl_2026_10")
           get("https://online.khl.ru/online/", "khl_online_day")

@@ -16,6 +16,8 @@ goals_off.json
 feedback.json
 schedule.json
 schedule.tmp
+replays.json
+replays.tmp
 state.db
 state.db-*
 live/

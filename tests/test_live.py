@@ -690,6 +690,8 @@ class SiteEvents(unittest.TestCase):
         late = live.site_events({**old, "seen": at - timedelta(minutes=20)},
                                 {"status": "break", "period": None, "score": {"home": 2, "away": 0}}, "1", at)
         self.assertEqual([(e["kind"], e["period"]) for e in late], [("goal", None)])   # долго не видели: период неизвестен
+        self.assertTrue(late[0]["late"])                       # и время по часам — не время гола (ADR-027)
+        self.assertNotIn("late", both[0])
         start = live.site_events({"seen": at - timedelta(seconds=30), "status": None, "period": None, "score": None},
                                  {"status": "live", "period": "1", "score": {"home": 1, "away": 0}}, None, at)
         self.assertEqual([(e["kind"], e["text"], e["score"]) for e in start],

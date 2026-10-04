@@ -10,7 +10,8 @@ set -euo pipefail
 APP=${APP:-/opt/rhl}
 DEST=${BACKUP_DIR:-/var/backups/rhl}
 KEEP=${BACKUP_KEEP:-14}
-STATE="subscribers.json announced.json raskat_waitlist.json reminded.json goals_off.json"
+# live/replays.json — опоры повторов голов (ADR-027): их отмечает админ руками, заново не соберёшь
+STATE="subscribers.json announced.json raskat_waitlist.json reminded.json goals_off.json live/replays.json"
 day=$(date +%F)
 
 # Каталог заводит rhl-update: от пользователя rhl в /var/backups не создать
@@ -33,8 +34,9 @@ fi
 
 for f in $STATE; do
   if [ -f "$APP/$f" ]; then
-    cp -p "$APP/$f" "$DEST/${f%.json}-$day.json"
-    echo "$f → $DEST/${f%.json}-$day.json"
+    name=${f##*/}
+    cp -p "$APP/$f" "$DEST/${name%.json}-$day.json"
+    echo "$f → $DEST/${name%.json}-$day.json"
   fi
 done
 

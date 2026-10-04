@@ -3,7 +3,8 @@
 Весь интерфейс — в мини-аппе (ADR-003). У бота нет своей клавиатуры и меню команд: на всё он
 отвечает стикером и кнопкой «Открыть РХЛ» (ADR-005). Вторым планом — матчи дня (`/today`) и
 напоминания о любой команде лиги (`/team`, `/remind`) — ADR-019, раздел 8.
-Для админов — счётчики и пульс в status/bot.json и `/admin` с кнопкой пульта (ADR-021).
+Для админов — счётчики и пульс в status/bot.json и `/admin` с кнопкой пульта (ADR-021),
+`/replay` — опоры для повторов голов (ADR-027).
 """
 import asyncio
 import html
@@ -22,6 +23,7 @@ from zoneinfo import ZoneInfo
 import aiohttp
 import admin
 import predict
+import replay
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -78,6 +80,9 @@ ALERTS_FILE = admin.STATUS_DIR / admin.ALERTS_NAME   # список пробле
 ALERTED_FILE = BASE / "alerted.json"                 # о чём бот уже сказал админам: не повторяемся
 TRACK = admin.Tracker("bot")       # счётчики за день для пульта: без id и имён
 QUIET_FROM, QUIET_TO = time(23, 0), time(9, 0)   # ночью молчим, результат уйдёт утром
+REPLAYS_FILE = LIVE_DIR / "replays.json"    # повторы голов (ADR-027): опоры админа и ссылки, отдаёт сервер API
+REPLAY_DAYS = 3                    # матчи за столько дней, включая сегодня, можно разметить в /replay
+REPLAY_WAIT = timedelta(minutes=30)   # столько ждём ссылку после нажатия на гол
 
 DOW = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
@@ -1411,6 +1416,198 @@ async def h_admin(m: Message):
         return
     text, kb = admin_reply(m.chat.id, m.from_user.id if m.from_user else None)
     await m.answer(text, reply_markup=kb)
+
+
+# ---------- повторы голов (ADR-027) ----------
+# Лига публикует запись трансляции в VK целиком. Админ в /replay выбирает матч и гол, присылает ссылку VK
+# «с текущим временем» на момент гола — остальные голы бот считает сам по времени, когда служба live
+# заметила смену счёта (replay.py). Ответ — сразу ссылки на все голы: их можно проверить тут же.
+
+REPLAY_ASK: dict[int, tuple[str, int, str, datetime, str]] = {}   # чат админа → (дата, номер, счёт, когда, ключ)
+
+
+def load_replays() -> dict:
+    was = read_live(REPLAYS_FILE.name) or {}
+    games = was.get("games")
+    return {"games": games if isinstance(games, dict) else {}}
+
+
+def replay_days(now: datetime) -> list[str]:
+    return [(now.date() - timedelta(days=i)).isoformat() for i in range(REPLAY_DAYS)]
+
+
+def replay_game(day: str, i: int) -> dict | None:
+    """Матч из live/<дата>.json по номеру в списке дня. Номер — место в списке: live.py пишет его по порядку."""
+    games = (read_live(f"{day}.json") or {}).get("games") or []
+    return games[i] if 0 <= i < len(games) and isinstance(games[i], dict) else None
+
+
+def replay_matches(now: datetime) -> list[tuple[str, int, dict]]:
+    """Сыгранные и идущие матчи последних дней, где служба live видела хотя бы один гол со счётом."""
+    out = []
+    for day in replay_days(now):
+        for i, g in enumerate((read_live(f"{day}.json") or {}).get("games") or []):
+            if isinstance(g, dict) and replay.goals_of(g):
+                out.append((day, i, g))
+    return out
+
+
+def replay_title(day: str, g: dict) -> str:
+    sc = g.get("score") or {}
+    score = f" {sc.get('home')}:{sc.get('away')}" if sc else ""
+    return f"{day[8:10]}.{day[5:7]} {tname(g.get('home', ''))}{score} {tname(g.get('away', ''))}"
+
+
+def replay_text(day: str, g: dict, entry: dict | None) -> str:
+    """Голы матча и что с повторами: точный (отмечен), расчётный или нет. Ссылки — чтобы проверить сразу."""
+    links = {x["score"]: x for x in (entry or {}).get("goals") or []}
+    lines = [f"🎬 <b>{html.escape(replay_title(day, g))}</b>"]
+    if entry:
+        lines.append(f'Запись: {html.escape(entry["video"])}')
+    lines.append("")
+    for x in replay.goals_of(g):
+        who = html.escape(tname(g.get(x["team"]) or "")) if x["team"] in ("home", "away") else "?"
+        author = f" · {html.escape(x['text'])}" if x.get("text") else ""
+        at = f" · {x['at'].astimezone(TZ):%H:%M:%S}" if x.get("at") else " · без времени"
+        r = links.get(x["score"])
+        mark = (f' — <a href="{html.escape(r["url"])}">{"✅" if r["exact"] else "≈"} {replay.fmt_t(r["t"])}</a>'
+                if r else "")
+        lines.append(f"<b>{x['score']}</b> {who}{author}{at}{mark}")
+    lines.append("")
+    if entry:
+        lines.append("✅ — отмечен тобой, ≈ — посчитан от отмеченного (начинается чуть раньше гола). "
+                     "Расчётный мимо — нажми на этот гол и пришли его ссылку.")
+    else:
+        lines.append("Нажми на гол, поставь запись трансляции на момент, когда шайба в воротах, "
+                     "и пришли ссылку VK с текущим временем. Остальные голы посчитаю сам.")
+    return "\n".join(lines)
+
+
+def replay_kb(day: str, i: int, g: dict, entry: dict | None) -> InlineKeyboardMarkup:
+    rows, row = [], []
+    for x in replay.goals_of(g):
+        row.append(InlineKeyboardButton(text=f"🎯 {x['score']}", callback_data=f"rp:g:{day}:{i}:{x['score']}"))
+        if len(row) == 4:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    if entry:
+        rows.append([InlineKeyboardButton(text="Сбросить повторы матча", callback_data=f"rp:x:{day}:{i}")])
+    rows.append([InlineKeyboardButton(text="← Матчи", callback_data="rp:list")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def replay_list(now: datetime) -> tuple[str, InlineKeyboardMarkup | None]:
+    found = replay_matches(now)
+    if not found:
+        return ("Нет матчей, где служба live видела голы, за последние дни. Повтор считается от времени, "
+                "когда сменился счёт на сайте лиги, — без него не из чего.", None)
+    marked = load_replays()["games"]
+    kb = [[InlineKeyboardButton(text=("✅ " if match_key(g) in marked else "") + replay_title(day, g),
+                                callback_data=f"rp:m:{day}:{i}")] for day, i, g in found[:30]]
+    return "Повторы голов: выбери матч.", InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def replay_save(day: str, i: int, score: str, text: str, now: datetime, key: str | None = None) -> tuple[str, dict | None]:
+    """Ссылка или время от админа → опора для гола score, пересчёт и запись replays.json.
+    key — ключ матча на момент нажатия: в файл дня успел добавиться матч — номер уже чужой.
+    Возвращает (ошибка или пусто, запись матча)."""
+    g = replay_game(day, i)
+    if not g or key and match_key(g) != key:
+        return "Матч пропал из файла службы live — открой /replay заново.", None
+    data = load_replays()
+    key = match_key(g)
+    old = data["games"].get(key) or {}
+    got = replay.parse_link(text)
+    if got:
+        video, t = got
+        if t is None:
+            return ("В ссылке нет времени. В VK: ⋯ → «Копировать ссылку с текущим временем» — "
+                    "в ней будет ?t=…", None)
+    else:
+        t, video = replay.parse_clock(text), old.get("video")
+        if t is None:
+            return "Не понял. Пришли ссылку VK на ролик с временем или, если ролик уже знаю, время: 14:32.", None
+        if not video:
+            return "Ролика этого матча ещё не знаю: первый раз пришли ссылку VK, не только время.", None
+    anchors = dict(old.get("anchors") or {}) if old.get("video") == video else {}
+    anchors[score] = t
+    entry = replay.entry(g, video, anchors, now)
+    data["games"][key] = entry
+    data["updated"] = admin.iso(now)
+    write_atomic(REPLAYS_FILE, data)
+    return "", entry
+
+
+def replay_drop(day: str, i: int, now: datetime) -> None:
+    g = replay_game(day, i)
+    data = load_replays()
+    if g and data["games"].pop(match_key(g), None) is not None:
+        data["updated"] = admin.iso(now)
+        write_atomic(REPLAYS_FILE, data)
+
+
+def replay_waiting(m: Message) -> bool:
+    """Ждём ли от этого чата ссылку на момент гола (нажал гол в /replay не дольше REPLAY_WAIT назад)."""
+    ask = REPLAY_ASK.get(m.chat.id)
+    return bool(ask and m.text and m.from_user and m.from_user.id in ADMIN_IDS
+                and datetime.now(TZ) - ask[3] <= REPLAY_WAIT)
+
+
+@dp.message(Command("replay"))   # только админам, в меню команд её нет
+async def h_replay(m: Message):
+    if m.chat.type != "private" or not m.from_user or m.from_user.id not in ADMIN_IDS:
+        return
+    text, kb = replay_list(datetime.now(TZ))
+    await m.answer(text, reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("rp:"))
+async def cb_replay(c: CallbackQuery):
+    if not c.from_user or c.from_user.id not in ADMIN_IDS or not c.message:
+        await c.answer()
+        return
+    now = datetime.now(TZ)
+    parts = c.data.split(":", 4)
+    if parts[1] == "list":
+        await safe_edit(c, lambda: replay_list(now))
+        await c.answer()
+        return
+    day, i = parts[2], int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else -1
+    g = replay_game(day, i)
+    if not g:
+        await c.answer("Матч пропал из файла службы live — открой /replay заново", show_alert=True)
+        return
+    if parts[1] == "x":
+        replay_drop(day, i, now)
+        REPLAY_ASK.pop(c.message.chat.id, None)
+    if parts[1] == "g" and len(parts) == 5:
+        REPLAY_ASK[c.message.chat.id] = (day, i, parts[4], now, match_key(g))
+        await c.answer()
+        video = (load_replays()["games"].get(match_key(g)) or {}).get("video")
+        await c.message.answer(
+            f"Гол <b>{html.escape(parts[4])}</b>. Поставь запись на момент, когда шайба в воротах, и пришли ссылку: "
+            "в VK ⋯ → «Копировать ссылку с текущим временем»."
+            + (" Ролик уже знаю — хватит и времени в записи: 14:32." if video else ""))
+        return
+    entry = load_replays()["games"].get(match_key(g))
+    await safe_edit(c, lambda: (replay_text(day, g, entry), replay_kb(day, i, g, entry)))
+    await c.answer()
+
+
+@dp.message(replay_waiting)   # раньше h_lost: ссылка от админа — не «непонятое сообщение»
+async def h_replay_link(m: Message):
+    day, i, score, _, key = REPLAY_ASK[m.chat.id]
+    now = datetime.now(TZ)
+    err, entry = replay_save(day, i, score, m.text, now, key)
+    if err:
+        await m.answer(err)
+        return
+    REPLAY_ASK.pop(m.chat.id, None)
+    g = replay_game(day, i)
+    await m.answer(replay_text(day, g, entry), reply_markup=replay_kb(day, i, g, entry),
+                   disable_web_page_preview=True)
 
 
 # ---------- болельщик пишет живому человеку (ADR-025) ----------

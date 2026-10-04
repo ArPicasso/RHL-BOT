@@ -1350,6 +1350,8 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 }
 .go svg { flex: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .go:active { transform: scale(.97); }
+.go.replay { display: flex; width: max-content; min-height: 30px; margin-top: 8px; padding: 0 12px; font-size: 12px; }
+.go.replay::after { content: ""; position: absolute; inset: -5px 0; }   /* нажатие — 40px, как у .go */
 .go-row.short { gap: 6px; margin-top: 8px; padding-left: 76px; }
 .go-row.short .go { min-height: 32px; padding: 0 12px; font-size: 12px; }
 .go-row.short .go::after { content: ""; position: absolute; inset: -4px 0; }

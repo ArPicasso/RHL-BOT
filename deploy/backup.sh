@@ -10,7 +10,7 @@ set -euo pipefail
 APP=${APP:-/opt/rhl}
 DEST=${BACKUP_DIR:-/var/backups/rhl}
 KEEP=${BACKUP_KEEP:-14}
-STATE="subscribers.json announced.json raskat_waitlist.json reminded.json"
+STATE="subscribers.json announced.json raskat_waitlist.json reminded.json goals_off.json"
 day=$(date +%F)
 
 # Каталог заводит rhl-update: от пользователя rhl в /var/backups не создать

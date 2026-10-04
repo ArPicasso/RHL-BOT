@@ -570,6 +570,8 @@
    "remind_sent": 380,
    "remind_fail": 1,
    "final_sent": 212,
+   "replays_todo": 3,
+   "replay_nag": 1,
    "errors": 1,
    "subs": 412,
    "cmd:today": 20,

@@ -198,11 +198,17 @@ def load_replays(path: Path = REPLAYS_FILE) -> dict:
 
 def apply_replays(games: list[dict], replays: dict) -> int:
     """Ссылка на повтор (`replay`) у гола матча: ключ «<дата>|<хозяева>|<гости>», гол — по счёту после него.
-    Счёт уникален в матче и одинаков у службы live и у протокола. Возвращает число голов с повтором."""
+    Счёт уникален в матче и одинаков у службы live и у протокола. Матч без голов протокола (протокол ещё не
+    пришёл) получает `replays` — счёт → ссылка: по нему мини-апп ставит «Повтор» у гола в ленте матча
+    (ADR-028, раздел 4). Возвращает число голов с повтором."""
     n = 0
     for g in games:
         links = replay.by_score(replays.get(f"{g['date']}|{g['home']}|{g['away']}") or {})
         if not links:
+            continue
+        if not any(x.get("period") != "РБ" for x in g.get("goals") or []):
+            g["replays"] = links
+            n += len(links)
             continue
         for x in g.get("goals") or []:
             url = links.get(x.get("score")) if x.get("period") != "РБ" else None
@@ -1076,7 +1082,8 @@ def main() -> None:
     count = lambda k: sum(1 for g in data["games"] if g.get(k))   # noqa: E731
     print(f"Время начала: {count('start')}, онлайн: {count('online')}, «Смотреть»: {count('watch')}, "
           f"лента из каналов: {count('events')} (ADR-019)")
-    print(f"Голов с повтором: {sum(1 for g in data['games'] for x in g.get('goals') or [] if x.get('replay'))} (ADR-027)")
+    print(f"Голов с повтором: {sum(1 for g in data['games'] for x in g.get('goals') or [] if x.get('replay'))}, "
+          f"до протокола: {sum(len(g.get('replays') or {}) for g in data['games'])} (ADR-027, ADR-028)")
     for u in unmatched:
         print("Протокол не привязан к матчу:", u)
 

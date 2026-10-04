@@ -1,0 +1,544 @@
+var NMHL_APPS;
+/******/ (() => { // webpackBootstrap
+/******/ 	"use strict";
+/******/ 	var __webpack_modules__ = ({
+
+/***/ 2557
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+// extracted by mini-css-extract-plugin
+
+
+/***/ },
+
+/***/ 3252
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+// extracted by mini-css-extract-plugin
+
+
+/***/ },
+
+/***/ 1940
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+// extracted by mini-css-extract-plugin
+
+
+/***/ },
+
+/***/ 1791
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+// extracted by mini-css-extract-plugin
+
+
+/***/ },
+
+/***/ 6686
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+// extracted by mini-css-extract-plugin
+
+
+/***/ },
+
+/***/ 6738
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+// extracted by mini-css-extract-plugin
+
+
+/***/ },
+
+/***/ 4151
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+// extracted by mini-css-extract-plugin
+
+
+/***/ },
+
+/***/ 4026
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const PluginManager_1 = __webpack_require__(1012);
+const script_1 = __webpack_require__(744);
+__webpack_require__(2557);
+const script_2 = __webpack_require__(2864);
+const script_3 = __webpack_require__(928);
+const script_4 = __webpack_require__(4850);
+document.addEventListener('DOMContentLoaded', () => {
+    const componentsManager = new PluginManager_1.PluginsManager();
+    componentsManager.registerMulti([
+        script_1.MainNewsComponent,
+        script_2.LeadersWidgetComponent,
+        script_3.TranslationsWidgetComponent,
+        script_4.LastPhotoAlbumsComponent,
+    ]);
+    componentsManager.init();
+});
+
+
+/***/ },
+
+/***/ 2907
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.AbstractComponent = void 0;
+const jquery_1 = __importDefault(__webpack_require__(4692));
+class AbstractComponent {
+    isInit = false;
+    isWasInitialized() {
+        return this.isInit;
+    }
+    initialize() {
+        this.isInit = true;
+    }
+    removeDataPropsAfterInit(e) {
+        const data = (0, jquery_1.default)(e).data();
+        for (const dataKey in data) {
+            (0, jquery_1.default)(e).removeAttr(`data-${dataKey}`);
+        }
+    }
+}
+exports.AbstractComponent = AbstractComponent;
+
+
+/***/ },
+
+/***/ 1012
+(__unused_webpack_module, exports) {
+
+var __webpack_unused_export__;
+
+__webpack_unused_export__ = ({ value: true });
+exports.PluginsManager = void 0;
+const initializedPlugins = [];
+class PluginsManager {
+    plugins;
+    constructor() {
+        this.plugins = new Map();
+    }
+    depIsPluginWithOptions(dep) {
+        return 'options' in dep && 'plugin' in dep;
+    }
+    register(plugin, options = { priority: 'highest' }) {
+        if (!this.plugins.has(plugin)) {
+            this.plugins.set(plugin, options);
+        }
+    }
+    registerMulti(pluginDeps) {
+        pluginDeps.forEach((dep) => {
+            if (this.depIsPluginWithOptions(dep)) {
+                this.register(dep.plugin, dep.options);
+            }
+            else {
+                this.register(dep, { priority: 'lowest' });
+            }
+        });
+    }
+    getPlugins() {
+        return this.plugins;
+    }
+    init() {
+        const priorityWeights = {
+            highest: 1,
+            high: 5,
+            low: 10,
+            lowest: 15,
+        };
+        Array.from(this.plugins)
+            .sort(([p1, options1], [p2, options2]) => 
+        // @ts-ignore
+        priorityWeights[options1.priority] - priorityWeights[options2.priority])
+            .forEach(([plugin, { priority }, index]) => {
+            if (!initializedPlugins.includes(plugin)) {
+                initializedPlugins.push(plugin);
+                if (priority === 'highest' || priority === 'high') {
+                    new plugin().init();
+                }
+                else {
+                    setTimeout(() => {
+                        new plugin().init();
+                    }, 3 * index);
+                }
+            }
+        });
+    }
+    forceInit() {
+        Array.from(this.plugins).forEach(([plugin]) => new plugin().init());
+    }
+}
+exports.PluginsManager = PluginsManager;
+
+
+/***/ },
+
+/***/ 4850
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.LastPhotoAlbumsComponent = void 0;
+__webpack_require__(3252);
+const AbstractComponent_1 = __webpack_require__(2907);
+const swiper_1 = __importDefault(__webpack_require__(1236));
+class LastPhotoAlbumsComponent extends AbstractComponent_1.AbstractComponent {
+    init() {
+        const rootEl = document.querySelector('.last-photo-albums');
+        if (!rootEl) {
+            return;
+        }
+        const swiperRootEl = rootEl.querySelector('.swiper');
+        if (swiperRootEl) {
+            const swiper = new swiper_1.default(swiperRootEl, {
+                slidesPerView: 'auto',
+            });
+        }
+    }
+}
+exports.LastPhotoAlbumsComponent = LastPhotoAlbumsComponent;
+
+
+/***/ },
+
+/***/ 2864
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.LeadersWidgetComponent = void 0;
+__webpack_require__(1940);
+const AbstractComponent_1 = __webpack_require__(2907);
+const swiper_1 = __importDefault(__webpack_require__(1236));
+const modules_1 = __webpack_require__(5189);
+const PluginManager_1 = __webpack_require__(1012);
+const script_1 = __webpack_require__(7186);
+class LeadersWidgetComponent extends AbstractComponent_1.AbstractComponent {
+    init() {
+        const rootEl = document.querySelector('.leaders-widget');
+        if (!rootEl) {
+            return;
+        }
+        const swiperRootEl = rootEl.querySelector('.swiper');
+        if (swiperRootEl) {
+            const navButtonPrev = rootEl.querySelector('.leaders-widget__nav-button--prev');
+            const navButtonNext = rootEl.querySelector('.leaders-widget__nav-button--next');
+            const swiper = new swiper_1.default(swiperRootEl, {
+                modules: [modules_1.Navigation],
+                slidesPerView: 'auto',
+                navigation: navButtonPrev && navButtonNext
+                    ? {
+                        prevEl: navButtonPrev,
+                        nextEl: navButtonNext,
+                    }
+                    : false,
+            });
+        }
+        const componentsManager = new PluginManager_1.PluginsManager();
+        componentsManager.registerMulti([script_1.LeaderNominationCardComponent]);
+        componentsManager.init();
+    }
+}
+exports.LeadersWidgetComponent = LeadersWidgetComponent;
+
+
+/***/ },
+
+/***/ 928
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.TranslationsWidgetComponent = void 0;
+__webpack_require__(6686);
+__webpack_require__(1791);
+const AbstractComponent_1 = __webpack_require__(2907);
+const jquery_1 = __importDefault(__webpack_require__(4692));
+class TranslationsWidgetComponent extends AbstractComponent_1.AbstractComponent {
+    init() {
+        const rootEl = document.querySelector('.translations-widget');
+        if (!rootEl) {
+            return;
+        }
+        const itemsEl = rootEl.querySelector('.translations-widget__items');
+        const showMoreButton = rootEl.querySelector('.translations-widget__button--show-more');
+        if (showMoreButton && itemsEl) {
+            let page = 1;
+            const maxPages = Math.ceil(itemsEl.children.length / 2);
+            (0, jquery_1.default)(showMoreButton).on('click', () => {
+                page++;
+                (0, jquery_1.default)(rootEl).addClass(`translations-widget--page-${page}`);
+                if (page >= maxPages) {
+                    (0, jquery_1.default)(rootEl).addClass(`translations-widget--page-all`);
+                    (0, jquery_1.default)(showMoreButton).remove();
+                }
+                else {
+                }
+            });
+        }
+    }
+}
+exports.TranslationsWidgetComponent = TranslationsWidgetComponent;
+
+
+/***/ },
+
+/***/ 744
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.MainNewsComponent = void 0;
+__webpack_require__(6738);
+const AbstractComponent_1 = __webpack_require__(2907);
+const swiper_1 = __importDefault(__webpack_require__(1236));
+class MainNewsComponent extends AbstractComponent_1.AbstractComponent {
+    init() {
+        const rootEl = document.querySelector('.main-news');
+        if (!rootEl) {
+            return;
+        }
+        const swiperRootEl = rootEl.querySelector('.swiper');
+        if (swiperRootEl) {
+            const swiper = new swiper_1.default(swiperRootEl, {
+                slidesPerView: 'auto',
+            });
+        }
+    }
+}
+exports.MainNewsComponent = MainNewsComponent;
+
+
+/***/ },
+
+/***/ 7186
+(__unused_webpack_module, exports, __webpack_require__) {
+
+var __webpack_unused_export__;
+
+__webpack_unused_export__ = ({ value: true });
+exports.LeaderNominationCardComponent = void 0;
+__webpack_require__(4151);
+const AbstractComponent_1 = __webpack_require__(2907);
+class LeaderNominationCardComponent extends AbstractComponent_1.AbstractComponent {
+    init() { }
+}
+exports.LeaderNominationCardComponent = LeaderNominationCardComponent;
+
+
+/***/ }
+
+/******/ 	});
+/************************************************************************/
+/******/ 	// The module cache
+/******/ 	const __webpack_module_cache__ = {};
+/******/ 	
+/******/ 	// The require function
+/******/ 	function __webpack_require__(moduleId) {
+/******/ 		// Check if module is in cache
+/******/ 		const cachedModule = __webpack_module_cache__[moduleId];
+/******/ 		if (cachedModule !== undefined) {
+/******/ 			return cachedModule.exports;
+/******/ 		}
+/******/ 		// Create a new module (and put it into the cache)
+/******/ 		const module = __webpack_module_cache__[moduleId] = {
+/******/ 			// no module.id needed
+/******/ 			// no module.loaded needed
+/******/ 			exports: {}
+/******/ 		};
+/******/ 	
+/******/ 		// Execute the module function
+/******/ 		__webpack_modules__[moduleId].call(module.exports, module, module.exports, __webpack_require__);
+/******/ 	
+/******/ 		// Return the exports of the module
+/******/ 		return module.exports;
+/******/ 	}
+/******/ 	
+/******/ 	// expose the modules object (__webpack_modules__)
+/******/ 	__webpack_require__.m = __webpack_modules__;
+/******/ 	
+/************************************************************************/
+/******/ 	/* webpack/runtime/chunk loaded */
+/******/ 	(() => {
+/******/ 		const deferred = [];
+/******/ 		__webpack_require__.O = (result, chunkIds, fn, priority) => {
+/******/ 			if(chunkIds) {
+/******/ 				priority = priority || 0;
+/******/ 				for(var i = deferred.length; i > 0 && deferred[i - 1][2] > priority; i--) deferred[i] = deferred[i - 1];
+/******/ 				deferred[i] = [chunkIds, fn, priority];
+/******/ 				return;
+/******/ 			}
+/******/ 			let notFulfilled = Infinity;
+/******/ 			for (var i = 0; i < deferred.length; i++) {
+/******/ 				let [chunkIds, fn, priority] = deferred[i];
+/******/ 				let fulfilled = true;
+/******/ 				for (var j = 0; j < chunkIds.length; j++) {
+/******/ 					if ((priority & 1 === 0 || notFulfilled >= priority) && Object.keys(__webpack_require__.O).every((key) => (__webpack_require__.O[key](chunkIds[j])))) {
+/******/ 						chunkIds.splice(j--, 1);
+/******/ 					} else {
+/******/ 						fulfilled = false;
+/******/ 						if(priority < notFulfilled) notFulfilled = priority;
+/******/ 					}
+/******/ 				}
+/******/ 				if(fulfilled) {
+/******/ 					deferred.splice(i--, 1)
+/******/ 					const r = fn();
+/******/ 					if (r !== undefined) result = r;
+/******/ 				}
+/******/ 			}
+/******/ 			return result;
+/******/ 		};
+/******/ 	})();
+/******/ 	
+/******/ 	/* webpack/runtime/compat get default export */
+/******/ 	(() => {
+/******/ 		// getDefaultExport function for compatibility with non-harmony modules
+/******/ 		__webpack_require__.n = (module) => {
+/******/ 			const getter = module && module.__esModule ?
+/******/ 				() => (module['default']) :
+/******/ 				() => (module);
+/******/ 			__webpack_require__.d(getter, { a: getter });
+/******/ 			return getter;
+/******/ 		};
+/******/ 	})();
+/******/ 	
+/******/ 	/* webpack/runtime/define property getters */
+/******/ 	(() => {
+/******/ 		// define getter/value functions for harmony exports
+/******/ 		__webpack_require__.d = (exports, definition) => {
+/******/ 			if(Array.isArray(definition)) {
+/******/ 				var i = 0;
+/******/ 				while(i < definition.length) {
+/******/ 					var key = definition[i++];
+/******/ 					var binding = definition[i++];
+/******/ 					if(!__webpack_require__.o(exports, key)) {
+/******/ 						if(binding === 0) {
+/******/ 							Object.defineProperty(exports, key, { enumerable: true, value: definition[i++] });
+/******/ 						} else {
+/******/ 							Object.defineProperty(exports, key, { enumerable: true, get: binding });
+/******/ 						}
+/******/ 					} else if(binding === 0) { i++; }
+/******/ 				}
+/******/ 			} else {
+/******/ 				for(var key in definition) {
+/******/ 					if(__webpack_require__.o(definition, key) && !__webpack_require__.o(exports, key)) {
+/******/ 						Object.defineProperty(exports, key, { enumerable: true, get: definition[key] });
+/******/ 					}
+/******/ 				}
+/******/ 			}
+/******/ 		};
+/******/ 	})();
+/******/ 	
+/******/ 	/* webpack/runtime/hasOwnProperty shorthand */
+/******/ 	(() => {
+/******/ 		__webpack_require__.o = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop))
+/******/ 	})();
+/******/ 	
+/******/ 	/* webpack/runtime/make namespace object */
+/******/ 	(() => {
+/******/ 		// define __esModule on exports
+/******/ 		__webpack_require__.r = (exports) => {
+/******/ 			if(Symbol.toStringTag) {
+/******/ 				Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
+/******/ 			}
+/******/ 			Object.defineProperty(exports, '__esModule', { value: true });
+/******/ 		};
+/******/ 	})();
+/******/ 	
+/******/ 	/* webpack/runtime/runtimeId */
+/******/ 	(() => {
+/******/ 		__webpack_require__.j = 201;
+/******/ 	})();
+/******/ 	
+/******/ 	/* webpack/runtime/jsonp chunk loading */
+/******/ 	(() => {
+/******/ 		// no baseURI
+/******/ 		
+/******/ 		// object to store loaded and loading chunks
+/******/ 		// undefined = chunk not loaded, null = chunk preloaded/prefetched
+/******/ 		// [resolve, reject, Promise] = chunk loading, 0 = chunk loaded
+/******/ 		const installedChunks = {
+/******/ 			201: 0
+/******/ 		};
+/******/ 		
+/******/ 		// no chunk on demand loading
+/******/ 		
+/******/ 		// no prefetching
+/******/ 		
+/******/ 		// no preloaded
+/******/ 		
+/******/ 		// no HMR
+/******/ 		
+/******/ 		// no HMR manifest
+/******/ 		
+/******/ 		__webpack_require__.O.j = (chunkId) => (installedChunks[chunkId] === 0);
+/******/ 		
+/******/ 		// install a JSONP callback for chunk loading
+/******/ 		const webpackJsonpCallback = (parentChunkLoadingFunction, data) => {
+/******/ 			let [chunkIds, moreModules, runtime] = data;
+/******/ 			// add "moreModules" to the modules object,
+/******/ 			// then flag all "chunkIds" as loaded and fire callback
+/******/ 			var moduleId, chunkId, i = 0;
+/******/ 			if(chunkIds.some((id) => (installedChunks[id] !== 0))) {
+/******/ 				for(moduleId in moreModules) {
+/******/ 					if(__webpack_require__.o(moreModules, moduleId)) {
+/******/ 						__webpack_require__.m[moduleId] = moreModules[moduleId];
+/******/ 					}
+/******/ 				}
+/******/ 				if(runtime) var result = runtime(__webpack_require__);
+/******/ 			}
+/******/ 			if(parentChunkLoadingFunction) parentChunkLoadingFunction(data);
+/******/ 			for(;i < chunkIds.length; i++) {
+/******/ 				chunkId = chunkIds[i];
+/******/ 				if(__webpack_require__.o(installedChunks, chunkId) && installedChunks[chunkId]) {
+/******/ 					installedChunks[chunkId][0]();
+/******/ 				}
+/******/ 				installedChunks[chunkId] = 0;
+/******/ 			}
+/******/ 			return __webpack_require__.O(result);
+/******/ 		}
+/******/ 		
+/******/ 		const chunkLoadingGlobal = self["webpackChunkNMHL_APPS"] = self["webpackChunkNMHL_APPS"] || [];
+/******/ 		chunkLoadingGlobal.forEach(webpackJsonpCallback.bind(null, 0));
+/******/ 		chunkLoadingGlobal.push = webpackJsonpCallback.bind(null, chunkLoadingGlobal.push.bind(chunkLoadingGlobal));
+/******/ 	})();
+/******/ 	
+/************************************************************************/
+/******/ 	
+/******/ 	// startup
+/******/ 	// Load entry module and return exports
+/******/ 	// This entry module depends on other loaded chunks and execution need to be delayed
+/******/ 	let __webpack_exports__ = __webpack_require__.O(undefined, [96], () => (__webpack_require__(4026)))
+/******/ 	__webpack_exports__ = __webpack_require__.O(__webpack_exports__);
+/******/ 	(NMHL_APPS = typeof NMHL_APPS === "undefined" ? {} : NMHL_APPS).mainPage = __webpack_exports__;
+/******/ 	
+/******/ })()
+;

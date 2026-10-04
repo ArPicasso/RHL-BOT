@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="color-scheme" content="light dark">
+  <title>РХЛ — матчи и таблица</title>
+  <link rel="icon" href="brand/icon.svg" type="image/svg+xml">
+  <script>
+    // До первой отрисовки: засекаем время для заставки и ставим тему.
+    // Тему берём из адреса, который передаёт Telegram (tgWebAppThemeParams), — не ждём его скрипт.
+    window.__splashT0 = Date.now();
+    (function () {
+      var t = "light";
+      try {
+        var pref = localStorage.getItem("theme");
+        var m = /tgWebAppThemeParams=([^&]+)/.exec(location.hash);
+        var bg = m && JSON.parse(decodeURIComponent(m[1])).bg_color;
+        if (pref === "light" || pref === "dark") t = pref;
+        else if (bg && /^#[0-9a-f]{6}$/i.test(bg)) {
+          var n = parseInt(bg.slice(1), 16);
+          t = (0.299 * (n >> 16) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255)) < 128 ? "dark" : "light";
+        } else if (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) t = "dark";
+      } catch (e) { /* хранилище или адрес недоступны — светлая */ }
+      document.documentElement.setAttribute("data-theme", t);
+    })();
+  </script>
+  <script async src="https://telegram.org/js/telegram-web-app.js" onload="window.__onTelegram && window.__onTelegram()"></script>
+  <link rel="preload" href="data/league.json" as="fetch" crossorigin>
+  <style>
+    /* Заставка (DESIGN.md → «Экран запуска»). Стили здесь, чтобы она рисовалась до style.css */
+    #splash {
+      position: fixed; inset: 0; z-index: 100; overflow: hidden;
+      display: grid; place-items: center;
+      background: #dceeff; color: #000;
+      transition: transform .38s cubic-bezier(.7, 0, .25, 1);
+    }
+    :root[data-theme="dark"] #splash { background: #182538; color: #c5ccd6; }
+    :root[data-theme="dark"] body { background: #131922; }
+    :root[data-theme="dark"] #splash .sp-word .k2 { fill: #dfe4eb; stroke: #dfe4eb; }
+    :root[data-theme="dark"] #splash .sp-word .k1 { stroke: #0b1018; }
+    :root[data-theme="dark"] #splash .sp-ribbon .o { stroke: #0b1018; }
+    :root[data-theme="dark"] #splash .sp-ribbon .f { stroke: #3f8fe6; }
+    #splash.out { transform: translateY(-101%); }
+
+    #splash .sp-ribbon { position: absolute; left: -10%; top: 50%; width: 120%; transform: translateY(-62%); }
+    #splash .sp-ribbon path { fill: none; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 1; animation: sp-draw .6s cubic-bezier(.3, .7, .2, 1) forwards; }
+    #splash .sp-ribbon .o { stroke: currentColor; }
+    #splash .sp-ribbon .f { stroke: #4da2ff; }
+
+    #splash .sp-stage { position: relative; width: min(82vw, 360px); }
+    #splash .sp-word { display: block; width: 100%; overflow: visible; }
+    #splash .sp-word .k1 { fill: #000; stroke: #000; stroke-width: 96; stroke-linejoin: round; }
+    #splash .sp-word .k2 { fill: #fff; stroke: #fff; stroke-width: 72; stroke-linejoin: round; }
+    #splash .sp-word .k3 { fill: #000; }
+    #splash .sp-slap {
+      transform-box: fill-box; transform-origin: 50% 60%;
+      transform: rotate(var(--r)); opacity: 0;
+      animation: sp-slap .36s cubic-bezier(.2, 1.5, .4, 1) var(--d) forwards;
+    }
+
+    #splash .cf { position: absolute; opacity: 0; transform: scale(0) rotate(-40deg); animation: sp-pop .32s cubic-bezier(.2, 1.6, .4, 1) var(--d) forwards; }
+    #splash .cf-puck { left: -8%; top: -30%; width: 22%; --r: -12deg; --d: 250ms; }
+    #splash .cf-star { right: -6%; top: -34%; width: 18%; --r: 14deg; --d: 310ms; }
+    #splash .cf-season {
+      left: 2%; bottom: -34%; --r: -6deg; --d: 370ms;
+      padding: 6px 12px; border: 1.5px solid #000; border-radius: 9999px;
+      background: #55db9c; color: #000; font: 800 13px/1.1 "Onest", system-ui, sans-serif; letter-spacing: .04em; white-space: nowrap;
+    }
+    #splash .cf-em {
+      right: -7%; bottom: -66%; width: 24%; aspect-ratio: 1; --r: 8deg; --d: 430ms;
+      display: none; place-items: center; border-radius: 50%; border: 1.5px solid #000; background: #fff; overflow: hidden;
+    }
+    #splash .cf-em img { width: 76%; height: 76%; object-fit: contain; }
+    #splash .cf-em.ab { background: #5c4ade; color: #fff; font: 800 18px/1 system-ui, sans-serif; }
+
+    #splash .sp-sub {
+      position: absolute; left: 0; right: 0; bottom: calc(18% + env(safe-area-inset-bottom)); text-align: center;
+      font: 700 12px/1.2 "Onest", system-ui, sans-serif; letter-spacing: .12em; text-transform: uppercase;
+      opacity: 0; animation: sp-rise .3s ease-out .42s forwards;
+    }
+    #splash .sp-slow {
+      position: absolute; left: 0; right: 0; bottom: 0; padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+      background: #000; color: #fff; font: 700 12px/1.2 "Onest", system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase;
+      display: flex; justify-content: center; gap: 10px;
+      transform: translateY(100%); animation: sp-slide .3s ease-out 2.2s forwards;
+    }
+    #splash .sp-slow i { color: #ffd731; font-style: normal; animation: sp-blink .9s steps(2) infinite; }
+
+    @keyframes sp-draw { to { stroke-dashoffset: 0; } }
+    @keyframes sp-slap {
+      0% { opacity: 0; transform: translateY(-18%) scale(2) rotate(calc(var(--r) - 16deg)); }
+      60% { opacity: 1; transform: scale(.9) rotate(var(--r)); }
+      80% { transform: scale(1.05) rotate(var(--r)); }
+      100% { opacity: 1; transform: scale(1) rotate(var(--r)); }
+    }
+    @keyframes sp-pop { to { opacity: 1; transform: scale(1) rotate(var(--r)); } }
+    @keyframes sp-rise { from { transform: translateY(8px); } to { opacity: 1; transform: none; } }
+    @keyframes sp-slide { to { transform: none; } }
+    @keyframes sp-blink { 50% { opacity: .2; } }
+    @media (prefers-reduced-motion: reduce) {
+      #splash *, #splash { animation-duration: 1ms !important; animation-delay: 0s !important; transition-duration: 1ms !important; }
+    }
+  </style>
+  <link rel="stylesheet" href="style.css?v=5a0bc8e7">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Onest:wght@500;700;800&family=Unbounded:wght@800&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@500;700;800&family=Unbounded:wght@800&display=swap"></noscript>
+  <script>
+    // База API зачёта «Раската» (ADR-018). Пусто — играем без зачёта. Подставляет Pages-задание
+    // из переменной RASKAT_API
+    window.RASKAT_API = "https://201-24-63-36.sslip.io/api/raskat";
+    // База API матч-центра (ADR-019) и прогнозов «Кто победит?» (ADR-020). Пусто — без живого счёта
+    // и прогнозов, время и ссылки — из league.json. Подставляет Pages-задание из переменной LIVE_API
+    window.LIVE_API = "https://201-24-63-36.sslip.io/api";
+  </script>
+  <link rel="stylesheet" href="raskat.css?v=5a0bc8e7">
+  <script defer src="raskat.js?v=5a0bc8e7"></script>
+  <script defer src="app.js?v=5a0bc8e7"></script>
+</head>
+<body>
+  <div id="splash" role="status" aria-label="Загрузка">
+    <svg class="sp-ribbon" viewBox="0 0 400 260" aria-hidden="true">
+      <path class="o" pathLength="1" d="M-20 210 C 70 30, 170 280, 250 130 S 370 20, 430 80" stroke-width="46"/>
+      <path class="f" pathLength="1" d="M-20 210 C 70 30, 170 280, 250 130 S 370 20, 430 80" stroke-width="41"/>
+    </svg>
+    <div class="sp-stage">
+      <svg class="cf cf-puck" viewBox="0 0 120 80" aria-hidden="true">
+        <path d="M8 30 v18 a52 22 0 0 0 104 0 v-18 z" fill="#000" stroke="#fff" stroke-width="10" stroke-linejoin="round" paint-order="stroke"/>
+        <ellipse cx="60" cy="30" rx="52" ry="22" fill="#000" stroke="#fff" stroke-width="5"/>
+      </svg>
+      <svg class="cf cf-star" viewBox="0 0 100 100" aria-hidden="true">
+        <path d="m50 6 12.5 27 29.5 3.5-22 20 6 29.5L50 71 23.5 86l6-29.5-22-20L37 33z" fill="#ffd731" stroke="#000" stroke-width="5" stroke-linejoin="round"/>
+      </svg>
+      <svg class="sp-word" viewBox="-60 -60 2991 870" role="img" aria-label="РХЛ"><defs><path id="sp-l0" d="M494 0Q592 0 662 33Q733 66 770 126Q807 185 807 266Q807 346 770 406Q733 466 662 499Q592 532 494 532H173V348H479Q523 348 548 326Q572 304 572 266Q572 226 548 205Q523 184 479 184H193L298 78V750H65V0Z"/><path id="sp-l1" d="M535 431V289L909 750H622L389 444H505L270 750H-12L364 289V431L8 0H299L510 275H394L601 0H888Z"/><path id="sp-l2" d="M190 0H945V750H712V101L817 206H320L418 130Q425 190 428 246Q430 302 430 353Q430 498 404 590Q377 681 320 724Q262 766 170 766Q129 766 88 757Q48 748 15 731V539Q59 556 96 556Q158 556 185 501Q212 446 212 319Q212 256 206 177Q201 98 190 0Z"/></defs><g transform="translate(0 0)"><g class="sp-slap" style="--r:-7deg;--d:0ms"><use href="#sp-l0" class="k1"/><use href="#sp-l0" class="k2"/><use href="#sp-l0" class="k3"/></g></g><g transform="translate(895 0)"><g class="sp-slap" style="--r:4deg;--d:70ms"><use href="#sp-l1" class="k1"/><use href="#sp-l1" class="k2"/><use href="#sp-l1" class="k3"/></g></g><g transform="translate(1861 0)"><g class="sp-slap" style="--r:-3deg;--d:140ms"><use href="#sp-l2" class="k1"/><use href="#sp-l2" class="k2"/><use href="#sp-l2" class="k3"/></g></g></svg>
+      <span class="cf cf-season">сезон 26/27</span>
+      <span class="cf cf-em" id="splash-em" aria-hidden="true"></span>
+    </div>
+    <div class="sp-sub">Матчи · Таблица · Календарь</div>
+    <div class="sp-slow">Загружаем матчи <i>✦</i></div>
+  </div>
+  <script>
+    // Эмблема любимой команды — из прошлого запуска, данные ещё не загружены
+    (function () {
+      try {
+        var d = JSON.parse(localStorage.getItem("splash") || "null");
+        var el = document.getElementById("splash-em");
+        if (!d || !el) return;
+        if (d.logo && /^logos\/[\w.-]+$/.test(d.logo)) {
+          var img = new Image();
+          img.alt = "";
+          img.src = d.logo;
+          el.appendChild(img);
+        } else if (d.abbr) {
+          el.textContent = d.abbr;
+          el.className += " ab";
+        } else {
+          return;
+        }
+        el.style.display = "grid";
+      } catch (e) { /* без эмблемы */ }
+    })();
+  </script>
+
+  <div class="marquee" aria-hidden="true"><div class="marquee-track" id="marquee"></div></div>
+
+  <main id="screen"></main>
+
+  <nav class="tabs" id="tabs" hidden>
+    <i class="run" aria-hidden="true"><i class="l"></i><i class="m"></i><i class="r"></i></i>
+    <button data-tab="home" aria-label="Главная">
+      <svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-4.5v-6h-5v6H5a1 1 0 0 1-1-1z"/></svg>
+      <span>Главная</span>
+    </button>
+    <button data-tab="calendar" aria-label="Календарь">
+      <svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>
+      <span data-short="Матчи">Календарь</span>
+    </button>
+    <button data-tab="table" aria-label="Таблица">
+      <svg viewBox="0 0 24 24"><path d="M5 20V11M12 20V4M19 20v-6"/></svg>
+      <span>Таблица</span>
+    </button>
+    <button data-tab="raskat" aria-label="Раскат">
+      <svg viewBox="0 0 24 24"><path d="M3.5 19.5H9a3.5 3.5 0 0 0 3.5-3.5v-4.5"/><ellipse cx="12.5" cy="7" rx="4.8" ry="2.9"/><path d="M7.7 7v2.2a4.8 2.9 0 0 0 9.6 0V7"/></svg>
+      <span>Раскат</span>
+    </button>
+    <button data-tab="me" aria-label="Я — паспорт болельщика">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="4"/><path d="M4.5 20.5c1.2-3.8 4-5.5 7.5-5.5s6.3 1.7 7.5 5.5"/></svg>
+      <span>Я</span>
+    </button>
+  </nav>
+
+  <div class="sheet-backdrop" id="sheet-backdrop" hidden></div>
+  <section class="sheet" id="sheet" hidden role="dialog" aria-modal="true"></section>
+</body>
+</html>

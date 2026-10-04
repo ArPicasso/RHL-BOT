@@ -1386,5 +1386,113 @@ class Goals(unittest.TestCase):
         self.assertEqual(bot.fresh_goals([m], {got[0][2]}, now), [])
 
 
+def fixed_now(moment):
+    """Подменить «сейчас» внутри хендлеров: datetime неизменяем, поэтому подставляем подкласс."""
+    class FakeDT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment
+    return mock.patch.object(bot, "datetime", FakeDT)
+
+
+class Feedback(unittest.TestCase):
+    """Болельщик пишет живому человеку (ADR-025): кнопка, одно письмо, лимит, ничего лишнего."""
+
+    now = datetime(2026, 10, 4, 12, 0, tzinfo=bot.TZ)
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        for name, value in (("FEEDBACK_FILE", self.dir / "feedback.json"), ("FEEDBACK", {}),
+                            ("ADMIN_IDS", frozenset({1001}))):
+            patch = mock.patch.object(bot, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def msg(self, text="кнопка не работает на айфоне"):
+        m = mock.Mock(text=text, bot=mock.Mock())
+        m.chat.id = 7
+        m.chat.type = "private"
+        return m
+
+    def press(self, chat_id=7, now=None):
+        c = mock.Mock(bot=mock.Mock(), answer=mock.AsyncMock())
+        c.message.chat.id = chat_id
+        with mock.patch.object(bot, "say", mock.AsyncMock()) as say, \
+                fixed_now(now or self.now):
+            asyncio.run(bot.cb_feedback(c))
+        return c, say
+
+    def test_button_appears_when_bot_did_not_understand(self):
+        kb = bot.lost_kb(7, self.now).inline_keyboard
+        self.assertEqual(kb[-1][0].callback_data, "fb:ask")
+        with mock.patch.object(bot, "ADMIN_IDS", frozenset()):
+            self.assertNotIn("fb:ask", [b.callback_data for row in bot.lost_kb(7, self.now).inline_keyboard
+                                        for b in row])
+
+    def test_press_then_write_then_it_goes_to_the_admin(self):
+        c, say = self.press()
+        self.assertIn("Жду сообщение", c.answer.call_args.args[0])
+        self.assertIn("одним сообщением", say.call_args.args[2]()[0])
+        self.assertTrue(bot.feedback_waiting(7, self.now))
+        with mock.patch.object(bot, "say", mock.AsyncMock()) as say, \
+                mock.patch.object(bot.asyncio, "sleep", mock.AsyncMock()), \
+                fixed_now(self.now):
+            asyncio.run(bot.h_lost(self.msg()))
+        to_admin, to_fan = say.call_args_list[0], say.call_args_list[1]
+        self.assertEqual(to_admin.args[1], 1001)
+        text = to_admin.args[2]()[0]
+        self.assertIn("кнопка не работает на айфоне", text)
+        self.assertIn("tg://user?id=7", text)
+        self.assertIn("Передал", to_fan.args[2]()[0])
+        self.assertFalse(bot.feedback_waiting(7, self.now))   # письмо одно: кнопку жмут заново
+
+    def test_second_letter_waits_ten_minutes(self):
+        self.press()
+        with mock.patch.object(bot, "say", mock.AsyncMock()), \
+                mock.patch.object(bot.asyncio, "sleep", mock.AsyncMock()), \
+                fixed_now(self.now):
+            asyncio.run(bot.h_lost(self.msg()))
+        c, say = self.press(now=self.now + timedelta(minutes=5))
+        self.assertIn("через десять минут", c.answer.call_args.args[0])
+        self.assertEqual(say.call_count, 0)
+        self.assertNotIn("fb:ask", [b.callback_data for row in
+                                    bot.lost_kb(7, self.now + timedelta(minutes=5)).inline_keyboard for b in row])
+        c, _ = self.press(now=self.now + timedelta(minutes=11))
+        self.assertIn("Жду сообщение", c.answer.call_args.args[0])
+
+    def test_press_without_admins_is_honest(self):
+        with mock.patch.object(bot, "ADMIN_IDS", frozenset()):
+            c, say = self.press()
+        self.assertIn("Передавать некому", c.answer.call_args.args[0])
+        self.assertEqual(say.call_count, 0)
+
+    def test_ordinary_message_is_not_forwarded(self):
+        with mock.patch.object(bot, "say", mock.AsyncMock()) as say, \
+                mock.patch.object(bot, "send_sticker", mock.AsyncMock()), \
+                fixed_now(self.now):
+            asyncio.run(bot.h_lost(self.msg("привет")))
+        self.assertEqual([c.args[1] for c in say.call_args_list], [7])   # админу — ничего
+
+    def test_waiting_expires_in_an_hour(self):
+        self.press()
+        self.assertTrue(bot.feedback_waiting(7, self.now + timedelta(minutes=59)))
+        self.assertFalse(bot.feedback_waiting(7, self.now + timedelta(hours=1, minutes=1)))
+
+    def test_letter_is_escaped_and_cut(self):
+        text = bot.feedback_text(7, "<b>жирный</b> & длинный " + "я" * 2000)
+        self.assertIn("&lt;b&gt;жирный&lt;/b&gt; &amp;", text)
+        self.assertIn("…", text)
+        self.assertLess(len(text), bot.FEEDBACK_MAX + 200)
+
+    def test_file_survives_restart_and_does_not_grow(self):
+        self.press()
+        self.assertTrue(bot.load_feedback())
+        with mock.patch.object(bot, "FEEDBACK", bot.load_feedback()):
+            self.assertTrue(bot.feedback_waiting(7, self.now))
+        bot.FEEDBACK["999"] = {"asked": bot.admin.iso(self.now - timedelta(days=3)), "sent": None}
+        self.press(chat_id=8)
+        self.assertEqual(sorted(bot.FEEDBACK), ["7", "8"])   # трёхдневную запись выбросили
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -53,6 +53,10 @@ RASKAT_CALL_DAYS = 7               # не играл столько дней —
 PREDICT_CALL_BEFORE = timedelta(hours=2)      # за столько до начала зовём голосовать
 PREDICT_CALL_LAST = timedelta(minutes=15)     # ближе к свистку уже не успеть
 GOALS_OFF_FILE = BASE / "goals_off.json"      # кто отказался от голов по ходу матча (ADR-024)
+FEEDBACK_FILE = BASE / "feedback.json"        # кто нажал «написать живому человеку» (ADR-025)
+FEEDBACK_WAIT = timedelta(hours=1)            # столько ждём само сообщение после нажатия
+FEEDBACK_EVERY = timedelta(minutes=10)        # не чаще одного письма с чата
+FEEDBACK_MAX = 1000                           # знаков: в чат админа не должна приезжать простыня
 GOAL_FRESH = timedelta(minutes=10)            # гол старше — молча пропускаем: нужен счёт, а не лента
 GOAL_BURST = 3                                # больше голов одного матча за проход не шлём
 REMIND_TRIES = 6                   # столько раз возвращаемся к слоту, у которого были неудачи
@@ -157,6 +161,7 @@ B_RASKAT = "Собрать раскат"
 B_WAIT_ON = "Позвать, когда откроется"
 B_WAIT_OFF = "Больше не звать"
 B_TODAY = "Матчи сегодня"
+B_WRITE = "Написать живому человеку"
 B_PREDICT = "Кто победит?"
 B_MATCH = "Матч в приложении"
 B_ONLINE = "Текстовая трансляция"
@@ -1388,6 +1393,16 @@ def admin_reply(chat_id: int, user_id: int | None) -> tuple[str, InlineKeyboardM
             "Его вписывают в ADMIN_IDS в /etc/rhl/bot.env на сервере.", None)
 
 
+@dp.message(Command("pismo"))   # в меню команд её нет (ADR-005): кнопка приходит сама, когда бот не понял
+async def h_pismo(m: Message):
+    if m.chat.type != "private":
+        return
+    if not ADMIN_IDS:
+        await say(m.bot, m.chat.id, lambda: ("Передавать некому: в приложении не задан админ.", app_kb()))
+        return
+    await say(m.bot, m.chat.id, lambda: ("Расскажи, чего не хватает или что сломалось.", feedback_kb()))
+
+
 @dp.message(Command("admin"))   # в меню команд её нет; доступ к данным проверяет ещё и сервер API
 async def h_admin(m: Message):
     if m.chat.type != "private":
@@ -1396,17 +1411,120 @@ async def h_admin(m: Message):
     await m.answer(text, reply_markup=kb)
 
 
+# ---------- болельщик пишет живому человеку (ADR-025) ----------
+# Бот на непонятое сообщение отвечает стикером и кнопкой (ADR-005) — то есть вежливо не слышит.
+# Кнопка «Написать живому человеку» это чинит: нажал — следующее сообщение уходит ADMIN_IDS.
+
+def load_feedback() -> dict[str, dict]:
+    was = admin.read_json(FEEDBACK_FILE, {})
+    return was if isinstance(was, dict) else {}
+
+
+FEEDBACK = load_feedback()
+
+
+def feedback_row() -> list[InlineKeyboardButton]:
+    return [InlineKeyboardButton(text=f"✍️ {B_WRITE}", callback_data="fb:ask")]
+
+
+def feedback_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[feedback_row()])
+
+
+def lost_kb(chat_id: int, now: datetime) -> InlineKeyboardMarkup:
+    """Ответ на непонятое сообщение: мини-апп, матчи дня и — если есть кому передать — живой человек."""
+    rows = list(app_kb(today=True).inline_keyboard)
+    if ADMIN_IDS and not feedback_soon(chat_id, now):
+        rows.append(feedback_row())
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def feedback_wait(chat_id: int, now: datetime, asked: bool) -> None:
+    """Запомнить нажатие или снять ожидание. `sent` — когда последнее письмо ушло: по нему лимит.
+    Заодно выбрасываем чужие записи старше суток: файл не должен расти с каждым нажатием."""
+    rec = FEEDBACK.get(str(chat_id)) or {}
+    old = now - timedelta(days=1)
+    for k, v in list(FEEDBACK.items()):
+        times = [admin.parse_iso((v or {}).get(f)) for f in ("asked", "sent")]
+        if all(t is None or t < old for t in times):
+            del FEEDBACK[k]
+    FEEDBACK[str(chat_id)] = {"asked": admin.iso(now) if asked else None,
+                              "sent": rec.get("sent") if asked else admin.iso(now)}
+    write_atomic(FEEDBACK_FILE, FEEDBACK)
+
+
+def feedback_waiting(chat_id: int, now: datetime) -> bool:
+    """Ждём ли письмо от этого чата. Нажатие живёт FEEDBACK_WAIT: перезапуск его не теряет."""
+    at = admin.parse_iso((FEEDBACK.get(str(chat_id)) or {}).get("asked"))
+    return at is not None and now - at <= FEEDBACK_WAIT
+
+
+def feedback_soon(chat_id: int, now: datetime) -> bool:
+    """Слишком часто: с этого чата письмо уже ушло меньше FEEDBACK_EVERY назад."""
+    at = admin.parse_iso((FEEDBACK.get(str(chat_id)) or {}).get("sent"))
+    return at is not None and now - at < FEEDBACK_EVERY
+
+
+def feedback_text(chat_id: int, text: str) -> str:
+    """Письмо админу: текст болельщика как есть (через escape — это чужой ввод) и ссылка для ответа.
+    Ни имени, ни @username не передаём (ADR-025, раздел 2): для ответа хватает ссылки."""
+    body = text.strip()[:FEEDBACK_MAX] + ("…" if len(text.strip()) > FEEDBACK_MAX else "")
+    return (f"✍️ <b>Письмо от болельщика</b>\n\n{html.escape(body)}\n\n"
+            f'<a href="tg://user?id={chat_id}">Ответить</a> · чат <code>{chat_id}</code>')
+
+
+async def feedback_send(bot: Bot, chat_id: int, text: str, now: datetime) -> int:
+    """Передать письмо админам. Ни до кого не дошло — честно говорим, что не передали."""
+    sent = 0
+    for cid in sorted(ADMIN_IDS):
+        try:
+            await say(bot, cid, lambda: (feedback_text(chat_id, text), None))
+            sent += 1
+        except Exception:
+            logging.exception("feedback to admin failed")
+        await asyncio.sleep(0.05)
+    feedback_wait(chat_id, now, asked=False)
+    TRACK.add("feedback" if sent else "feedback_lost")
+    TRACK.flush()
+    return sent
+
+
+@dp.callback_query(F.data == "fb:ask")
+async def cb_feedback(c: CallbackQuery):
+    """Нажал «Написать живому человеку»: ждём одно сообщение."""
+    cid = c.message.chat.id
+    now = datetime.now(TZ)
+    if not ADMIN_IDS:
+        await c.answer("Передавать некому: в приложении не задан админ", show_alert=True)
+        return
+    if feedback_soon(cid, now):
+        await c.answer("Уже передал предыдущее. Следующее — через десять минут", show_alert=True)
+        return
+    feedback_wait(cid, now, asked=True)
+    await c.answer("Жду сообщение")
+    await say(c.bot, cid, lambda: (
+        "Напиши одним сообщением: что сломалось или чего не хватает. Передам владельцу приложения — "
+        "он может ответить прямо здесь.\n\nСкриншот прикладывать не надо: передаю только текст.", None))
+
+
 TODAY_WORDS = re.compile(r"сегодн|матч|игр[аыуе]?\b|расписан|когда|сч[её]т|трансляц", re.I)
 
 
 @dp.message()   # последним: всё остальное (ADR-005 — бот не молчит)
 async def h_lost(m: Message):
+    now = datetime.now(TZ)
+    if m.text and feedback_waiting(m.chat.id, now):   # нажал «написать» — это и есть письмо (ADR-025)
+        ok = await feedback_send(m.bot, m.chat.id, m.text, now)
+        await say(m.bot, m.chat.id, lambda: (
+            "Передал. Могут ответить прямо здесь." if ok else
+            "Не получилось передать — попробуй ещё раз позже.", app_kb()))
+        return
     TRACK.add("lost")
     if m.text and TODAY_WORDS.search(m.text):   # «когда игра?», «какой счёт» — матчи дня
         await send_today(m.bot, m.chat.id)
         return
     await send_sticker(m.bot, m.chat.id, "tap", reply_markup=ReplyKeyboardRemove())
-    await say(m.bot, m.chat.id, lambda: (lost_text(), app_kb(today=True)))
+    await say(m.bot, m.chat.id, lambda: (lost_text(), lost_kb(m.chat.id, now)))
 
 # ---------- напоминания ----------
 

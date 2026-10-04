@@ -193,6 +193,10 @@ class PredictStore:
                                 (fan, key)).fetchone()
         return row[0] if row else None
 
+    def voted(self, key: str) -> set[int]:
+        """Кто уже голосовал за этот матч: по ним зов на прогноз не идёт (ADR-023, раздел 3)."""
+        return {r[0] for r in self.conn.execute("SELECT fan FROM predict_votes WHERE key = ?", (key,))}
+
     def picks(self, fan: int | None, day: str | None = None) -> dict[str, str]:
         """Голоса болельщика: ключ → выбор. С датой — только за этот день."""
         if fan is None:

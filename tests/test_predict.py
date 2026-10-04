@@ -128,6 +128,27 @@ class Rules(unittest.TestCase):
         self.assertEqual(predict.record([]), {"right": 0, "of": 0, "streak": 0})
 
 
+class Store(unittest.TestCase):
+    """Хранилище голосов: кто уже голосовал — по ним зов на прогноз не идёт (ADR-023, раздел 3)."""
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:", isolation_level=None)
+        self.pr = predict.PredictStore(self.conn)
+        self.now = at(D1, "12:00")
+
+    def test_voted_and_counts(self):
+        self.assertEqual(self.pr.voted(K1), set())
+        self.pr.vote(1, K1, "home", self.now)
+        self.pr.vote(2, K1, "away", self.now)
+        self.pr.vote(2, K1, "home", self.now)       # передумал — всё ещё один голос
+        self.pr.vote(3, K2, "home", self.now)
+        self.assertEqual(self.pr.voted(K1), {1, 2})
+        self.assertEqual(self.pr.counts(K1), (2, 0))
+        self.assertEqual(self.pr.voted(K2), {3})
+        self.pr.forget(2)
+        self.assertEqual(self.pr.voted(K1), {1})
+
+
 # ---------- HTTP ----------
 
 class Api(unittest.IsolatedAsyncioTestCase):

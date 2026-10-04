@@ -250,6 +250,23 @@ class BuildStatusTest(unittest.TestCase):
         self.assertIn("Последняя выкладка бота на сервер красная", texts)
         self.assertIn("У службы pages нет PAGES_TOKEN: сборку не будим, за сборками не следим", texts)
 
+    def test_kick_failure_names_the_cause(self):
+        # 04.10.2026: сборка не шла два часа, а пульт не говорил почему — служба pages не могла её разбудить
+        pages = {"info": {"token": True, "kick_ok": None, "kick_fail": ago(minutes=3),
+                          "kick_error": "GitHub ответил HTTP 403 — проверь PAGES_TOKEN",
+                          "runs": [{"id": "pages", "conclusion": "success", "last_ok": ago(hours=2)}]}}
+        got = healthy(pages=pages)["problems"]
+        self.assertIn({"level": "bad", "key": "kick:fail",
+                       "text": "Служба pages не может запустить сборку: GitHub ответил HTTP 403 — проверь PAGES_TOKEN"}, got)
+        fixed = {"info": {**pages["info"], "kick_ok": ago(minutes=1)}}   # следующий пинок прошёл
+        self.assertNotIn("kick:fail", [p["key"] for p in healthy(pages=fixed)["problems"]])
+
+    def test_blocked_source_is_a_warning(self):
+        src = {"online.khl.ru": {"errors": 21, "note": "403, message='Forbidden'", "blocked": ago(hours=-5)}}
+        got = healthy(sources=src)["problems"]
+        self.assertEqual([(p["level"], p["key"]) for p in got], [("warn", "blocked:online.khl.ru")])
+        self.assertIn("access_deny@khl.ru", got[0]["text"])
+
     def test_no_systemctl_is_a_warning_not_a_crash(self):
         st = healthy(services=None, services_note="systemctl: FileNotFoundError")
         self.assertIsNone(st["system"]["services"])

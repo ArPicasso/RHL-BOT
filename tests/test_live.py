@@ -588,7 +588,7 @@ class LeagueSite(unittest.TestCase):
         self.assertEqual((r["status"], r["score"]["home"], r["score"]["away"], r["time"]), ("ended", 0, 6, "13:00"))
         self.assertEqual(r["protocol"], "https://rhl.fhr.ru/matchcenter/1432/905113/protocol/")
 
-    def test_online_403_pauses_for_an_hour(self):
+    def test_online_403_pauses_for_six_hours(self):
         async def blocked(url):
             if "online.khl.ru" in url:
                 raise ConnectionError("403, message='Forbidden'")
@@ -596,10 +596,17 @@ class LeagueSite(unittest.TestCase):
         self.lv.fetch = blocked
         asyncio.run(self.lv.step(force=True))
         self.assertTrue(self.lv.online_blocked(self.now[0]))
-        self.assertIn("не спрашиваем до", json.loads((self.dir / "sources.json").read_text(encoding="utf-8"))
-                      ["online.khl.ru"]["note"])
+        src = json.loads((self.dir / "sources.json").read_text(encoding="utf-8"))["online.khl.ru"]
+        self.assertIn("не спрашиваем до 03.10 23:51", src["note"])
+        self.assertEqual(src["blocked"], "2026-10-03T23:51:00+03:00")   # пульт: «закрыл доступ», не «сломался»
         self.now[0] = msk("2026-10-03T18:55:00")
+        self.assertTrue(self.lv.online_blocked(self.now[0]))           # блок частыми попытками не снять
+        self.lv = live.Live(self.dir, TEAMS, self.site, clock=lambda: self.now[0], site="https://rhl.fhr.ru")
+        self.assertTrue(self.lv.online_blocked(self.now[0]))           # и после перезапуска службы
+        self.now[0] = msk("2026-10-03T23:52:00")
         self.assertFalse(self.lv.online_blocked(self.now[0]))
+        self.lv.ok("online.khl.ru", 1)                                  # открыли — блок с пульта уходит
+        self.assertNotIn("blocked", self.lv.sources["online.khl.ru"])
 
 
 class SiteEvents(unittest.TestCase):

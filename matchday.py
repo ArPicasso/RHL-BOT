@@ -425,6 +425,35 @@ def match_events(games: list[dict], teams: list[dict], channels: list[dict], pos
     return out
 
 
+# ---------- автор гола из поста клуба (ADR-026) ----------
+
+GOAL_NAME = r"[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?"
+GOAL_VERB = (r"(?:забросил|забил|забивает|забрасывает|открыва\w*|открыл|сравнива\w*|сравнял|сокраща\w*|сократил|"
+             r"отличи\w*|увеличива\w*|увеличил|удваива\w*|удвоил|восстанавлива\w*|восстановил|сделал\w*\s+дубль|"
+             r"оформил\w*|реализовал|положил|переигрыва\w*)")
+GOAL_WHO_RE = re.compile(
+    rf"(?:{GOAL_VERB}(?:\s+(?:сч[её]т|разрыв|преимущество|отставание)(?:\s+в\s+(?:матче|дерби|южном\s+дерби))?)?\s+"
+    rf"(?P<a>{GOAL_NAME}\s+{GOAL_NAME})(?![А-Яа-яЁё]))"
+    rf"|(?:(?<![А-Яа-яЁё])(?P<b>{GOAL_NAME}\s+{GOAL_NAME})\s+{GOAL_VERB})")
+GOAL_SCORE_RE = re.compile(r"(?<![\d:.])(\d{1,2})\s*:\s*(\d{1,2})(?![\d:])")
+GOAL_POST_RE = re.compile(r"шайб|гол\b|гола\b|забр|забив|забил|сч[её]т", re.I)
+
+
+def goal_author(text: str) -> dict | None:
+    """Кто забил и при каком счёте — из поста клуба по ходу матча: «Шайбу забросил Даниил Нуреев 🦅 0:2 🏝»,
+    «Счёт в южном дерби открывает Григорий Сеснев! 🦅 0:1». Имя — два слова с заглавной рядом с глаголом
+    гола, как написано в посте; счёт — последний в посте. Нет имени, счёта или их несколько — None: лучше гол
+    без автора, чем с чужим. Чья шайба, решает сборка по составам и каналу (build_data.apply_goal_authors)."""
+    if not GOAL_POST_RE.search(text or ""):
+        return None
+    names = {" ".join((m.group("a") or m.group("b")).split()) for m in GOAL_WHO_RE.finditer(text)}
+    scores = {(int(a), int(b)) for a, b in GOAL_SCORE_RE.findall(text)}
+    if len(names) != 1 or len(scores) != 1:
+        return None
+    (h, a), = scores
+    return {"name": names.pop(), "score": f"{h}:{a}"}
+
+
 def merge_feed(old: list[dict], new: list[dict], channels: list[dict], posts: dict) -> list[dict]:
     """Лента прошлых запусков (кэш сборки) и новая — по ссылке на пост, новое главнее: клуб мог поправить текст.
     Из кэша уходит пост канала, который больше не показываем, и пост, который сейчас должен быть на странице

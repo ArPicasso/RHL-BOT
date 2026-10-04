@@ -77,20 +77,22 @@ async def watch(s: aiohttp.ClientSession, token: str, repo: str, track: admin.Tr
     track.flush()
 
 
-async def kick(s: aiohttp.ClientSession, token: str, repo: str = REPO) -> bool:
-    """Запустить сборку на main. Ответ 204 — запущена; иначе — в журнал, без токена в тексте."""
+async def kick(s: aiohttp.ClientSession, token: str, repo: str = REPO) -> str | None:
+    """Запустить сборку на main. Ответ 204 — запущена, None; иначе причина для пульта (ADR-021) и строка
+    в журнал, без токена в тексте."""
     headers = gh_headers(token)
     try:
         async with s.post(dispatch_url(repo), json={"ref": "main"}, headers=headers) as r:
             if r.status == 204:
-                return True
+                return None
             text = (await r.text())[:200]
             hint = " — проверь PAGES_TOKEN: нужен доступ к репозиторию и право Actions: Read and write" \
                 if r.status in (401, 403, 404) else ""
             logging.warning("сборка Pages не запущена: HTTP %s %s%s", r.status, text, hint)
+            return f"GitHub ответил HTTP {r.status}{hint}"
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         logging.warning("сборка Pages не запущена: %s", e.__class__.__name__)
-    return False
+        return f"нет связи с api.github.com ({e.__class__.__name__})"
 
 
 async def serve(token: str, repo: str, once: bool, track: admin.Tracker | None = None) -> None:
@@ -110,15 +112,15 @@ async def serve(token: str, repo: str, once: bool, track: admin.Tracker | None =
     timeout = aiohttp.ClientTimeout(total=30)
     async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as s:
         if once:
-            ok = await kick(s, token, repo)
-            logging.info("pages: %s", "сборка запущена" if ok else "не вышло")
+            err = await kick(s, token, repo)
+            logging.info("pages: %s", err or "сборка запущена")
             return
         logging.info("pages: будим сборку %s каждые %d мин", repo, EVERY.seconds // 60)
         while not stop.is_set():
             if awake(datetime.now(TZ)):
-                ok = await kick(s, token, repo)
-                track.add("kick_ok" if ok else "kick_fail")
-                track.info(**{"kick_ok" if ok else "kick_fail": admin.iso(datetime.now(TZ))})
+                err = await kick(s, token, repo)
+                track.add("kick_fail" if err else "kick_ok")
+                track.info(**{"kick_fail" if err else "kick_ok": admin.iso(datetime.now(TZ))}, kick_error=err)
             await watch(s, token, repo, track)
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(stop.wait(), EVERY.total_seconds())

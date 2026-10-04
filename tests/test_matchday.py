@@ -358,6 +358,75 @@ class Feed(unittest.TestCase):
         self.assertNotIn(7475, [p["id"] for p in rostov["posts"]])
 
 
+class GoalAuthors(unittest.TestCase):
+    """Авторы голов по ходу матча из постов клубов (ADR-026) на настоящих постах 04.10.2026: Ростов — Краснодар
+    в 13:00, к 14:13 0:3. Сайт лиги по ходу давал только счёт, канал «Краснодара» — кто забил."""
+
+    def test_parse(self):
+        cases = {
+            "🥳Шайбу забросил Даниил Нуреев — 🦅 0:2 🏝": {"name": "Даниил Нуреев", "score": "0:2"},
+            "💥Счёт в южном дерби открывает Григорий Сеснев! 🦅 0:1 🏝": {"name": "Григорий Сеснев", "score": "0:1"},
+            "Кирилл Абашкин забрасывает! 2:1": {"name": "Кирилл Абашкин", "score": "2:1"},
+            "0:1 — Открывает счёт в матче «Краснодар»": None,                       # без имени
+            "😢За подножку малым штрафом наказан Кузнецов Артём — 🦅 0:4 🏝": None,  # удаление, не гол
+            "✨У соперников удаление, а мы играем в полном составе и забрасываем шайбу 🦅 0:2 🏝": None,
+            "Капитан «Краснодара» Дмитрий Рябицев открывает счёт в матче в Ростове 🏝": None,   # без счёта
+            "Начало в 17:00, Иван Петров забил 1:0": None,                         # два «счёта» — не гадаем
+            "⭐️ТРЕТИЙ ПЕРИОД ОКОНЧЕН! 🦅 0:6 🏝": None,
+        }
+        for text, want in cases.items():
+            self.assertEqual(md.goal_author(text), want, text)
+
+    def test_league_json(self):
+        import build_data
+        import rhl_protocol
+        teams = build_data.load_teams()
+        ch = [c for c in tg.load_channels(ROOT / "channels.json") if c["handle"] in ("HCGvardiaKrd", "rostovhc")]
+        pages = {c["handle"]: (FIX / f"tg_{c['handle'].lower()}_2026_10_04.html").read_text(encoding="utf-8")
+                 for c in ch}
+        posts = tg.build(ch, pages)["channels"]
+        games = [{"id": "a", "date": "2026-10-03", "home": "rostov", "away": "krasnodar", "start": "2026-10-03T13:00:00+03:00"},
+                 {"id": "d", "date": "2026-10-04", "home": "rostov", "away": "krasnodar", "start": "2026-10-04T13:00:00+03:00"},
+                 {"id": "r", "date": "2026-10-03", "home": "ryazan-vdv", "away": "belgorod"}]
+
+        def proto_of(gid):
+            return rhl_protocol.parse_protocol((FIX / f"rhl_protocol_{gid}.html").read_text(encoding="utf-8"), gid).to_json()
+        # состав «Краснодара» — по протоколу вчерашнего матча (в нём только вратари, остальные — из голов и удалений);
+        # «Рязань-ВДВ» — Белгород: имена сезона, по ним «Ратмир Тиняев» становится «Тиняев Ратмир»
+        proto = {"a": proto_of(905113), "r": proto_of(905111)}
+        build_data.apply_channel_events(games, teams, ch, posts, {}, datetime(2026, 10, 4, 14, 20, tzinfo=TZ))
+        self.assertEqual(build_data.apply_goal_authors(games, proto, ch), 3)
+        got = [e["goal"] for e in games[1]["events"] if "goal" in e]
+        self.assertEqual(got, [{"team": "away", "score": "0:1", "name": "Сеснев Григорий"},   # из состава
+                               {"team": "away", "score": "0:2", "name": "Нуреев Даниил"},
+                               {"team": "away", "score": "0:3", "name": "Тиняев Ратмир"}])   # нет в составе — по каналу
+        # скрытый по просьбе (ADR-007) — без имени; повторная сборка не копит старое
+        people = [pl for x in proto["a"]["goals"] for pl in (x["author"], *x["assists"])]
+        people += [x["player"] for x in proto["a"]["penalties"] if x["player"]]
+        hid = next(pl["id"] for pl in people if pl["name"].startswith("Нуреев"))
+        build_data.apply_goal_authors(games, proto, ch, {hid})
+        self.assertEqual([e["goal"]["name"] for e in games[1]["events"] if "goal" in e][1], build_data.HIDDEN_NAME)
+
+    def test_side_rules(self):
+        import build_data
+        ch = [{"handle": "rostovhc", "club": "rostov"}, {"handle": "nmhlpervenstvo", "club": None}]
+        proto = {"a": {"lineups": [], "penalties": [],
+                       "goals": [{"team": "away", "author": {"name": "Фурлетов Вячеслав", "id": 1}, "assists": []}]}}
+
+        def run(src, text):
+            games = [{"id": "a", "home": "rostov", "away": "krasnodar"},
+                     {"id": "b", "home": "rostov", "away": "krasnodar",
+                      "events": [{"kind": "text", "text": text, "src": src}]}]
+            build_data.apply_goal_authors(games, proto, ch)
+            return games[1]["events"][0].get("goal")
+        # игрок «Краснодара» по составу — гол гостей, даже если пишет канал «Ростова» или лиги
+        self.assertEqual(run("t.me/nmhlpervenstvo", "Шайбу забросил Вячеслав Фурлетов 0:1"),
+                         {"team": "away", "score": "0:1", "name": "Фурлетов Вячеслав"})
+        self.assertIsNone(run("t.me/nmhlpervenstvo", "Шайбу забросил Иван Петров 0:1"))   # лига, нет в составах
+        self.assertEqual(run("t.me/rostovhc", "Шайбу забросил Иван Петров 1:0")["team"], "home")
+        self.assertIsNone(run("t.me/rostovhc", "Шайбу забросил Иван Петров 0:1"))        # «0:1» хозяевам не гол
+
+
 class Names(unittest.TestCase):
     pats = md.name_patterns(TEAMS)
 

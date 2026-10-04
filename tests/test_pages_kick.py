@@ -63,7 +63,7 @@ class AwakeTest(unittest.TestCase):
 class KickTest(unittest.TestCase):
     def test_dispatches_pages_workflow_on_main(self):
         s = FakeSession(204)
-        self.assertTrue(asyncio.run(pages_kick.kick(s, "tok")))
+        self.assertIsNone(asyncio.run(pages_kick.kick(s, "tok")))
         url, body, headers = s.calls[0]
         self.assertEqual(url, "https://api.github.com/repos/ArPicasso/RHL-BOT/actions/workflows/pages.yml/dispatches")
         self.assertEqual(body, {"ref": "main"})
@@ -72,7 +72,10 @@ class KickTest(unittest.TestCase):
     def test_refusal_is_logged_without_token(self):
         s = FakeSession(403, "Resource not accessible by personal access token")
         with self.assertLogs(level="WARNING") as logs:
-            self.assertFalse(asyncio.run(pages_kick.kick(s, "secret-token")))
+            err = asyncio.run(pages_kick.kick(s, "secret-token"))
+        self.assertIn("HTTP 403", err)                  # причина — на пульт (ADR-021)
+        self.assertIn("Actions: Read and write", err)
+        self.assertNotIn("secret-token", err)
         text = "\n".join(logs.output)
         self.assertIn("403", text)
         self.assertIn("PAGES_TOKEN", text)

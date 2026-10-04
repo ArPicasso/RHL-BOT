@@ -3,7 +3,7 @@
 Главный источник с 03.10.2026 — сайт лиги rhl.fhr.ru (rhl_site.py): календарь с временем МСК и лента
 дней со счётом, а у идущего матча — страница матч-центра со счётом и периодом. Лента событий матча —
 по смене счёта и периода между опросами страницы (site_events). Онлайн КХЛ ботам отвечает 403 даже
-с российского IP; после 403 служба не спрашивает его час.
+с российского IP; после 403 служба не спрашивает его шесть часов.
 
     python live.py                                   служба: опрашивает, пока не придёт SIGTERM
     python live.py --once                            один проход и выход
@@ -52,7 +52,8 @@ STALE = timedelta(minutes=5)                   # живое без обновл�
 LIST_OVER_PAGE = timedelta(seconds=90)         # список свежее страницы на столько — верим списку
 SCHEDULE_DAYS = 14
 TITLE_RETRY = timedelta(hours=1)               # заголовок страницы не разобрался — спросим снова через час
-BLOCKED_PAUSE = timedelta(hours=1)             # онлайн ответил 403 — час его не спрашиваем
+BLOCKED_PAUSE = timedelta(hours=6)             # онлайн ответил 403 — шесть часов его не спрашиваем: блок
+                                                # «за вредоносную активность» частыми попытками не снять
 SITE_EVERY = timedelta(minutes=10)             # календарь сайта лиги, когда идёт или скоро матч
 # Предположение до проверки probe-командой: календарь сайта лиги, как и протокол (ADR-001), даёт местное
 # время арены. Переводим по поясу хозяев `tz` из teams.json; пояса нет — считаем московским.
@@ -225,7 +226,8 @@ class Live:
         self.last_page: dict[str, datetime] = {}
         self.written: dict[str, str] = {}
         self.sources: dict[str, dict] = read_json(self.out / "sources.json", {})
-        self.blocked_until: datetime | None = None   # онлайн КХЛ ответил 403: до этого времени не спрашиваем
+        # онлайн КХЛ ответил 403: до этого времени не спрашиваем — и после перезапуска службы (выкладки)
+        self.blocked_until: datetime | None = parse_iso(self.sources.get(SRC_ONLINE, {}).get("blocked"))
         self.site_starts: dict[int, datetime | None] = {}   # id матча сайта → начало, со страницы матч-центра
         self.hidden = build_data.load_hidden()   # авторы голов, которых не показываем (ADR-007)
         self.restore()
@@ -238,13 +240,15 @@ class Live:
     def ok(self, name: str, games: int, note: str = "") -> None:
         s = self._src(name)
         s.update(ok=iso(self.clock()), errors=0, games=games, note=note)
+        s.pop("blocked", None)
 
     def fail(self, name: str, err) -> None:
         s = self._src(name)
         s.update(fail=iso(self.clock()), errors=s.get("errors", 0) + 1, note=str(err)[:300])
         if name == SRC_ONLINE and "403" in str(err):
             self.blocked_until = self.clock() + BLOCKED_PAUSE
-            s["note"] = f"{s['note']} — не спрашиваем до {self.blocked_until:%H:%M}"
+            s["note"] = f"{s['note']} — не спрашиваем до {self.blocked_until:%d.%m %H:%M}"
+            s["blocked"] = iso(self.blocked_until)   # пульт: «закрыл доступ», а не «сломался» (ADR-021)
         logging.warning("%s: %s", name, err)
 
     def online_blocked(self, now: datetime) -> bool:

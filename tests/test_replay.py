@@ -146,6 +146,17 @@ class Build(unittest.TestCase):
         self.assertIn("replay", games[0]["goals"][1])
         self.assertNotIn("replay", games[0]["goals"][2])   # буллиты не размечаем
         self.assertNotIn("replay", games[1]["goals"][0])   # у другого матча повторов нет
+        self.assertNotIn("replays", games[0])
+
+    def test_replays_by_score_before_protocol(self):
+        # протокола ещё нет — повторы матча по счёту: мини-апп ставит их в ленту матча (ADR-028, раздел 4)
+        games = [{"id": "g1", "date": "2026-10-03", "home": "tverichi", "away": "metallurg"},
+                 {"id": "g2", "date": "2026-10-03", "home": "krasnodar", "away": "rostov"}]
+        replays = {GAME["key"]: replay.entry(GAME, VIDEO, {"1:0": 1800, "1:1": 2900}, msk("2026-10-03T21:00:00"))}
+        self.assertEqual(build_data.apply_replays(games, replays), 3)
+        self.assertEqual(games[0]["replays"]["1:0"], f"{PLAY}&t=1790")
+        self.assertEqual(set(games[0]["replays"]), {"1:0", "1:1", "2:1"})   # 2:1 — расчётный от опоры периода
+        self.assertNotIn("replays", games[1])
 
     def test_load_replays(self):
         with tempfile.TemporaryDirectory() as d:

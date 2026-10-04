@@ -1,0 +1,31 @@
+# Бэкап состояния бота и API (deploy/backup.sh): state.db и файлы подписок → /var/backups/rhl.
+# Сам ничего не расписывает: его запускает таймер backup.timer. Ставит rhl-update (deploy/update.sh).
+#
+# От пользователя rhl, не от root: открывая state.db, SQLite пересоздаёт рядом state.db-shm, и
+# файл root в /opt/rhl закрыл бы базу для службы api. Каталог /var/backups/rhl для rhl создаёт
+# rhl-update.
+[Unit]
+Description=RHL U21 state backup (state.db, subscribers.json)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=rhl
+Group=rhl
+WorkingDirectory=/opt/rhl
+ExecStart=/opt/rhl/deploy/backup.sh
+UMask=0027
+Nice=10
+IOSchedulingClass=idle
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/rhl /var/backups/rhl
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true

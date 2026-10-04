@@ -41,6 +41,21 @@ fi
 # Счётчики и пульс служб для пульта админа (ADR-021): бот и pages пишут сюда, api читает
 install -d -m 750 -o rhl -g rhl "$APP/status"
 
+# Бэкап состояния раз в сутки (deploy/backup.sh): каталог заводим мы — у rhl нет прав на /var/backups
+if [ -f deploy/backup.timer ]; then
+  install -d -m 750 -o rhl -g rhl /var/backups/rhl
+  reload=0
+  for unit in backup.service backup.timer; do
+    if ! cmp -s "deploy/$unit" "/etc/systemd/system/$unit"; then
+      install -m 644 "deploy/$unit" "/etc/systemd/system/$unit"
+      reload=1
+    fi
+  done
+  [ "$reload" = 0 ] || systemctl daemon-reload
+  systemctl enable -q --now backup.timer
+  echo "Бэкап состояния: $(systemctl show -p NextElapseUSecRealtime --value backup.timer 2>/dev/null || true)"
+fi
+
 restarted=""
 for pair in $SERVICES; do
   s=${pair%%:*}

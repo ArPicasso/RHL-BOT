@@ -3,12 +3,14 @@ venv/
 __pycache__/
 subscribers.json
 announced.json
+*.json.tmp
 results.json
 results.tmp
 webapp/data/
 channel_posts.json
 channel_events.json
 raskat_waitlist.json
+reminded.json
 schedule.json
 schedule.tmp
 state.db

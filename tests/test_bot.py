@@ -890,8 +890,9 @@ class Reminder(unittest.TestCase):
                 mock.patch.object(bot, "send_sticker", mock.AsyncMock(return_value=True)) as sticker, \
                 mock.patch.object(bot, "say", mock.AsyncMock(side_effect=[None, None, err])) as say, \
                 mock.patch.object(bot.asyncio, "sleep", mock.AsyncMock()):
-            sent = asyncio.run(bot.send_reminders(mock.Mock(), "today", date(2026, 10, 3), league))
-        self.assertEqual(sent, 2)
+            sent, failed = asyncio.run(bot.send_reminders(mock.Mock(), "today", date(2026, 10, 3), league,
+                                                          now=datetime(2026, 10, 3, 10, 0, tzinfo=bot.TZ)))
+        self.assertEqual((sent, failed), (2, 1))
         self.assertEqual([c.args[1] for c in sticker.call_args_list], [5, 1])   # стикер — раз на человека
         self.assertEqual([c.args[1] for c in say.call_args_list], [5, 1, 1])
         self.assertEqual(subs, {5: ["ermak"]})   # заблокировал бота — подписка снята
@@ -1016,6 +1017,141 @@ class LiveFinal(unittest.TestCase):
         self.assertEqual((counts, made, saved), ([0, 0], [], []))   # ночью молчим, утром уйдёт
         counts, made, saved, _ = self.run_steps([(t0, live, None)], {1: ["ryazan-vdv"]}, league, announced=None)
         self.assertEqual((counts, made, saved), ([0], [], [self.key]))   # первый запуск — только запомнили
+
+
+class Catchup(unittest.TestCase):
+    """Пропущенное напоминание: бот стоял в свой час — догоняет, но не пишет дважды."""
+
+    games = [{"id": "n1", "date": "2026-10-03", "home": "ryazan-vdv", "away": "belgorod", "time": "17:00"}]
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.file = mock.patch.object(bot, "REMINDED_FILE", self.dir / "reminded.json")
+        self.file.start()
+        self.addCleanup(self.file.stop)
+
+    def at(self, hhmm: str, day="2026-10-03"):
+        return datetime.fromisoformat(f"{day}T{hhmm}:00+03:00")
+
+    def test_slot_due_until_catchup_window_ends(self):
+        day = date(2026, 10, 3)
+        self.assertEqual(bot.due_slots(self.at("10:00"), {}), [(day, "today")])
+        self.assertEqual(bot.due_slots(self.at("12:59"), {}), [(day, "today")])
+        self.assertEqual(bot.due_slots(self.at("13:01"), {}), [])        # уже поздно напоминать
+        self.assertEqual(bot.due_slots(self.at("09:59"), {}), [])        # ещё не время
+        self.assertEqual(bot.due_slots(self.at("19:30"), {}), [(day, "tomorrow")])
+
+    def test_done_and_tried_slots_are_left_alone(self):
+        done = {"2026-10-03:today": {"done": True, "tries": 1, "sent": []}}
+        self.assertEqual(bot.due_slots(self.at("10:05"), done), [])
+        part = {"2026-10-03:today": {"done": False, "tries": 1, "sent": ["1|x"]}}
+        self.assertEqual(bot.due_slots(self.at("10:05"), part), [(date(2026, 10, 3), "today")])
+        part["2026-10-03:today"]["tries"] = bot.REMIND_TRIES
+        self.assertEqual(bot.due_slots(self.at("10:05"), part), [])      # хватит, иначе это спам
+
+    def test_night_is_silent(self):
+        self.assertEqual(bot.due_slots(self.at("23:30"), {}), [])
+        self.assertEqual(bot.due_slots(self.at("08:00", "2026-10-04"), {}), [])
+
+    def test_file_survives_restart_and_keeps_three_days(self):
+        bot.save_reminded({"2026-10-03:today": {"done": True, "tries": 1, "sent": ["1|k"]},
+                           "2026-09-20:today": {"done": True, "tries": 1, "sent": ["2|k"]}},
+                          date(2026, 10, 3))
+        self.assertEqual(sorted(bot.load_reminded()), ["2026-10-03:today"])   # старое не храним
+        bot.REMINDED_FILE.write_text("{мусор")
+        self.assertIsNone(bot.load_reminded())        # испорчен — как первый запуск, не догоняем
+
+    def test_first_run_does_not_repeat_the_previous_copy(self):
+        """Файла нет: прошедший слот мог разослать прежний бот — считаем закрытым."""
+        self.assertIsNone(bot.load_reminded())
+        base = bot.first_run_reminded(self.at("10:30"))
+        self.assertEqual(base, {"2026-10-03:today": {"done": True, "tries": 0, "sent": []}})
+        self.assertEqual(bot.due_slots(self.at("10:35"), base), [])
+        self.assertEqual(bot.first_run_reminded(self.at("09:30")), {})   # час ещё не пришёл — напомним
+
+    def run_fire(self, now, say, subs=None, reminded=None):
+        """Один проход fire_reminder с подменённой отправкой."""
+        reminded = {} if reminded is None else reminded
+        with mock.patch.object(bot, "REMINDED", reminded), \
+                mock.patch.object(bot, "SUBS", subs if subs is not None else {1: ["ryazan-vdv"], 2: ["belgorod"]}), \
+                mock.patch.object(bot, "save_subs"), mock.patch.object(bot, "LIVE_DIR", self.dir), \
+                mock.patch.object(bot, "published_league", mock.AsyncMock(return_value={"games": self.games})), \
+                mock.patch.object(bot, "send_sticker", mock.AsyncMock(return_value=True)), \
+                mock.patch.object(bot, "say", say), \
+                mock.patch.object(bot.asyncio, "sleep", mock.AsyncMock()):
+            sent = asyncio.run(bot.fire_reminder(mock.Mock(), date(2026, 10, 3), "today", now))
+        return sent, reminded["2026-10-03:today"]
+
+    def test_catchup_writes_only_the_ones_left(self):
+        err = RuntimeError("туннель лёг")
+        sent, rec = self.run_fire(self.at("10:00"), mock.AsyncMock(side_effect=[None, err]))
+        self.assertEqual(sent, 1)
+        self.assertEqual((rec["done"], rec["sent"]), (False, ["1|2026-10-03|ryazan-vdv|belgorod"]))
+        again = mock.AsyncMock()
+        sent, rec = self.run_fire(self.at("10:10"), again, reminded={"2026-10-03:today": rec})
+        self.assertEqual((sent, [c.args[1] for c in again.call_args_list]), (1, [2]))   # только второму
+        self.assertEqual(rec["done"], True)
+        self.assertEqual(rec["tries"], 2)
+
+    def test_whole_broadcast_failed_stays_open(self):
+        sent, rec = self.run_fire(self.at("10:00"), mock.AsyncMock(side_effect=RuntimeError("туннель лёг")))
+        self.assertEqual((sent, rec["done"], rec["sent"]), (0, False, []))
+        self.assertEqual(bot.due_slots(self.at("10:05"), {"2026-10-03:today": rec}), [(date(2026, 10, 3), "today")])
+
+    def test_started_match_is_not_announced_late(self):
+        sent, rec = self.run_fire(self.at("17:30"), mock.AsyncMock())   # игра в 17:00 уже началась
+        self.assertEqual((sent, rec["done"]), (0, True))
+
+
+class Flood(unittest.TestCase):
+    """429 «too many requests»: Telegram просит паузу — ждём и дописываем, а не теряем сообщение."""
+
+    def err(self, retry_after=3):
+        return bot.TelegramRetryAfter(method=mock.Mock(), message="too many", retry_after=retry_after)
+
+    def test_say_waits_and_sends(self):
+        tg = mock.Mock(send_message=mock.AsyncMock(side_effect=[self.err(3), None]))
+        with mock.patch.object(bot.asyncio, "sleep", mock.AsyncMock()) as slept:
+            asyncio.run(bot.say(tg, 7, lambda: ("текст", None)))
+        self.assertEqual(tg.send_message.await_count, 2)
+        self.assertEqual(slept.await_args.args, (3,))
+
+    def test_too_long_wait_is_an_error(self):
+        tg = mock.Mock(send_message=mock.AsyncMock(side_effect=self.err(bot.RETRY_WAIT_MAX + 1)))
+        with mock.patch.object(bot.asyncio, "sleep", mock.AsyncMock()), \
+                self.assertRaises(bot.TelegramRetryAfter):
+            asyncio.run(bot.say(tg, 7, lambda: ("текст", None)))
+        self.assertEqual(tg.send_message.await_count, 1)   # ждать две минуты на одном чате не станем
+
+    def test_sticker_waits_too(self):
+        tg = mock.Mock(send_sticker=mock.AsyncMock(side_effect=[self.err(1), mock.Mock()]))
+        with mock.patch.object(bot.asyncio, "sleep", mock.AsyncMock()):
+            self.assertTrue(asyncio.run(bot.send_sticker(tg, 7, "gameday")))
+        self.assertEqual(tg.send_sticker.await_count, 2)
+
+
+class StateFiles(unittest.TestCase):
+    """Файлы состояния: запись целиком или никак (ADR-003 — состояние в JSON рядом с ботом)."""
+
+    def test_atomic_write_leaves_no_half_file(self):
+        d = Path(tempfile.mkdtemp())
+        path = d / "state.json"
+        bot.write_atomic(path, {"a": [1, 2]})
+        self.assertEqual(json.loads(path.read_text()), {"a": [1, 2]})
+        with mock.patch.object(bot.json, "dump", side_effect=RuntimeError("диск кончился")):
+            with self.assertRaises(RuntimeError):
+                bot.write_atomic(path, {"b": 1})
+        self.assertEqual(json.loads(path.read_text()), {"a": [1, 2]})   # прежний файл цел
+        self.assertEqual(sorted(x.name for x in d.iterdir()), ["state.json", "state.json.tmp"])
+
+    def test_broken_announced_is_a_first_run(self):
+        d = Path(tempfile.mkdtemp())
+        with mock.patch.object(bot, "ANNOUNCED_FILE", d / "announced.json"):
+            self.assertIsNone(bot.load_announced())
+            bot.save_announced({"2026-10-03|a|b"})
+            self.assertEqual(bot.load_announced(), {"2026-10-03|a|b"})
+            bot.ANNOUNCED_FILE.write_text("{оборвалось")
+            self.assertIsNone(bot.load_announced())   # не рассылаем всё заново
 
 
 if __name__ == "__main__":

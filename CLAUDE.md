@@ -24,6 +24,7 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `games.json` | Календарь сезона, 48 игр. Правится руками |
 | `subscribers.json` | Подписчики на напоминания: `{"<chat_id>": [id команд, до трёх]}`, старый список `[chat_id]` бот сам переписывает в «Рязань-ВДВ» (ADR-019). Не в git |
 | `announced.json` | Матчи, о которых бот уже написал после игры (ADR-008). Не в git |
+| `reminded.json` | Какое напоминание уже ушло и кому: слот (`<дата>:today`/`:tomorrow`) → `done`, `tries`, список «чат\|матч». По нему бот догоняет напоминание, пропущенное из-за выкладки или упавшего туннеля, и не пишет дважды. Три дня, не в git |
 | `hidden_players.json` | Id игроков на сайте лиги, которых не показываем по просьбе (ADR-007, ADR-008) |
 | `league.py` | Загрузка и разбор протоколов матчей со старого движка сайта лиги (`nmhl.fhr.ru`) → `results.json` (ADR-001) |
 | `results.json` | Результаты: id турнира → номер матча `n` (как в `games.json`) → протокол. Не в git |
@@ -76,7 +77,7 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `tools/render_stickers.js` | Перерисовать стикеры и эмодзи (Playwright, запускается руками) |
 | `tools/upload_emoji.py` | Опубликовать эмодзи набором `t.me/addemoji/rhl_u21_by_<бот>` |
 | `.claude/agents/bot-logic.md` | Агент для логики бота: онбординг, хендлеры, напоминания |
-| `deploy/` | Сервер: `setup.sh` — первая настройка VPS, `update.sh` — выкладка (`rhl-update`), службы `bot.service`, `live.service`, `api.service`, `pages.service`, `https.sh` — Caddy и HTTPS для API, `tunnel.sh` и `tg-tunnel.service` — выход в Telegram через зарубежный сервер (`TELEGRAM_PROXY`) |
+| `deploy/` | Сервер: `setup.sh` — первая настройка VPS, `update.sh` — выкладка (`rhl-update`), службы `bot.service`, `live.service`, `api.service`, `pages.service`, ночной бэкап состояния `backup.sh` с `backup.service` и `backup.timer` (`/var/backups/rhl`, 14 дней), `https.sh` — Caddy и HTTPS для API, `tunnel.sh` и `tg-tunnel.service` — выход в Telegram через зарубежный сервер (`TELEGRAM_PROXY`) |
 | `.github/workflows/deploy.yml` | После слияния в `main` выкладывает бота на сервер по ключу, который умеет только `rhl-update` |
 | `calendar.pdf` | Календарь на печать, отдаётся по кнопке |
 | `docs/SYSTEM.md` | Как система работает сейчас: части, выкладка, секреты, сервер, что делать при сбоях |

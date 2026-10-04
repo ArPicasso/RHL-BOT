@@ -24,7 +24,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup,
                            MenuButtonWebApp, Message, ReplyKeyboardRemove, WebAppInfo)
@@ -34,6 +34,7 @@ TZ = ZoneInfo("Europe/Moscow")
 SUBS_FILE = BASE / "subscribers.json"      # {"<chat_id>": ["ryazan-vdv", …]} — кому о каких командах напоминать
 ANNOUNCED_FILE = BASE / "announced.json"   # матчи, о которых уже написали после игры (ADR-008)
 WAITLIST_FILE = BASE / "raskat_waitlist.json"   # кого позвать, когда в «Раскате» откроется зачёт
+REMINDED_FILE = BASE / "reminded.json"     # какие напоминания уже ушли и кому: догон после простоя
 # живые файлы матч-центра (ADR-019, раздел 5): пишет служба live (live.py) на том же сервере
 LIVE_DIR = Path(os.environ.get("LIVE_DIR") or BASE / "live")
 STICKERS = BASE / "stickers"          # стикеры бота (ADR-005), 512×512 WEBP
@@ -41,6 +42,11 @@ STICKERS = BASE / "stickers"          # стикеры бота (ADR-005), 512×
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://arpicasso.github.io/RHL-BOT/"
 REMIND_TODAY_AT = time(10, 0)      # утром в день игры
 REMIND_TOMORROW_AT = time(19, 0)   # вечером накануне
+REMIND_CATCHUP = timedelta(hours=3)   # бот стоял в свой час — догоняем, пока напоминание не устарело
+REMIND_TRIES = 6                   # столько раз возвращаемся к слоту, у которого были неудачи
+CATCHUP_EVERY = 300                # как часто цикл напоминаний проверяет, не пропустил ли слот
+REMINDED_KEEP = 3                  # дней истории напоминаний держим в reminded.json
+RETRY_WAIT_MAX = 120               # «подожди столько-то» от Telegram: ждём, но не дольше этого
 REMIND_TEAM = "Рязань-ВДВ"         # её календарь — games.json: запасной путь, если league.json не скачался
 MAX_TEAMS = 3                      # до трёх команд на болельщика
 RESULTS_POLL = 60                  # раз в минуту: live/ с диска, league.json — не чаще DATA_TTL
@@ -56,6 +62,12 @@ TRACK = admin.Tracker("bot")       # счётчики за день для пу�
 QUIET_FROM, QUIET_TO = time(23, 0), time(9, 0)   # ночью молчим, результат уйдёт утром
 
 DOW = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+
+def quiet(now: datetime) -> bool:
+    """Ночь: ни напоминаний, ни результатов — всё уйдёт утром."""
+    t = now.astimezone(TZ).time()
+    return t >= QUIET_FROM or t < QUIET_TO
 
 
 @dataclass(frozen=True)
@@ -303,8 +315,13 @@ def load_subs() -> dict[int, list[str]]:
 
 
 def write_atomic(path: Path, data) -> None:
+    """Записать JSON так, чтобы падение посреди записи не оставило половину файла: пишем рядом,
+    сбрасываем на диск и переименовываем — переименование атомарно."""
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
     tmp.replace(path)
 
 
@@ -935,7 +952,7 @@ def load_waitlist() -> set[int]:
 
 
 def save_waitlist(ids: set[int]) -> None:
-    WAITLIST_FILE.write_text(json.dumps(sorted(ids)))
+    write_atomic(WAITLIST_FILE, sorted(ids))
 
 
 WAITLIST = load_waitlist()
@@ -1004,7 +1021,8 @@ _sticker_ids: dict[str, str] = {}   # имя → file_id: файл загруж�
 async def send_sticker(bot: Bot, chat_id: int, name: str, **kw) -> bool:
     """Стикер — украшение (ADR-005): ошибка не мешает сообщению, кроме блокировки бота."""
     try:
-        msg = await bot.send_sticker(chat_id, _sticker_ids.get(name) or FSInputFile(STICKERS / f"{name}.webp"), **kw)
+        msg = await sending(lambda: bot.send_sticker(
+            chat_id, _sticker_ids.get(name) or FSInputFile(STICKERS / f"{name}.webp"), **kw))
     except TelegramForbiddenError:
         raise
     except Exception:
@@ -1076,16 +1094,35 @@ async def published_league() -> dict | None:
 dp = Dispatcher()
 
 
+async def sending(call, tries: int = 2):
+    """Отправить, переждав «too many requests»: на рассылке Telegram отвечает 429 и просит паузу.
+
+    `call()` — корутина отправки, зовём её заново после паузы. Ждём столько, сколько просит
+    Telegram, но не дольше RETRY_WAIT_MAX: иначе на одном чате встанет вся рассылка. Попытки
+    кончились — ошибка летит дальше, её считает рассылка."""
+    for left in range(tries - 1, -1, -1):
+        try:
+            return await call()
+        except TelegramRetryAfter as err:
+            if not left or err.retry_after > RETRY_WAIT_MAX:
+                raise
+            TRACK.add("retry_after")
+            logging.warning("Telegram просит подождать %s с", err.retry_after)
+            await asyncio.sleep(err.retry_after)
+
+
 async def say(bot: Bot, chat_id: int, make) -> None:
     """Отправить make() → (текст, клавиатура); если Telegram не принял свои эмодзи — обычными."""
-    try:
+    async def send():
         text, kb = make()
-        await bot.send_message(chat_id, text, reply_markup=kb)
+        return await bot.send_message(chat_id, text, reply_markup=kb)
+
+    try:
+        await sending(send)
     except TelegramBadRequest as err:
         if not emoji_off(err):
             raise
-        text, kb = make()
-        await bot.send_message(chat_id, text, reply_markup=kb)
+        await sending(send)
 
 
 async def safe_edit(c: CallbackQuery, make) -> None:
@@ -1316,10 +1353,78 @@ async def h_lost(m: Message):
 
 # ---------- напоминания ----------
 
+# Напоминание уходит в свой час (REMIND_TODAY_AT, REMIND_TOMORROW_AT — менять нельзя без обсуждения),
+# но час можно и пропустить: выкладка, перезапуск службы или упавший туннель. Поэтому бот помнит, какие
+# напоминания уже ушли и кому именно (reminded.json), и в первые REMIND_CATCHUP часов догоняет
+# пропущенное. Повторно тому, кто уже получил, не пишем.
+
+SLOTS = (("today", REMIND_TODAY_AT), ("tomorrow", REMIND_TOMORROW_AT))
+
+
+def slot_at(day: date, kind: str) -> datetime:
+    """Когда по Москве уходит напоминание слота."""
+    return datetime.combine(day, dict(SLOTS)[kind], TZ)
+
+
+def slot_key(day: date, kind: str) -> str:
+    return f"{day.isoformat()}:{kind}"
+
+
 def next_reminder(now: datetime) -> tuple[datetime, str]:
-    slots = [(datetime.combine(now.date() + timedelta(days=d), t, TZ), kind)
-             for d in (0, 1) for t, kind in ((REMIND_TODAY_AT, "today"), (REMIND_TOMORROW_AT, "tomorrow"))]
+    slots = [(slot_at(now.date() + timedelta(days=d), kind), kind)
+             for d in (0, 1) for kind, _ in SLOTS]
     return min(s for s in slots if s[0] > now)
+
+
+def load_reminded() -> dict[str, dict] | None:
+    """Что уже разослано: слот → {done, tries, sent}.
+
+    None — файла нет или он испорчен: это первый запуск с ним, и прошедшие слоты могла разослать
+    прежняя копия бота. Их не догоняем: второе напоминание об одной игре выглядит как сбой."""
+    try:
+        raw = json.loads(REMINDED_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    return {k: {"done": bool(v.get("done")), "tries": int(v.get("tries") or 0),
+                "sent": [str(x) for x in v.get("sent") or []]}
+            for k, v in raw.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def save_reminded(done: dict[str, dict], today: date | None = None) -> None:
+    """Записать, храня только последние REMINDED_KEEP дней: догонять старое уже не надо."""
+    since = ((today or datetime.now(TZ).date()) - timedelta(days=REMINDED_KEEP)).isoformat()
+    write_atomic(REMINDED_FILE, {k: v for k, v in done.items() if k[:10] >= since})
+
+
+def due_slots(now: datetime, done: dict[str, dict]) -> list[tuple[date, str]]:
+    """Слоты, которые должны были уйти, но не ушли (или ушли не всем): их и догоняем.
+
+    Старше REMIND_CATCHUP не трогаем — к вечеру утреннее «сегодня игра» уже не новость, — и
+    ночью молчим (QUIET_FROM…QUIET_TO), как и остальные рассылки."""
+    if quiet(now):
+        return []
+    out = []
+    for d in (now.date() - timedelta(days=1), now.date()):
+        for kind, _ in SLOTS:
+            at = slot_at(d, kind)
+            rec = done.get(slot_key(d, kind)) or {}
+            if at <= now < at + REMIND_CATCHUP and not rec.get("done") \
+                    and (rec.get("tries") or 0) < REMIND_TRIES:
+                out.append((d, kind))
+    return sorted(out, key=lambda s: slot_at(*s))
+
+
+def first_run_reminded(now: datetime) -> dict[str, dict]:
+    """Первый запуск с reminded.json: слоты, чей час уже прошёл, считаем закрытыми. На диск их не
+    пишем — файл появится с первой же рассылкой."""
+    return {slot_key(d, k): {"done": True, "tries": 0, "sent": []} for d, k in due_slots(now, {})}
+
+
+REMINDED = load_reminded()
+if REMINDED is None:
+    REMINDED = first_run_reminded(datetime.now(TZ))
 
 
 async def raskat_open_broadcast(bot: Bot) -> int:
@@ -1345,15 +1450,32 @@ async def raskat_open_broadcast(bot: Bot) -> int:
     return sent
 
 
-async def send_reminders(bot: Bot, kind: str, day: date, league: dict | None) -> int:
-    """Напоминания о матчах дня day подписчикам их команд. Утром — со стикером «Сегодня игра»."""
+def remind_mark(cid: int, m: dict) -> str:
+    """Ключ «этому чату про этот матч»: по нему догон не пишет второй раз тому, кто уже получил."""
+    return f"{cid}|{match_key(m)}"
+
+
+async def send_reminders(bot: Bot, kind: str, day: date, league: dict | None,
+                         rec: dict | None = None, now: datetime | None = None) -> tuple[int, int]:
+    """Напоминания о матчах дня day подписчикам их команд. Утром — со стикером «Сегодня игра».
+
+    `rec` — запись слота из reminded.json: кому уже написали. С ней рассылку можно продолжить
+    после перезапуска, не повторяясь; без неё это обычная разовая рассылка."""
+    now = now or datetime.now(TZ)
     plan = reminder_plan(SUBS, day, league, read_live(f"{day.isoformat()}.json"), read_live("schedule.json"))
     games = games_of(league)
+    was = set((rec or {}).get("sent") or [])
     stickered: set[int] = set()
     sent = failed = 0
     started = asyncio.get_running_loop().time()
     for cid, m, team in plan:
         if cid not in SUBS:   # заблокировал бота по ходу рассылки
+            continue
+        mark = remind_mark(cid, m)
+        if mark in was:       # догон: этому чату про этот матч уже написали
+            continue
+        start = start_of(m)
+        if start and start <= now:   # догон затянулся: матч уже начался, «сегодня в 17:00» поздно
             continue
         try:
             if kind == "today" and cid not in stickered:
@@ -1361,6 +1483,9 @@ async def send_reminders(bot: Bot, kind: str, day: date, league: dict | None) ->
                 await send_sticker(bot, cid, "gameday")
             await say(bot, cid, lambda m=m, team=team: (reminder_text(m, kind, team, games), match_kb(m)))
             sent += 1
+            if rec is not None:   # после каждого: перезапуск посреди рассылки её не повторит
+                rec["sent"].append(mark)
+                save_reminded(REMINDED, now.date())
         except TelegramForbiddenError:   # бота заблокировали
             unsubscribe(cid, blocked=True)
             failed += 1
@@ -1373,20 +1498,43 @@ async def send_reminders(bot: Bot, kind: str, day: date, league: dict | None) ->
     TRACK.note({"kind": f"remind_{kind}", "day": day.isoformat(), "sent": sent, "failed": failed,
                 "seconds": round(asyncio.get_running_loop().time() - started)})
     TRACK.flush()
+    return sent, failed
+
+
+async def fire_reminder(bot: Bot, day: date, kind: str, now: datetime | None = None) -> int:
+    """Отправить напоминание слота и записать, чем оно кончилось.
+
+    Слот закрываем (`done`) только если никто не остался без напоминания: упал туннель на всех —
+    запись остаётся открытой, и догон вернётся к ней, пока слот не старше REMIND_CATCHUP."""
+    now = now or datetime.now(TZ)
+    rec = REMINDED.setdefault(slot_key(day, kind), {"done": False, "tries": 0, "sent": []})
+    rec["done"] = False
+    rec["tries"] = (rec.get("tries") or 0) + 1
+    save_reminded(REMINDED, now.date())
+    games_day = day + timedelta(days=1 if kind == "tomorrow" else 0)
+    try:
+        sent, failed = await send_reminders(bot, kind, games_day, await published_league(), rec, now)
+    except Exception:
+        logging.exception("reminders failed")
+        return 0
+    rec["done"] = not failed
+    save_reminded(REMINDED, now.date())
     return sent
 
 
 async def reminder_loop(bot: Bot):
+    """Один путь и для напоминания в свой час, и для догона: слот уходит, как только пришло его
+    время и он ещё не закрыт. Просыпаемся к ближайшему слоту, но не реже CATCHUP_EVERY — иначе
+    о неудавшейся рассылке узнали бы только к следующему слоту, когда напоминать уже поздно."""
     while True:
-        now = datetime.now(TZ)
-        at, kind = next_reminder(now)
-        await asyncio.sleep((at - now).total_seconds())
         await raskat_open_broadcast(bot)   # отдельного цикла не плодим
-        day = at.date() + timedelta(days=1 if kind == "tomorrow" else 0)
-        try:
-            await send_reminders(bot, kind, day, await published_league())
-        except Exception:
-            logging.exception("reminders failed")
+        now = datetime.now(TZ)
+        for day, kind in due_slots(now, REMINDED):
+            logging.info("напоминание %s", slot_key(day, kind))
+            await fire_reminder(bot, day, kind, now)
+        now = datetime.now(TZ)
+        at, _ = next_reminder(now)
+        await asyncio.sleep(max(1.0, min((at - now).total_seconds(), CATCHUP_EVERY)))
 
 
 # ---------- результаты после матча (ADR-008, ADR-019) ----------
@@ -1397,12 +1545,13 @@ def load_announced() -> set[str] | None:
         return set(json.loads(ANNOUNCED_FILE.read_text()))
     except FileNotFoundError:
         return None
-    except ValueError:
-        return set()
+    except ValueError:   # файл испорчен: считаем за первый запуск — лучше промолчать, чем разослать всё заново
+        logging.warning("%s не читается: считаю за первый запуск", ANNOUNCED_FILE.name)
+        return None
 
 
 def save_announced(ids: set[str]) -> None:
-    ANNOUNCED_FILE.write_text(json.dumps(sorted(ids), ensure_ascii=False))
+    write_atomic(ANNOUNCED_FILE, sorted(ids))
 
 
 def played_games(data: dict, team: str | None = None) -> list[dict]:
@@ -1416,11 +1565,6 @@ def fresh_results(data: dict, announced: set[str], today: date, teams: set[str] 
     return sorted((g for g in played_games(data) if g["id"] not in announced and match_key(g) not in announced
                    and (teams is None or g["home"] in teams or g["away"] in teams)
                    and date.fromisoformat(g["date"]) >= since), key=lambda g: g["date"])
-
-
-def quiet(now: datetime) -> bool:
-    t = now.astimezone(TZ).time()
-    return t >= QUIET_FROM or t < QUIET_TO
 
 
 LIVE_ENDED: dict[str, tuple[datetime, tuple]] = {}   # ключ → когда впервые увидели «окончен» и счёт

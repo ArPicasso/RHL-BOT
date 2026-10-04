@@ -258,6 +258,17 @@ class ProbeVk(unittest.TestCase):
         self.assertEqual(self.p.true_start(entry, GAME), msk("2026-10-03T16:51:30"))   # 17:21:30 минус 30 минут
         self.assertIsNone(self.p.true_start({"anchors": {"2:2": 7000}}, GAME))       # опора без времени по часам
 
+    def test_verdict_needs_every_game_within_30s(self):
+        g = ["2026-10-04|rostov|krasnodar", "2026-10-04|tverichi|metallurg", "2026-10-05|kaluga|dynamo-576"]
+        lines = self.p.verdict({"page date": {g[0]: 5, g[1]: -12, g[2]: 29},
+                                "embed added": {g[0]: 5, g[1]: 400, g[2]: 3},
+                                "video.get date − duration": {g[0]: 1, g[1]: 2}}, g)
+        got = {x.split()[1] + " " + x.split()[2].rstrip(":"): x.split()[0] for x in lines}
+        self.assertEqual(got["page date"], "ГОДИТСЯ")
+        self.assertEqual(got["embed added"], "нет")        # на одном матче мимо на 400 с
+        self.assertEqual(got["video.get date"], "нет")     # нет на третьем матче
+        self.assertEqual(self.p.verdict({"page date": {g[0]: 0, g[1]: 0}}, g[:2])[0].split()[0], "нет")   # матчей мало
+
 
 class RealMarkup(unittest.TestCase):
     """Разметка админа 04.10.2026 против времени по часам службы live (снимок сервера в 16:32).

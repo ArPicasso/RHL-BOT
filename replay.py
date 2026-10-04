@@ -104,8 +104,14 @@ def fmt_t(sec: int) -> str:
     return (f"{h}h" if h else "") + (f"{m}m" if h or m else "") + f"{s}s"
 
 
-def at_link(video: str, sec: int) -> str:
-    return f"{video}?t={fmt_t(sec)}"
+def at_link(video: str, sec: int) -> str | None:
+    """Ролик и секунда → ссылка на повтор: `https://vkvideo.ru/video-X_Y?t=1h8m0s`.
+
+    Проверено админом 05.10.2026 с телефона в Telegram: так открывается с нужной секунды (и `live-X_Y`, и плеер
+    `video_ext.php?…&t=4080`), а `vk.com/video-X_Y?t=…` при переходе на vkvideo.ru время теряет, как и `?t=4080`
+    на странице ролика. Ролик храним как `vk.com/video-X_Y` (так его публикует лига), домен меняем здесь."""
+    m = _VIDEO_RE.search(video or "")
+    return f"https://vkvideo.ru/video{m.group(1)}_{m.group(2)}?t={fmt_t(sec)}" if m else None
 
 
 def _at(v) -> datetime | None:
@@ -185,10 +191,14 @@ def entry(game: dict, video: str, anchors: dict[str, int], now: datetime, protoc
 
 
 def by_score(entry_: dict) -> dict[str, str]:
-    """Счёт после гола → ссылка на повтор. Только https-ссылки VK: файл читает сборка мини-аппа."""
+    """Счёт после гола → ссылка на повтор. Ссылку собираем заново из ролика и секунды, а не берём готовую
+    `url`: так формат ссылки меняется без переразметки, а в мини-апп попадает только ссылка VK."""
     out = {}
+    video = (entry_ or {}).get("video")
     for g in (entry_ or {}).get("goals") or []:
-        url, score = g.get("url"), g.get("score")
-        if isinstance(score, str) and isinstance(url, str) and re.fullmatch(r"https://vk\.com/video-?\d+_\d+\?t=\w+", url):
-            out[score] = url
+        score, t = g.get("score"), g.get("t")
+        if isinstance(score, str) and isinstance(t, int) and not isinstance(t, bool) and 0 <= t <= MAX_T:
+            url = at_link(video, t) if isinstance(video, str) and video.startswith("https://") else None
+            if url:
+                out[score] = url
     return out

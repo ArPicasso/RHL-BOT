@@ -1487,8 +1487,9 @@ def replay_text(day: str, g: dict, entry: dict | None, protocol: list[dict] | No
         per = str(x.get("period") or "")
         per = f" · {per}-й" if per.isdigit() else f" · {html.escape(per)}" if per else ""
         r = links.get(x["score"])
-        mark = (f' — <a href="{html.escape(r["url"])}">{"✅" if r["exact"] else "≈"} {replay.fmt_t(r["t"])}</a>'
-                if r else "")
+        url = replay.at_link(entry["video"], r["t"]) if r else None   # заново: старые записи хранят прежний формат
+        mark = (f' — <a href="{html.escape(url)}">{"✅" if r["exact"] else "≈"} {replay.fmt_t(r["t"])}</a>'
+                if url else "")
         lines.append(f"{k}. <b>{x['score']}</b> {who}{author}{per}{mark}")
     lines.append("")
     if entry:

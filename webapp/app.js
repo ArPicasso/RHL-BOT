@@ -1037,19 +1037,27 @@ function evTime(e) {
   const t = Date.parse(e.at || "");
   return isNaN(t) ? '<span class="tm"></span>' : `<span class="tm num wall">${fmtHM(t)}</span>`;
 }
+// Автор гола из поста клуба (ADR-026): сборка разобрала «Шайбу забросил Даниил Нуреев 🦅 0:2» в goal
+// с командой и счётом — подходит гол живого с тем же счётом и той же командой
+function postAuthor(g, side, sc) {
+  if (!sc || !Array.isArray(g.events)) return "";
+  const x = g.events.find((p) => p && p.goal && p.goal.team === side && p.goal.score === sc && typeof p.goal.name === "string");
+  return x ? x.goal.name : "";
+}
 function evRow(g, e) {
   const side = e.team === "home" || e.team === "away" ? e.team : null;
   const id = side ? sideTeam(g, side) : null;
-  const text = typeof e.text === "string" ? e.text : "";
   if ((e.kind === "goal" || e.kind === "penalty") && id) {
     const what = e.kind === "goal" ? "гол" : "удаление";
     const sc = e.kind === "goal" && typeof e.score === "string" && /^\d{1,2}:\d{1,2}$/.test(e.score) ? e.score : "";
+    const text = (typeof e.text === "string" && e.text) || (e.kind === "goal" ? postAuthor(g, side, sc) : "");
     // автора сайт по ходу матча не даёт: тогда крупно «Гол», а команда — под ним, без повтора названия
     const head = text || (e.kind === "goal" ? "Гол" : "Удаление");
     const sub = text ? `${what} · ${team(id).name}` : team(id).name;
     return `<div class="goal ev${e.kind === "penalty" ? " pen" : ""}">${evTime(e)}<span class="ev-em">${emblem(id)}</span>
       <div class="who">${esc(head)}<div class="as">${esc(sub)}</div></div><span class="sc num">${esc(sc)}</span></div>`;
   }
+  const text = typeof e.text === "string" ? e.text : "";
   if (!text) return "";
   return `<div class="ev-line">${evTime(e)}<span>${esc(text)}</span></div>`;
 }

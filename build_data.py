@@ -219,6 +219,64 @@ def apply_media(games: list[dict], store: dict) -> int:
     return n
 
 
+def name_key(name: str) -> frozenset[str]:
+    """Имя без порядка слов и инициалов: «Скачков Евгений А.» и «Евгений Скачков» — один ключ."""
+    return frozenset(w for w in re.split(r"[\s.]+", name.lower().replace("ё", "е")) if len(w) > 1)
+
+
+def apply_goal_authors(games: list[dict], protocols: dict[str, dict], channels: list[dict],
+                       hidden: set[int] = frozenset()) -> int:
+    """Авторы голов по ходу матча из постов клубов (ADR-026): событию ленты с «Шайбу забросил Даниил Нуреев
+    🦅 0:2» — `goal` с командой, счётом и именем. Мини-апп ставит имя в гол живого с тем же счётом и командой.
+
+    Чей гол: игрок есть в составе ровно одной из команд по протоколам сезона — его команда и имя как в протоколе;
+    нет в составах — команда канала клуба (пост лиги без состава не берём). Счёт должен быть возможен для этой
+    команды: у гостей «2:0» своим быть не может — так ловим клуб, который пишет свой счёт первым. Скрытые по
+    просьбе (ADR-007) — «Игрок скрыт». Возвращает число голов с автором."""
+    rosters: dict[str, dict[frozenset, dict]] = {}
+    for g in games:
+        p = protocols.get(g["id"]) or {}
+        # составы в протоколах сайта бывают из одних вратарей — добираем авторов, ассистентов и удалённых
+        seen = [(k.get("team"), k.get("player")) for k in p.get("lineups", [])]
+        seen += [(x.get("team"), pl) for x in p.get("goals", []) for pl in (x.get("author"), *(x.get("assists") or ()))]
+        seen += [(x.get("team"), x.get("player")) for x in p.get("penalties", [])]
+        for side, pl in seen:
+            if side in ("home", "away") and isinstance(pl, dict) and pl.get("name"):
+                rosters.setdefault(g[side], {})[name_key(pl["name"])] = pl
+    hidden_keys = {key for r in rosters.values() for key, pl in r.items() if pl.get("id") in hidden}
+    # в протоколах «Фамилия Имя»: имена оттуда, чтобы «Ратмир Тиняев» из поста стал «Тиняев Ратмир», как на сайте
+    first = {pl["name"].split()[1].lower().replace("ё", "е") for r in rosters.values() for pl in r.values()
+             if len(pl["name"].split()) >= 2}
+
+    def site_order(name: str) -> str:
+        w = name.split()
+        lo = [x.lower().replace("ё", "е") for x in w]
+        return f"{w[1]} {w[0]}" if len(w) == 2 and lo[0] in first and lo[1] not in first else name
+    club_of = {f"t.me/{c['handle']}": c.get("club") for c in channels if c.get("handle")}
+    n = 0
+    for g in games:
+        for e in g.get("events") or []:
+            e.pop("goal", None)
+            got = matchday.goal_author(e.get("text") or "") if e.get("kind") == "text" else None
+            if not got:
+                continue
+            key = name_key(got["name"])
+            sides = [s for s in ("home", "away") if key in rosters.get(g[s], {})]
+            club = club_of.get(e.get("src"))
+            if len(sides) == 1:
+                side, name = sides[0], shown(rosters[g[sides[0]]][key], hidden)
+            elif not sides and club in (g["home"], g["away"]):
+                side, name = ("home" if club == g["home"] else "away"), site_order(got["name"])
+            else:
+                continue
+            h, a = (int(x) for x in got["score"].split(":"))
+            if (h if side == "home" else a) < 1:
+                continue
+            e["goal"] = {"team": side, "score": got["score"], "name": HIDDEN_NAME if key in hidden_keys else name}
+            n += 1
+    return n
+
+
 def apply_channel_events(games: list[dict], teams: "Teams", channels: list[dict], posts: dict,
                          cache: dict | None = None, now: datetime | None = None) -> int:
     """Лента матча из постов каналов клубов и лиги (matchday.match_events) → `events` у матча в league.json.
@@ -888,7 +946,8 @@ def build(teams: Teams, raw: list[rhockey.RawGame], results: league.Results,
     apply_matchday(games, teams, list(channels), posts or {})
     apply_media(games, site or {})                         # «Смотреть» от лиги — первой кнопкой
     apply_channel_events(games, teams, list(channels), posts or {}, events, datetime.now(TZ))
-    names = {t["id"]: t["name"] for t in teams.all}
+    apply_goal_authors(games, protocols, list(channels), hidden)   # авторы голов по ходу из постов (ADR-026)
+    names ={t["id"]: t["name"] for t in teams.all}
     details = {g["id"]: match_detail(g, protocols[g["id"]], names, hidden) for g in games if g["id"] in protocols}
     data = {
         "season": "2026/27",

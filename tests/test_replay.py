@@ -1,4 +1,5 @@
 """Повторы голов (ADR-027): разбор ссылок VK, секунда записи для каждого гола, ссылки в league.json и /replay."""
+import html
 import json
 import sys
 import tempfile
@@ -16,7 +17,7 @@ import replay  # noqa: E402
 
 TZ = ZoneInfo("Europe/Moscow")
 VIDEO = "https://vk.com/video-187307324_456239889"
-PLAY = "https://vkvideo.ru/video-187307324_456239889"   # так ссылка открывается с секунды (проверено 05.10)
+PLAY = "https://vkvideo.ru/video_ext.php?oid=-187307324&id=456239889"   # плеер: открывается с секунды (05.10)
 
 
 def msk(s: str) -> datetime:
@@ -42,7 +43,7 @@ GAME = {"key": "2026-10-03|tverichi|metallurg", "date": "2026-10-03", "home": "t
 
 class Links(unittest.TestCase):
     def test_vk_link_with_time(self):
-        self.assertEqual(replay.parse_link(f"{PLAY}?t=14m32s"), (VIDEO, 872))
+        self.assertEqual(replay.parse_link(f"{PLAY}&t=872"), (VIDEO, 872))
         self.assertEqual(replay.parse_link("https://vkvideo.ru/video-187307324_456239889?t=1h2m3s"), (VIDEO, 3723))
         self.assertEqual(replay.parse_link("вот: https://vk.com/video?z=video-187307324_456239889%2Fclub1&t=95"),
                          (VIDEO, 95))
@@ -62,7 +63,7 @@ class Links(unittest.TestCase):
         self.assertEqual([replay.parse_clock(x) for x in ("14:32", "1:02:03", "0:45", "14:75", "1:75:00", "abc")],
                          [872, 3723, 45, None, None, None])
         self.assertEqual([replay.fmt_t(x) for x in (872, 3723, 45, 3600, -5)], ["14m32s", "1h2m3s", "45s", "1h0m0s", "0s"])
-        self.assertEqual(replay.at_link(VIDEO, 872), f"{PLAY}?t=14m32s")
+        self.assertEqual(replay.at_link(VIDEO, 872), f"{PLAY}&t=872")
         self.assertEqual(replay.parse_times(f"{VIDEO}_456239067\n25:20\n57:04 1:08:03\nи 99:99"), [1520, 3424, 4083])
 
 
@@ -115,7 +116,7 @@ class Place(unittest.TestCase):
     def test_entry_and_by_score(self):
         e = replay.entry(GAME, VIDEO, {"1:0": 1800}, msk("2026-10-03T21:00:00"))
         self.assertEqual(e["video"], VIDEO)
-        self.assertEqual(e["goals"][0]["url"], f"{PLAY}?t=29m50s")
+        self.assertEqual(e["goals"][0]["url"], f"{PLAY}&t=1790")
         links = replay.by_score(e)
         self.assertEqual(set(links), {"1:0", "1:1", "2:1"})
         bad = {"goals": [{"score": "1:0", "url": "javascript:alert(1)"}, {"score": "1:1", "url": "https://evil.example/x"}]}
@@ -125,9 +126,12 @@ class Place(unittest.TestCase):
     def test_old_entry_gets_new_link(self):
         # запись, сохранённая до 05.10: ссылки vk.com теряли время — сборка собирает их заново из ролика и секунды
         old = {"video": VIDEO, "goals": [{"score": "1:0", "t": 1790, "url": f"{VIDEO}?t=29m50s"}]}
-        self.assertEqual(replay.by_score(old), {"1:0": f"{PLAY}?t=29m50s"})
+        self.assertEqual(replay.by_score(old), {"1:0": f"{PLAY}&t=1790"})
+        # ровно те ссылки, что открылись у админа с нужного места: 1:08:00 «Калуги» и 42:43 «Ростова»
         self.assertEqual(replay.at_link("https://vk.com/video-241266819_456239067", 4080),
-                         "https://vkvideo.ru/video-241266819_456239067?t=1h8m0s")   # вариант, который открылся с 1:08
+                         "https://vkvideo.ru/video_ext.php?oid=-241266819&id=456239067&t=4080")
+        self.assertEqual(replay.at_link("https://vk.com/video-60074608_456240744", 2563),
+                         "https://vkvideo.ru/video_ext.php?oid=-60074608&id=456240744&t=2563")
 
 
 class Build(unittest.TestCase):
@@ -138,7 +142,7 @@ class Build(unittest.TestCase):
                  {"id": "g2", "date": "2026-10-03", "home": "krasnodar", "away": "rostov", "goals": [{"score": "1:0"}]}]
         replays = {GAME["key"]: replay.entry(GAME, VIDEO, {"1:0": 1800}, msk("2026-10-03T21:00:00"))}
         self.assertEqual(build_data.apply_replays(games, replays), 2)
-        self.assertEqual(games[0]["goals"][0]["replay"], f"{PLAY}?t=29m50s")
+        self.assertEqual(games[0]["goals"][0]["replay"], f"{PLAY}&t=1790")
         self.assertIn("replay", games[0]["goals"][1])
         self.assertNotIn("replay", games[0]["goals"][2])   # буллиты не размечаем
         self.assertNotIn("replay", games[1]["goals"][0])   # у другого матча повторов нет
@@ -191,7 +195,7 @@ class Bot(unittest.TestCase):
         text = self.bot.replay_text("2026-10-03", GAME, e)
         self.assertIn("✅", text)
         self.assertIn("≈", text)
-        self.assertIn(f"{PLAY}?t=1h19m50s", text)
+        self.assertIn(html.escape(f"{PLAY}&t=4790"), text)   # в разметке Telegram & — это &amp;
 
     def test_new_video_resets_anchors(self):
         self.bot.replay_save("2026-10-03", 0, "1:0", f"{VIDEO}?t=30m", self.now)
@@ -217,7 +221,7 @@ class Bot(unittest.TestCase):
         self.assertEqual(err, "")
         self.assertEqual(self.saved()["anchors"], {"1:0": 1520, "1:1": 3424, "2:1": 3577, "2:2": 4840})
         self.assertTrue(all(g["exact"] for g in e["goals"]))
-        self.assertEqual(e["goals"][0]["url"], "https://vkvideo.ru/video-1_2?t=25m10s")
+        self.assertEqual(e["goals"][0]["url"], "https://vkvideo.ru/video_ext.php?oid=-1&id=2&t=1510")
 
     def test_protocol_from_league(self):
         league = {"games": [{"date": "2026-10-03", "home": "tverichi", "away": "metallurg",

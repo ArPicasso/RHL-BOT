@@ -105,13 +105,17 @@ def fmt_t(sec: int) -> str:
 
 
 def at_link(video: str, sec: int) -> str | None:
-    """Ролик и секунда → ссылка на повтор: `https://vkvideo.ru/video-X_Y?t=1h8m0s`.
+    """Ролик и секунда → ссылка на повтор: плеер VK `https://vkvideo.ru/video_ext.php?oid=-X&id=Y&t=2563`.
 
-    Проверено админом 05.10.2026 с телефона в Telegram: так открывается с нужной секунды (и `live-X_Y`, и плеер
-    `video_ext.php?…&t=4080`), а `vk.com/video-X_Y?t=…` при переходе на vkvideo.ru время теряет, как и `?t=4080`
-    на странице ролика. Ролик храним как `vk.com/video-X_Y` (так его публикует лига), домен меняем здесь."""
+    Админ проверял с телефона в Telegram (ADR-027, «Формат ссылки»): плеер с `t` в секундах открылся с нужного
+    места на обоих проверенных роликах. Страница ролика — нет: `vk.com/video-X_Y?t=…` теряет время всегда,
+    `vkvideo.ru/video-X_Y?t=…` — на одном ролике да, на другом нет. Ролик храним как `vk.com/video-X_Y`
+    (так его публикует лига), ссылку строим здесь."""
     m = _VIDEO_RE.search(video or "")
-    return f"https://vkvideo.ru/video{m.group(1)}_{m.group(2)}?t={fmt_t(sec)}" if m else None
+    if not m:
+        return None
+    oid, vid = m.groups()
+    return f"https://vkvideo.ru/video_ext.php?oid={oid}&id={vid}&t={max(0, int(sec))}"
 
 
 def _at(v) -> datetime | None:

@@ -15,6 +15,7 @@
 Страницы кладёт в probe/vk/ — из них фикстуры tests/. Запросы по одному с паузой в секунду.
 """
 import argparse
+import http.cookiejar
 import json
 import os
 import re
@@ -62,9 +63,14 @@ def true_start(entry: dict, game: dict) -> datetime | None:
     return None
 
 
+# Страница ролика и vkvideo.ru без куки отвечают 302 на самих себя, пока клиент не вернёт выданную куку
+# (замер на сервере 05.10: «redirect error that would lead to an infinite loop»). Куки держим, как браузер
+OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+
 def fetch(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "ru-RU,ru;q=0.9"})
-    with urllib.request.urlopen(req, timeout=20) as r:
+    with OPENER.open(req, timeout=20) as r:
         return r.read().decode("utf-8", "replace")
 
 

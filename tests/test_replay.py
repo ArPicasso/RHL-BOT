@@ -47,6 +47,9 @@ class Links(unittest.TestCase):
                          (VIDEO, 95))
         self.assertEqual(replay.parse_link("https://vk.ru/video_ext.php?oid=-187307324&id=456239889&t=40s"), (VIDEO, 40))
         self.assertEqual(replay.parse_link(VIDEO), (VIDEO, None))               # без времени — ролик есть, секунды нет
+        # запись эфира: ссылки, которые админ прислал 04.10, — тот же ролик, что лига публикует как video-
+        self.assertEqual(replay.parse_link("https://vkvideo.ru/live-241266819_456239067"),
+                         ("https://vk.com/video-241266819_456239067", None))
 
     def test_not_vk(self):
         for text in ("14:32", "https://youtu.be/abc?t=30", "https://vk.com/club123", "https://evil.example/video-1_2?t=5"):
@@ -59,6 +62,7 @@ class Links(unittest.TestCase):
                          [872, 3723, 45, None, None, None])
         self.assertEqual([replay.fmt_t(x) for x in (872, 3723, 45, 3600, -5)], ["14m32s", "1h2m3s", "45s", "1h0m0s", "0s"])
         self.assertEqual(replay.at_link(VIDEO, 872), f"{VIDEO}?t=14m32s")
+        self.assertEqual(replay.parse_times(f"{VIDEO}_456239067\n25:20\n57:04 1:08:03\nи 99:99"), [1520, 3424, 4083])
 
 
 class Place(unittest.TestCase):
@@ -80,6 +84,23 @@ class Place(unittest.TestCase):
         got = {g["score"]: g["t"] for g in replay.place(replay.goals_of(GAME), {"1:0": 1800, "1:1": 3500})}
         self.assertEqual(got["1:1"], 3500 - replay.EXACT_LEAD)
         self.assertEqual(got["2:1"], 3500 + 1500 - replay.GUESS_LEAD)
+
+    def test_other_period_not_guessed(self):
+        # между периодами запись и часы расходятся на минуты (04.10): гол 2-го периода от опоры 1-го не считаем
+        game = {**GAME, "events": [{**e, "period": "2"} if e.get("score") == "2:1" else e for e in GAME["events"]]}
+        got = {g["score"] for g in replay.place(replay.goals_of(game), {"1:0": 1800})}
+        self.assertEqual(got, {"1:0", "1:1"})
+
+    def test_protocol_order_and_missing_goal(self):
+        # гол 1:1 служба не узнала (счёт без него), протокол знает: в списке он есть, но без времени по часам
+        live_goals = [g for g in replay.goals_of(GAME) if g["score"] != "1:1"]
+        protocol = [{"score": "1:0", "team": "home", "period": "1", "author": "Иванов Иван"},
+                    {"score": "1:1", "team": "away", "period": "1", "author": "Петров Пётр"},
+                    {"score": "2:1", "team": "home", "period": "2", "author": "Сидоров"}]
+        goals = replay.with_protocol(live_goals, protocol)
+        self.assertEqual([(g["score"], g["period"], g["at"] is not None) for g in goals],
+                         [("1:0", "1", True), ("1:1", "1", False), ("2:1", "2", True)])
+        self.assertEqual(goals[1]["text"], "Петров Пётр")
 
     def test_anchor_on_late_goal(self):
         # гол без времени по часам можно отметить руками: точный повтор у него есть, опорой он не служит
@@ -170,12 +191,31 @@ class Bot(unittest.TestCase):
         self.assertEqual(self.saved()["video"], "https://vk.com/video-1_2")
 
     def test_errors_explained(self):
-        self.assertIn("нет времени", self.bot.replay_save("2026-10-03", 0, "1:0", VIDEO, self.now)[0])
+        self.assertIn("время этого гола", self.bot.replay_save("2026-10-03", 0, "1:0", VIDEO, self.now)[0])
         self.assertIn("Ролика", self.bot.replay_save("2026-10-03", 0, "1:0", "14:32", self.now)[0])
-        self.assertIn("Не понял", self.bot.replay_save("2026-10-03", 0, "1:0", "привет", self.now)[0])
+        self.assertIn("Ролика", self.bot.replay_save("2026-10-03", 0, "", "привет", self.now)[0])
+        self.assertIn("голов, а времён", self.bot.replay_save("2026-10-03", 0, "", f"{VIDEO}\n10:00\n20:00", self.now)[0])
+        self.assertIn("не по порядку",
+                      self.bot.replay_save("2026-10-03", 0, "", f"{VIDEO}\n30:00 20:00 40:00 50:00", self.now)[0])
         self.assertIn("пропал", self.bot.replay_save("2026-10-03", 5, "1:0", "14:32", self.now)[0])
         self.assertIn("пропал", self.bot.replay_save("2026-10-03", 0, "1:0", "14:32", self.now, "2026-10-03|a|b")[0])
         self.assertFalse((self.dir / "replays.json").exists())
+
+    def test_whole_match_at_once(self):
+        # как прислал админ 04.10: ссылка на запись эфира и времена всех голов по порядку
+        err, e = self.bot.replay_save("2026-10-03", 0, "", "https://vkvideo.ru/live-1_2\n25:20\n57:04\n59:37\n1:20:40",
+                                      self.now)
+        self.assertEqual(err, "")
+        self.assertEqual(self.saved()["anchors"], {"1:0": 1520, "1:1": 3424, "2:1": 3577, "2:2": 4840})
+        self.assertTrue(all(g["exact"] for g in e["goals"]))
+        self.assertEqual(e["goals"][0]["url"], "https://vk.com/video-1_2?t=25m10s")
+
+    def test_protocol_from_league(self):
+        league = {"games": [{"date": "2026-10-03", "home": "tverichi", "away": "metallurg",
+                             "goals": [{"score": "1:0", "team": "home", "period": "1", "author": "Иванов"},
+                                       {"score": "2:1", "team": "home", "period": "РБ"}]}]}
+        self.assertEqual(self.bot.protocol_of(league, GAME), [{"score": "1:0", "team": "home", "period": "1", "author": "Иванов"}])
+        self.assertIsNone(self.bot.protocol_of({"games": [{"date": "2026-10-04", "home": "a", "away": "b"}]}, GAME))
 
     def test_drop(self):
         self.bot.replay_save("2026-10-03", 0, "1:0", f"{VIDEO}?t=30m", self.now)
@@ -204,3 +244,32 @@ class ProbeVk(unittest.TestCase):
         entry = {"anchors": {"1:0": 1800, "2:1": 4800}}
         self.assertEqual(self.p.true_start(entry, GAME), msk("2026-10-03T16:51:30"))   # 17:21:30 минус 30 минут
         self.assertIsNone(self.p.true_start({"anchors": {"2:2": 7000}}, GAME))       # опора без времени по часам
+
+
+class RealMarkup(unittest.TestCase):
+    """Разметка админа 04.10.2026 против времени по часам службы live (снимок сервера в 16:32).
+    Опора — первый гол периода; расчётный не должен начинаться после гола."""
+
+    def check(self, video: list[str], wall: list[str], periods: list[str]) -> list[int]:
+        game = {"events": [goal(f"0:{k + 1}", "away", f"2026-10-04T{w}", period=p)
+                           for k, (w, p) in enumerate(zip(wall, periods))]}
+        truth = [replay.parse_clock(v) for v in video]
+        firsts = {}
+        for k, p in enumerate(periods):
+            firsts.setdefault(p, k)
+        anchors = {f"0:{k + 1}": truth[k] for k in firsts.values()}
+        got = {g["score"]: g["t"] for g in replay.place(replay.goals_of(game), anchors)}
+        return [truth[k] - got[f"0:{k + 1}"] for k in range(len(video)) if f"0:{k + 1}" in got]
+
+    def test_rostov_krasnodar(self):
+        before = self.check(["42:53", "49:28", "1:25:25", "2:03:26"], ["13:12:08", "13:19:14", "13:54:47", "14:31:52"],
+                            ["1", "1", "2", "3"])
+        self.assertTrue(all(0 < b <= 90 for b in before), before)   # за 29 с до гола у второго, у опор — за 10 с
+
+    def test_tverichi_metallurg(self):
+        # первый гол сайт отметил на 5 минут раньше по записи, чем остальные: из 1-го периода во 2-й не считаем
+        before = self.check(["25:20", "57:04", "59:37", "1:20:40"], ["15:15:34", "15:52:33", "15:57:06", "16:16:20"],
+                            ["1", "2", "2", "2"])
+        self.assertEqual(len(before), 4)
+        self.assertLess(before[2], 0)    # 0:3 сайт отметил на 2 минуты позже — расчётный опоздает, нужна ручная поправка
+        self.assertTrue(0 < before[3] <= 90, before)

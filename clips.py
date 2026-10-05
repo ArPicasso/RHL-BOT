@@ -1,8 +1,9 @@
 """Служба clips на VPS (ADR-030, шаг 2): после матча находит голы по табло трансляции и пишет их секунды в записи
 в live/clips.json. Оттуда их берут бот (/replay) и сборка Pages: «Повтор» становится точным без разметки админа.
 
-Раз в EVERY секунд берёт сыгранные матчи последних DAYS дней, у которых есть запись: запись лиги из опубликованного
-league.json («Смотреть» от rhl.fhr.ru) или ссылка админа из live/replays.json. Каждый матч — один раз на ролик:
+Раз в EVERY секунд берёт сыгранные матчи сезона с SINCE, у которых есть запись: запись лиги из опубликованного
+league.json («Смотреть» от rhl.fhr.ru) или ссылка админа из live/replays.json. Свежие — первыми, не больше SCAN_MAX
+за проход: догоняя сезон, служба не задерживает клипы вчерашних матчей. Каждый матч — один раз на ролик:
 проход по записи пробником табло (tools/probe_scoreboard.py, разметка табло клубов — boards.json), точные голы —
 встали часы игры (`clock`) или проверенная задержка табло клуба (`board`). У остальных голов табло знает, какой это
 гол, но не секунду: служба режет превью — PREVIEW_BEFORE секунд записи до смены счёта, 360p — и ищет в нём моменты,
@@ -11,7 +12,8 @@ league.json («Смотреть» от rhl.fhr.ru) или ссылка адми�
 
 По одному писателю на файл: live/replays.json пишет только бот, live/clips.json — только эта служба. Качаем как
 плеер (yt-dlp), без обхода защиты (ADR-012): VK отказал — пишем ошибку и пробуем позже, не больше TRIES раз.
-Кадры прохода и картинки — в probe/scoreboard/<матч>/ (там же, где у пробника), держатся KEEP_DAYS дней.
+Кадры прохода и картинки — в probe/scoreboard/<матч>/ (там же, где у пробника), держатся KEEP_DAYS дней с разбора.
+Матчи сезона в clips.json не забываем: по ним сборка ставит «Повтор» и клип у гола.
 
     venv/bin/python clips.py            # служба
     venv/bin/python clips.py --once     # один проход и выйти
@@ -41,8 +43,9 @@ import s3  # noqa: E402
 TZ = ZoneInfo("Europe/Moscow")
 LIVE_DIR = Path(os.environ.get("LIVE_DIR") or ROOT / "live")
 WORK = ROOT / "probe" / "scoreboard"
-DAYS = 3            # матчи за столько дней, включая сегодня, — как окно /replay
-EVERY = 600         # с между проходами
+SINCE = date.fromisoformat(os.environ.get("CLIPS_SINCE") or "2026-10-03")   # с этого дня разбираем: сайт РХЛ с записями
+SCAN_MAX = 2        # записей за проход: разбор — минуты, между ними — нарезка клипов
+EVERY = 600         # с между проходами; пока есть неразобранные записи сезона — через минуту
 TRIES = 3           # столько раз пробуем матч, который не скачался или упал
 KEEP_DAYS = 3       # кадры прохода держим столько дней
 VERSION = 2         # разбор поменялся (05.10: голы по порядку протокола) — матчи за DAYS дней разбираем заново
@@ -77,21 +80,23 @@ def safe_name(key: str) -> str:
     return re.sub(r"[^\w.-]+", "_", key)
 
 
-def days_back(today: date, n: int = DAYS) -> set[str]:
-    return {(today - timedelta(days=k)).isoformat() for k in range(n)}
+def season_days(today: date, since: date | None = None) -> set[str]:
+    """Дни сезона с SINCE по сегодня."""
+    since = since or SINCE
+    return {(since + timedelta(days=k)).isoformat() for k in range((today - since).days + 1)}
 
 
 def pending(league: dict | None, marked: dict, store: dict, today: date) -> list[tuple[str, str]]:
-    """Какие матчи разобрать: (ключ, ролик). Сыгранные за DAYS дней с записью лиги и размеченные админом (его
-    ролик главнее). Уже разобранный ролик не трогаем; новый ролик у матча — разбираем заново; упавший — до TRIES раз;
-    матч без разметки табло — заново, как только табло клуба появилось в boards.json."""
-    days = days_back(today)
+    """Какие матчи разобрать: (ключ, ролик), свежие первыми. Сыгранные с SINCE с записью лиги и размеченные админом
+    (его ролик главнее). Уже разобранный ролик не трогаем; новый ролик у матча — разбираем заново; упавший — до TRIES
+    раз; матч без разметки табло — заново, как только табло клуба появилось в boards.json."""
+    days = season_days(today)
     found = sb.recorded(league, days)
     for key, e in (marked or {}).items():
         if key[:10] in days and isinstance(e, dict) and isinstance(e.get("video"), str):
             found[key] = {"video": e["video"]}
     out = []
-    for key in sorted(found):
+    for key in sorted(found, key=lambda k: (k[:10], k), reverse=True):
         video = found[key]["video"]
         was = store.get(key) or {}
         if replay.same_video(was.get("video"), video) and was.get("v", 1) >= VERSION:
@@ -235,11 +240,12 @@ def scan_match(key: str, video: str, anchors: dict, order: list[tuple[str, str, 
     return {"status": "ok", "goals": goals}
 
 
-def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan=scan_match) -> int:
-    """Один проход: разбирает ждущие матчи по одному и после каждого пишет clips.json. Возвращает, сколько разобрано."""
+def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan=scan_match) -> tuple[int, int]:
+    """Один проход: разбирает до SCAN_MAX ждущих матчей по одному и после каждого пишет clips.json.
+    Возвращает (сколько разобрано, сколько ещё ждёт)."""
     games = store.setdefault("games", {})
     todo = pending(league, marked, games, now.date())
-    for key, video in todo:
+    for key, video in todo[:SCAN_MAX]:
         was = games.get(key) or {}
         same = replay.same_video(was.get("video"), video) and was.get("v", 1) >= VERSION
         tries = (was.get("tries", 0) if same else 0) + 1
@@ -255,10 +261,10 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
         log.info("%s: %s, голов по табло %d, с секундой %d", key, got["status"], len(games[key]["goals"]), timed)
         store["updated"] = now_msk().isoformat(timespec="seconds")
         write_atomic(LIVE_DIR / "clips.json", store)
-    old = days_back(now.date(), KEEP_DAYS + DAYS)
-    for key in [k for k in games if k[:10] < min(old)]:
+    for key in [k for k in games if k[:10] < SINCE.isoformat()]:
         games.pop(key)
-    return len(todo)
+    done = min(len(todo), SCAN_MAX)
+    return done, len(todo) - done
 
 
 # ---------- клипы (шаг 6) ----------
@@ -392,13 +398,14 @@ def cut_pass(store: dict, league: dict | None, marked: dict, bucket: s3.Store, c
     return n
 
 
-def clean_work(today: date, root: Path = WORK) -> None:
-    """Кадры прохода старше KEEP_DAYS дней — удалить: на сервере держим только временное (ADR-030)."""
+def clean_work(now: datetime, root: Path = WORK) -> None:
+    """Папки матчей, которых не трогали KEEP_DAYS дней, — удалить: на сервере держим только временное (ADR-030).
+    Считаем от разбора, не от дня матча: у матча начала сезона, разобранного сегодня, превью ещё ждут ответа."""
     if not root.is_dir():
         return
-    edge = (today - timedelta(days=KEEP_DAYS)).isoformat()
+    edge = (now - timedelta(days=KEEP_DAYS)).timestamp()
     for d in root.iterdir():
-        if d.is_dir() and re.match(r"\d{4}-\d{2}-\d{2}_", d.name) and d.name[:10] < edge:
+        if d.is_dir() and re.match(r"\d{4}-\d{2}-\d{2}_", d.name) and d.stat().st_mtime < edge:
             shutil.rmtree(d, ignore_errors=True)
 
 
@@ -421,18 +428,19 @@ def main() -> None:
             # сначала клипы того, что уже разобрано: они быстрые, а проход по новой записи — минуты, и перезапуск
             # службы (выкладка) посреди него не должен задерживать клипы (05.10 так и не дошло до нарезки)
             cut = cut_pass(store, league, marked, bucket)
-            n = run_pass(store, league, marked, now)
+            n, left = run_pass(store, league, marked, now)
             if n:
-                log.info("проход: разобрано матчей %d", n)
+                log.info("проход: разобрано матчей %d, ждут разбора %d", n, left)
                 cut += cut_pass(store, league, marked, bucket)
             if cut:
                 log.info("проход: новых клипов %d", cut)
-            clean_work(now.date())
+            clean_work(now)
         except Exception:   # служба не падает из-за одного прохода: следующий через EVERY
             log.exception("проход упал")
+            left = 0
         if args.once:
             return
-        time.sleep(EVERY)
+        time.sleep(60 if left else EVERY)   # VK отказал — следующая попытка не сразу (ADR-012)
 
 
 if __name__ == "__main__":

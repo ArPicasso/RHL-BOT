@@ -1,9 +1,10 @@
 """Служба clips (ADR-030, шаг 2): какие матчи разбирать, голы по табло в clips.json, повторы по ним."""
 import json
+import os
 import sys
 import tempfile
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
@@ -118,11 +119,30 @@ class Pass(unittest.TestCase):
         self.assertNotIn("2026-09-20|a|b", store["games"])
 
     def test_old_frames_removed(self):
+        """Считаем от разбора: матч 03.10, разобранный сегодня, остаётся — его превью ещё ждут ответа."""
         with tempfile.TemporaryDirectory() as tmp:
-            for name in ("2026-09-30_a_b", "2026-10-04_c_d", "x"):
+            for name, age in (("2026-10-03_a_b", 0), ("2026-10-04_c_d", 4), ("x", 9)):
                 (Path(tmp) / name).mkdir()
-            clips.clean_work(date(2026, 10, 5), Path(tmp))
-            self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()), ["2026-10-04_c_d", "x"])
+                when = (self.now - timedelta(days=age)).timestamp()
+                os.utime(Path(tmp) / name, (when, when))
+            clips.clean_work(self.now, Path(tmp))
+            self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()), ["2026-10-03_a_b", "x"])
+
+    def test_season_backfill_newest_first_few_per_pass(self):
+        """Догоняем сезон с SINCE: свежие матчи — первыми, не больше SCAN_MAX за проход."""
+        games = [{"date": d, "home": h, "away": "b", "score": {"home": 1, "away": 0},
+                  "watch": [{"src": "rhl.fhr.ru", "url": f"https://vk.com/video-1_{k}"}]}
+                 for k, (d, h) in enumerate((("2026-10-03", "a"), ("2026-10-05", "c"), ("2026-10-04", "d")))]
+        league = {"games": games}
+        todo = clips.pending(league, {}, {}, date(2026, 10, 5))
+        self.assertEqual([k for k, _ in todo], ["2026-10-05|c|b", "2026-10-04|d|b", "2026-10-03|a|b"])
+        scan = mock.Mock(return_value={"status": "ok", "goals": {}})
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            store = {}
+            self.assertEqual(clips.run_pass(store, league, {}, self.now, scan=scan), (2, 1))
+            self.assertEqual(clips.run_pass(store, league, {}, self.now, scan=scan), (1, 0))
+            self.assertEqual(clips.run_pass(store, league, {}, self.now + timedelta(days=30), scan=scan), (0, 0))
+        self.assertIn("2026-10-03|a|b", store["games"])     # матчи сезона не забываем: по ним «Повтор» и клипы
 
 
 class Previews(unittest.TestCase):

@@ -367,7 +367,7 @@ class Nag(unittest.TestCase):
         sent, say = self.run_step()
         self.assertEqual(sent, 2)
         text, kb = say.call_args.args[2]()
-        self.assertIn("Не размечены повторы: Тверичи-СШОР — Металлург", text)
+        self.assertIn("Без превью, табло не разобрало: Тверичи-СШОР — Металлург", text)
         self.assertEqual(kb.inline_keyboard[0][0].callback_data, "rp:m:2026-10-03:0")
         self.assertEqual(self.run_step(self.now.replace(minute=45))[0], 0)  # второй раз за день — нет
         self.assertEqual(json.loads((self.dir / "bot.json").read_text())["days"]["2026-10-04"]["replay_nag"], 2)
@@ -390,6 +390,23 @@ class Nag(unittest.TestCase):
         live = {**GAME, "status": "live"}
         (self.dir / "2026-10-03.json").write_text(json.dumps({"date": "2026-10-03", "games": [live]}), encoding="utf-8")
         self.assertEqual(self.run_step()[0], 0)
+
+    def test_previews_waiting_instead_of_not_marked(self):
+        """ADR-030, раздел 7: табло разобрало матч — напоминание считает голы, которые ждут ответа на превью."""
+        ask = {"from": 1500, "len": 125, "file": "p.mp4", "cand": [47]}
+        clips_ = {"games": {GAME["key"]: {"video": VIDEO, "status": "ok", "goals": {
+            "1:0": {"change": 1620, "t": None, "ask": ask}, "1:1": {"change": 3000, "t": 2990, "src": "clock"},
+            "2:1": {"change": 4000, "t": None, "ask": ask}, "2:2": {"change": 5000, "t": 4990, "src": "board"}}}}}
+        (self.dir / "clips.json").write_text(json.dumps(clips_), encoding="utf-8")
+        sent, say = self.run_step()
+        self.assertEqual(sent, 2)
+        text, kb = say.call_args.args[2]()
+        self.assertTrue(text.startswith("🎬 Ждут превью: 2 гола в 1 матче — Тверичи-СШОР — Металлург."), text)
+        self.assertNotIn("Без превью", text)
+        self.assertEqual(kb.inline_keyboard[0][0].callback_data, "rp:m:2026-10-03:0")   # матч — в /replay
+        self.assertEqual(self.track.today()["previews_wait"], 2)
+        self.bot.replay_save("2026-10-03", 0, "1:0", f"{VIDEO}?t=27m", self.now)      # админ ответил на одно
+        self.assertEqual(self.bot.previews_waiting(clips_, self.bot.load_replays()["games"]), {GAME["key"]: ["2:1"]})
 
     def test_many_matches_link_to_list(self):
         todo = [("2026-10-03", k, GAME) for k in range(10)]

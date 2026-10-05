@@ -145,6 +145,43 @@ class Pass(unittest.TestCase):
         self.assertIn("2026-10-03|a|b", store["games"])     # матчи сезона не забываем: по ним «Повтор» и клипы
 
 
+class Pulse(unittest.TestCase):
+    """ADR-030, раздел 7: пульс и счётчики службы для пульта, отказ VK — отдельно от прочих ошибок."""
+    now = datetime(2026, 10, 5, 12, 0, tzinfo=TZ)
+
+    def track(self, tmp):
+        import admin
+        return admin.Tracker("clips", path=Path(tmp) / "clips-status.json", clock=lambda: self.now)
+
+    def test_vk_refusal_counted_and_beat_written(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            t = self.track(tmp)
+            clips.run_pass({}, LEAGUE, {}, self.now, scan=mock.Mock(side_effect=clips.VkError("HTTP 403")), track=t)
+            clips.run_pass({}, LEAGUE, {}, self.now, scan=mock.Mock(side_effect=RuntimeError("ffmpeg")), track=t)
+            day = json.loads((Path(tmp) / "clips-status.json").read_text(encoding="utf-8"))["days"]["2026-10-05"]
+            self.assertEqual(day, {"vk_fail": 1})   # ffmpeg упал — не VK
+            clips.run_pass({}, LEAGUE, {}, self.now, scan=mock.Mock(return_value={"status": "ok", "goals": {}}), track=t)
+            self.assertEqual(t.today(), {"vk_fail": 1, "vk_ok": 1})
+
+    def test_stream_errors_become_vk_errors(self):
+        with mock.patch.object(clips.sb, "stream_of", side_effect=RuntimeError("Unable to download webpage")):
+            with self.assertRaises(clips.VkError):
+                clips.stream(VIDEO)
+
+    def test_catalog(self):
+        store = {"games": {KEY: {"video": VIDEO, "status": "ok", "goals": {
+            "0:1": {"t": 2600, "src": "clock"}, "0:2": {"t": None, "change": 2969, "ask": {"file": "p.mp4"}},
+            "1:2": {"t": None, "change": 4000, "ask": {"file": "q.mp4"}}, "9:9": {"t": None}},
+            "clips": {"0:1": {"t": 2600}}}}}
+        league = json.loads(json.dumps(LEAGUE))
+        league["games"][0]["goals"] = [{"score": s, "team": "away" if s[0] == "0" else "home", "period": "1"}
+                                       for s in ("0:1", "0:2", "1:2")] + [{"score": "1:3", "period": "РБ"}]
+        marked = {KEY: {"video": "https://vkvideo.ru/video-100_200", "anchors": {"1:2": 4010}}}
+        got = clips.catalog(store, league, marked, date(2026, 10, 5))
+        self.assertEqual(got, {"goals": 3, "timed": 2, "timed_auto": 1, "timed_admin": 1, "clips": 1, "ask": 1,
+                               "no_video": 1, "mismatch": 1})   # без записи — rostov; 9:9 нет в протоколе
+
+
 class Previews(unittest.TestCase):
     """Шаг 3: превью гола без секунды — окно до смены табло и моменты, когда вставали часы."""
 

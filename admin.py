@@ -1,8 +1,8 @@
 """Пульт админа (ADR-021): счётчики служб по дням, статус системы и сводка проблем. Только stdlib.
 
 Службы копят счётчики в `Tracker` и пишут `status/<служба>.json` (каталог `STATUS_DIR`, на сервере
-`/opt/rhl/status`): бот — `bot.json`, служба pages — `pages.json`. Сервер API собирает из них, из
-`live/`, `subscribers.json`, своей базы и `systemctl` один ответ `GET /api/admin/status` —
+`/opt/rhl/status`): бот — `bot.json`, служба pages — `pages.json`, служба clips — `clips.json`. Сервер API
+собирает из них, из `live/`, `subscribers.json`, своей базы и `systemctl` один ответ `GET /api/admin/status` —
 `build_status`, а `problems` превращает его в список «что сломано».
 
 Ни id, ни имён людей в счётчиках нет. Открытия мини-аппа сервер считает в `AdminStore`: id там
@@ -26,7 +26,7 @@ LOG_KEEP = 10           # последних рассылок в журнале 
 WEEK = 7                # дней на пульте
 
 # службы systemd на сервере (deploy/) и как их называть на пульте
-UNITS = {"bot": "Бот", "live": "Живое", "api": "API", "pages": "Сборка Pages",
+UNITS = {"bot": "Бот", "live": "Живое", "api": "API", "pages": "Сборка Pages", "clips": "Клипы голов",
          "tg-tunnel": "Туннель в Telegram", "caddy": "HTTPS (Caddy)"}
 # задания GitHub Actions, за которыми следит служба pages
 WORKFLOWS = {"pages.yml": "Мини-апп", "deploy.yml": "Выложить бота", "tests.yml": "Тесты"}
@@ -39,6 +39,10 @@ SOURCE_ERRORS = 3
 BLOCKED_HOURS = 6   # live.BLOCKED_PAUSE: admin только stdlib и live не импортирует
 UNBLOCK = {"online.khl.ru": "письмо на access_deny@khl.ru"}   # адрес — со страницы 403 онлайна КХЛ
 DISK_LOW = 1 << 30
+CLIPS_STALE = timedelta(hours=1)   # служба clips пишет пульс после каждого матча и прохода (ADR-030, раздел 7)
+VK_FAILS = 3        # столько раз за день VK не отдал запись и ни разу не отдал — тревога: обычно чинит новый yt-dlp
+# что служба clips считает о каталоге голов (`Tracker.gauge`), плитки пульта — в «Рассылках»
+CLIPS_GAUGES = ("goals", "timed", "timed_auto", "timed_admin", "clips", "ask", "no_video", "mismatch")
 NIGHT_FROM, NIGHT_TO = 2, 7   # с 2:00 до 7:00 МСК сборку не будят (pages_kick.py) — не тревожимся
 
 STATE_WORDS = {"inactive": "остановлена", "failed": "упала", "activating": "запускается",
@@ -369,7 +373,8 @@ def match_title(key: str, teams: dict[str, str]) -> str:
 def build_status(*, now: datetime, teams: dict[str, str], services: dict | None, services_note: str = "",
                  bot: dict | None, pages: dict | None, league_updated: str | None, live_today: dict | None,
                  sources: dict | None, raskat: dict, disk: dict | None, subs, app_counts: dict[str, dict],
-                 games: dict, retention: dict | None = None) -> dict:
+                 games: dict, retention: dict | None = None, clips: dict | None = None,
+                 my_players: int | None = None) -> dict:
     """Один ответ пульта. Дни — последние WEEK, новые сверху: счётчики бота, открытия и игры вместе."""
     bot = bot if isinstance(bot, dict) else None
     pages = pages if isinstance(pages, dict) else None
@@ -403,6 +408,13 @@ def build_status(*, now: datetime, teams: dict[str, str], services: dict | None,
                              "errors": s.get("errors", 0), "games": s.get("games", 0), "note": no_ids(str(s.get("note") or "")),
                              "blocked": s.get("blocked")})
     info = (bot or {}).get("info") or {}
+    clips = clips if isinstance(clips, dict) else None
+    clip_days = (clips or {}).get("days") or {}
+    clip_today = clip_days.get(dates[0]) if isinstance(clip_days.get(dates[0]), dict) else {}
+    # снимок каталога — с последнего дня, где служба его писала: после полуночи до первого прохода — вчерашний
+    clip_last = next((clip_days[d] for d in sorted(clip_days, reverse=True)
+                      if isinstance(clip_days[d], dict) and isinstance(clip_days[d].get("goals"), int)), {})
+    clip_info = (clips or {}).get("info") or {}
     status = {
         "now": iso(now),
         "system": {
@@ -422,6 +434,9 @@ def build_status(*, now: datetime, teams: dict[str, str], services: dict | None,
                      "sources": src_rows},
             "raskat": raskat,
             "disk": disk,
+            "clips": {"beat": clips.get("beat"), "started": clips.get("started"),
+                      "vk_ok": clip_today.get("vk_ok", 0), "vk_fail": clip_today.get("vk_fail", 0),
+                      "vk_error": clip_info.get("vk_error"), "vk_last_ok": clip_info.get("vk_ok")} if clips else None,
         },
         "audience": {
             "subscribers": total,
@@ -432,7 +447,11 @@ def build_status(*, now: datetime, teams: dict[str, str], services: dict | None,
             "links_week": split("start:", week),
             "retention": retention,
         },
-        "sends": {"log": (bot or {}).get("log") or [], "last_error": info.get("last_error")},
+        "sends": {"log": (bot or {}).get("log") or [], "last_error": info.get("last_error"),
+                  # каталог голов (ADR-030, раздел 7): снимок службы clips на её последний проход
+                  "clips": {k: clip_last.get(k) for k in CLIPS_GAUGES if isinstance(clip_last.get(k), int)}
+                  if clips else None,
+                  "my_players": my_players},
         "games": {"raskat_players": games.get("raskat_players"),
                   "predict_top": [{**r, "title": match_title(r.get("key", ""), teams)}
                                   for r in games.get("predict_top") or []]},
@@ -564,6 +583,18 @@ def problems(status: dict, now: datetime) -> list[dict]:
     r = sysm.get("raskat") or {}
     if r and not r.get("on"):
         bad("raskat", f"Зачёт «Раската» выключен: {r.get('note')}")
+    c = sysm.get("clips")
+    if c is not None:
+        age = _ago(c.get("beat"), now)
+        if age is None or age > CLIPS_STALE:
+            bad("clips:beat", f"Служба клипов молчит {_mins(age) if age else 'неизвестно сколько'}: "
+                "голы без секунд и превью. Проверь systemctl status clips")
+        if (c.get("vk_fail") or 0) >= VK_FAILS and not c.get("vk_ok"):
+            n = c["vk_fail"]
+            word = "попытка" if n % 10 == 1 and n % 100 != 11 else "попытки" if times(n) == "раза" else "попыток"
+            bad("clips:vk", f"VK сегодня не отдал ни одной записи трансляции ({n} {word}): "
+                f"{c.get('vk_error') or 'ошибка не записана'}. Обычно лечит новый yt-dlp: "
+                "sudo -u rhl /opt/rhl/venv/bin/pip install -U yt-dlp и systemctl restart clips")
     d = sysm.get("disk") or {}
     if d.get("free") is not None and d["free"] < DISK_LOW:
         bad("disk", f"На диске меньше 1 ГБ: {d['free'] // (1 << 20)} МБ")

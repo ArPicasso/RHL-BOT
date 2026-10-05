@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 import admin
+import myplayer
 import predict
 import replay
 from aiogram import Bot, Dispatcher, F
@@ -92,6 +93,7 @@ PREVIEW_IDS = frozenset(int(x) for x in re.split(r"[,\s]+", os.environ.get("PREV
 PREVIEWS_FILE = BASE / "previews.json"   # какие превью ушли и кому: «ключ|счёт» → сообщения, ответ. Не в git
 PREVIEW_MAX = 4                    # превью за один проход пульса (раз в минуту): не заваливаем чат
 PREVIEW_KEEP = timedelta(days=4)   # записи о превью держим столько
+MY_PLAYER_WAIT = timedelta(hours=8)   # «Мой игрок»: клипа нет столько после начала матча — шлём гол без клипа
 PREVIEW_V = 2                      # 05.10: превью уходили без длины и размера — «0:01» в чате; старые шлём заново
 
 DOW = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
@@ -173,6 +175,9 @@ def emoji_off(err: Exception) -> bool:
 
 B_APP = "Открыть РХЛ"
 B_RECAP = "Как это было"
+B_GOALS = "Голы матча"
+B_GOAL = "Гол в приложении"
+B_PLAYER = "Страница игрока"
 B_LEADERS = "Все лидеры"
 B_RASKAT = "Собрать раскат"
 B_WAIT_ON = "Позвать, когда откроется"
@@ -198,7 +203,7 @@ def app_url(team: str | None = None, match: str | None = None, view: str | None 
             startapp: str | None = None) -> str:
     """Адрес мини-аппа; с командой — ?team=<id>, мини-апп выберет её, если своей ещё нет.
     С матчем — ?match=<id>, мини-апп сразу откроет его карточку (ADR-008).
-    С view=leaders — сразу «Таблица → Игроки» (ADR-009).
+    С view=leaders — сразу «Таблица → Игроки» (ADR-009), с матчем и view=goals — его голы клипами подряд (ADR-030).
     С startapp=raskat — сразу «Раскат» (контракт «Раската», раздел 6)."""
     extra = [(k, v) for k, v in (("team", team), ("match", match), ("view", view),
                                  ("startapp", startapp)) if v]
@@ -224,10 +229,14 @@ def app_kb(team: str | None = None, today: bool = False) -> InlineKeyboardMarkup
 
 
 def recap_kb(match: str, recap: bool = True) -> InlineKeyboardMarkup:
-    """Одна кнопка — карточка сыгранного матча в мини-аппе. Протокола ещё нет — «Матч в приложении»:
-    разбора «Как это было» там пока нет, только счёт."""
-    label = B_RECAP if recap else B_MATCH
-    return InlineKeyboardMarkup(inline_keyboard=[[btn(label, "goal", web_app=WebAppInfo(url=app_url(match=match)))]])
+    """Карточка сыгранного матча в мини-аппе. С протоколом — ещё «Голы матча» (ADR-030, раздел 6): мини-апп
+    открывает разбор и играет клипы голов подряд; клипов ещё нет — просто голы с «Повтором». Протокола ещё нет —
+    одна кнопка «Матч в приложении»: разбора «Как это было» там пока нет, только счёт."""
+    rows = [[btn(B_RECAP if recap else B_MATCH, "goal", web_app=WebAppInfo(url=app_url(match=match)))]]
+    if recap:
+        reel = WebAppInfo(url=app_url(match=match, view="goals"))
+        rows.append([InlineKeyboardButton(text=f"🎬 {B_GOALS}", web_app=reel)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def leaders_kb() -> InlineKeyboardMarkup:
@@ -401,10 +410,12 @@ def toggle_team(chat_id: int, team: str) -> str:
 
 
 def unsubscribe(chat_id: int, blocked: bool = False) -> None:
-    """blocked — бота заблокировали: на пульте отдельно от «Выключить»."""
+    """blocked — бота заблокировали: на пульте отдельно от «Выключить». «Выключить» и блокировка стирают и
+    «Моего игрока» (ADR-030, раздел 6): бот больше ничего не присылает."""
     if blocked and chat_id in SUBS:
         TRACK.add("blocked")
     set_teams(chat_id, [])
+    my_player_forget(chat_id)
 
 
 def turn_on(chat_id: int, team: str = REMIND_TEAM_ID) -> str:
@@ -1697,29 +1708,76 @@ def board_covers(g: dict, found: dict | None) -> bool:
                for x in replay.goals_of(g))
 
 
-def replay_nag(todo: list[tuple[str, int, dict]]) -> tuple[str, InlineKeyboardMarkup]:
-    """«Не размечены повторы: …» и кнопка на каждый матч — открывает его в /replay, как из списка."""
-    names = ", ".join(f"{tname(g.get('home', ''))} — {tname(g.get('away', ''))}" for _, _, g in todo)
-    rows = [[InlineKeyboardButton(text=replay_title(day, g), callback_data=f"rp:m:{day}:{i}")]
-            for day, i, g in todo[:REPLAY_NAG_MAX]]
-    if len(todo) > REPLAY_NAG_MAX:
-        rows.append([InlineKeyboardButton(text="Все матчи", callback_data="rp:list")])
-    return (f"🎬 Не размечены повторы: {html.escape(names)}.\n"
-            "Запись лиги уже подставлена — в матче достаточно прислать времена голов.",
-            InlineKeyboardMarkup(inline_keyboard=rows))
+def previews_waiting(clips: dict | None, marked: dict) -> dict[str, list[str]]:
+    """Голы, которые ждут ответа на превью (ADR-030, раздел 7): табло знает, какой это гол, секунды нет ни у табло,
+    ни у админа, а превью есть — ушло в чат или уйдёт. Ключ матча → счета голов по порядку."""
+    out: dict[str, list[str]] = {}
+    for key, game in sorted(((clips or {}).get("games") or {}).items()):
+        if not isinstance(game, dict):
+            continue
+        anchors = ((marked or {}).get(key) or {}).get("anchors") or {}
+        for score, g in sorted((game.get("goals") or {}).items(), key=lambda x: (x[1] or {}).get("change") or 0):
+            if isinstance((g or {}).get("ask"), dict) and g.get("t") is None and score not in anchors:
+                out.setdefault(key, []).append(score)
+    return out
+
+
+def key_title(key: str) -> str:
+    _, home, away = key.split("|")
+    return f"{tname(home)} — {tname(away)}"
+
+
+def replay_nag(todo: list[tuple[str, int, dict]], waiting: dict[str, list[str]] | None = None,
+               now: datetime | None = None) -> tuple[str, InlineKeyboardMarkup]:
+    """«Ждут превью: 7 голов в 3 матчах» (ADR-030, раздел 7) и матчи, где табло не дало ни секунд, ни превью, —
+    их размечают временами в /replay, как раньше (ADR-028). Кнопка на матч — открывает его в /replay."""
+    waiting = waiting or {}
+    parts, rows, seen = [], [], set()
+    if waiting:
+        n = sum(len(v) for v in waiting.values())
+        m = len(waiting)
+        names = ", ".join(key_title(k) for k in waiting)
+        parts.append(f"🎬 Ждут превью: {n} {plural(n, 'гол', 'гола', 'голов')} в {m} "
+                     f"{plural(m, 'матче', 'матчах', 'матчах')} — {html.escape(names)}.\n"
+                     "Превью — выше в чате: нажми момент гола или пришли время в видео.")
+    if todo:
+        names = ", ".join(f"{tname(g.get('home', ''))} — {tname(g.get('away', ''))}" for _, _, g in todo)
+        head = "Без превью" if waiting else "🎬 Без превью"
+        parts.append(f"{head}, табло не разобрало: {html.escape(names)}.\n"
+                     "Запись лиги уже подставлена — в матче достаточно прислать времена голов.")
+    days = set(replay_days(now)) if now else None
+    picks = [(day, i, g) for day, i, g in todo]
+    for key in waiting:   # матч из превью — тоже кнопкой, если он ещё в окне /replay
+        if days is not None and key[:10] in days:
+            games = (read_live(f"{key[:10]}.json") or {}).get("games") or []
+            i = next((i for i, g in enumerate(games) if isinstance(g, dict) and match_key(g) == key), None)
+            if i is not None:
+                picks.append((key[:10], i, games[i]))
+    for day, i, g in picks:
+        if (day, i) in seen:
+            continue
+        seen.add((day, i))
+        rows.append([InlineKeyboardButton(text=replay_title(day, g), callback_data=f"rp:m:{day}:{i}")])
+    if len(rows) > REPLAY_NAG_MAX:
+        rows = rows[:REPLAY_NAG_MAX] + [[InlineKeyboardButton(text="Все матчи", callback_data="rp:list")]]
+    return "\n\n".join(parts), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def replay_nag_step(bot: Bot, now: datetime) -> int:
-    """Раз в день после REPLAY_NAG_AT — напоминание админам о неразмеченных матчах. Ночью молчим, как тревоги
-    (ADR-022). Что сегодня уже напомнили, помнит счётчик дня replay_nag в status/bot.json: перезапуск бота
-    сообщение не повторит. Сколько матчей ждут, видно на пульте (replays_todo)."""
+    """Раз в день после REPLAY_NAG_AT — напоминание админам: сколько голов ждут ответа на превью и какие матчи с
+    записью лиги остались без секунд и превью. Ночью молчим, как тревоги (ADR-022). Что сегодня уже напомнили,
+    помнит счётчик дня replay_nag в status/bot.json: перезапуск бота сообщение не повторит. Те же числа — на пульте
+    (previews_wait, replays_todo)."""
     if not ADMIN_IDS:
         return 0
     todo = replay_todo(now, await published_league())
+    waiting = previews_waiting(read_live("clips.json"), load_replays()["games"])
     TRACK.gauge("replays_todo", len(todo))
-    if not todo or quiet(now) or now.astimezone(TZ).time() < REPLAY_NAG_AT or TRACK.today().get("replay_nag"):
+    TRACK.gauge("previews_wait", sum(len(v) for v in waiting.values()))
+    if (not todo and not waiting) or quiet(now) or now.astimezone(TZ).time() < REPLAY_NAG_AT \
+            or TRACK.today().get("replay_nag"):
         return 0
-    text, kb = replay_nag(todo)
+    text, kb = replay_nag(todo, waiting, now)
     sent = 0
     for cid in sorted(ADMIN_IDS):
         try:
@@ -2568,6 +2626,140 @@ async def goals_step(bot: Bot, now: datetime) -> int:
     return sent
 
 
+# ---------- «Мой игрок» (ADR-010, решение 3; ADR-030, раздел 6) ----------
+# Звёздочку ставят на странице игрока в мини-аппе, сервер API пишет связь «Telegram id → ключ игрока» в state.db
+# (myplayer.py). После матча с протоколом бот присылает отметившему гол этого игрока — клипом, когда служба clips его
+# выложила, а нет клипа через MY_PLAYER_WAIT после начала матча — текстом. Только голы (не передачи), только факты
+# протокола, только матчи с отметки и не старше RESULTS_FRESH_DAYS. Кому что ушло — журнал дня матча (reminded.json).
+
+_my_players: myplayer.MyPlayerStore | None = None
+CLIP_FILE_IDS: dict[str, str] = {}   # адрес клипа → file_id в Telegram: качает он его один раз
+
+
+def my_players() -> myplayer.MyPlayerStore | None:
+    """Связи «болельщик → игрок» из state.db. Базы нет — None: сервер API ещё не запускался."""
+    global _my_players
+    if _my_players is None:
+        if not STATE_DB.exists():
+            return None
+        conn = sqlite3.connect(STATE_DB, isolation_level=None, check_same_thread=False)
+        conn.execute("PRAGMA busy_timeout=5000")
+        _my_players = myplayer.MyPlayerStore(conn)
+    return _my_players
+
+
+def my_player_forget(chat_id: int) -> None:
+    try:
+        store = my_players()
+        if store is not None:
+            store.forget(chat_id)
+    except sqlite3.Error:   # база занята или испорчена — подписку всё равно выключаем
+        logging.exception("my player forget failed")
+
+
+def my_goals(league: dict | None, stars: list[tuple[int, str, str]], now: datetime) -> list[tuple[int, dict, dict]]:
+    """Что пора прислать: (болельщик, матч, гол). Гол автора с ключом `pk`, отмеченного звёздочкой, в матче с
+    протоколом не раньше дня отметки и не старше RESULTS_FRESH_DAYS. С клипом — сразу, без клипа — через
+    MY_PLAYER_WAIT после начала матча: клип обычно режется за пару часов после записи лиги."""
+    by_pk: dict[str, list[tuple[int, str]]] = {}
+    for fan, pk, at in stars:
+        by_pk.setdefault(pk, []).append((fan, str(at)[:10]))
+    since = (now.date() - timedelta(days=RESULTS_FRESH_DAYS)).isoformat()
+    out = []
+    for g in games_of(league):
+        if not (g.get("score") and g.get("id") and str(g.get("date") or "") >= since):
+            continue
+        start = start_of(g) or datetime.combine(date.fromisoformat(g["date"]), time(12, 0), TZ)
+        for x in g.get("goals") or []:
+            if not isinstance(x, dict) or x.get("period") == "РБ" or x.get("pk") not in by_pk:
+                continue
+            if not clip_of(x) and now < start + MY_PLAYER_WAIT:
+                continue
+            out += [(fan, g, x) for fan, day in by_pk[x["pk"]] if g["date"] >= day]
+    return out
+
+
+def clip_of(x: dict) -> dict | None:
+    c = x.get("clip")
+    return c if isinstance(c, dict) and _url(c.get("mp4")) else None
+
+
+def my_goal_text(g: dict, x: dict) -> str:
+    """«⭐ Иванов Иван забил!», матч и счёт после гола, период и время, передачи — только из протокола."""
+    side = x.get("team") if x.get("team") in ("home", "away") else None
+    home, away = (html.escape(tname(g[k])) for k in ("home", "away"))
+    pair = f"{home} — <b>{away}</b>" if side == "home" else f"<b>{home}</b> — {away}" if side else f"{home} — {away}"
+    where = ", ".join(v for v in (PERIODS.get(str(x.get("period"))), str(x.get("time") or "")) if v)
+    lines = [f"⭐ <b>{html.escape(str(x.get('author') or ''))}</b> забил!",
+             f"{pair} <b>{html.escape(str(x.get('score') or ''))}</b>" + (f" · {html.escape(where)}" if where else "")]
+    assists = [a for a in x.get("assists") or [] if isinstance(a, str) and a != "Игрок скрыт"]
+    if assists:
+        lines.append(f"Передачи: {html.escape(', '.join(assists))}")
+    lines.append("\n<i>Ты отметил его звёздочкой в приложении. Не присылать — сними её там же.</i>")
+    return "\n".join(lines)
+
+
+def my_goal_kb(g: dict, x: dict) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text=f"🏒 {B_GOAL}", web_app=WebAppInfo(url=app_url(match=g["id"])))],
+            [InlineKeyboardButton(text=f"⭐ {B_PLAYER}", web_app=WebAppInfo(url=app_url(startapp=f"p-{x['pk']}")))]]
+    if not clip_of(x) and (url := _url(x.get("replay"))):   # клипа нет — повтор записью лиги в VK с секунды
+        rows.insert(1, [InlineKeyboardButton(text="▶️ Повтор", url=url)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def send_my_goal(bot: Bot, cid: int, g: dict, x: dict) -> None:
+    """Гол клипом — видео по адресу из хранилища (Telegram качает его сам, дальше — file_id), не вышло — текстом."""
+    text, kb = my_goal_text(g, x), my_goal_kb(g, x)
+    c = clip_of(x)
+    if c:
+        try:
+            msg = await sending(lambda: bot.send_video(
+                cid, CLIP_FILE_IDS.get(c["mp4"]) or c["mp4"], caption=text, reply_markup=kb, supports_streaming=True,
+                duration=int(c["dur"]) if isinstance(c.get("dur"), (int, float)) else None, width=1280, height=720))
+            if msg.video:
+                CLIP_FILE_IDS[c["mp4"]] = msg.video.file_id
+            return
+        except TelegramBadRequest:   # Telegram не скачал клип — гол всё равно сообщаем
+            logging.exception("my player clip by url failed")
+    await say(bot, cid, lambda: (text, kb))
+
+
+async def my_player_step(bot: Bot, now: datetime) -> int:
+    """Один проход: голы «Моих игроков» отметившим. Сначала отмечаем в журнале дня матча, потом шлём: перезапуск
+    посреди рассылки гол не повторит. Telegram не доставит (заблокировали, не начинали диалог) — связь стираем."""
+    store = my_players()
+    if store is None or quiet(now):
+        return 0
+    try:
+        stars = store.all()
+    except sqlite3.Error:   # таблицы ещё нет: сервер API старой версии
+        return 0
+    if not stars:
+        return 0
+    sent = 0
+    for fan, g, x in my_goals(await published_league(), stars, now):
+        rec = ledger(date.fromisoformat(g["date"]), "player")
+        mark = f"{fan}|{g['id']}|{x.get('score')}"
+        if mark in rec["sent"]:
+            continue
+        remember(rec, mark, now)
+        try:
+            await send_my_goal(bot, fan, g, x)
+            sent += 1
+        except TelegramForbiddenError:
+            unsubscribe(fan, blocked=True)
+        except Exception as err:
+            if cant_reach(err):
+                my_player_forget(fan)
+            else:
+                logging.exception("my player goal to %s failed", fan)
+        await asyncio.sleep(0.05)
+    if sent:
+        TRACK.add("my_goal_sent", sent)
+        TRACK.flush()
+    return sent
+
+
 async def results_loop(bot: Bot):
     """Бот сам не качает протоколы: их собирает GitHub Actions и публикует вместе с мини-аппом.
     Живое (ADR-019) — файлы службы live на этом же сервере."""
@@ -2581,6 +2773,10 @@ async def results_loop(bot: Bot):
             await results_step(bot, now)
         except Exception:
             logging.exception("results step failed")
+        try:
+            await my_player_step(bot, now)   # голы «Моих игроков» — после финалов: тот же league.json
+        except Exception:
+            logging.exception("my player step failed")
         await asyncio.sleep(RESULTS_POLL)
 
 

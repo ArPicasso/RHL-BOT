@@ -267,6 +267,31 @@ class BuildStatusTest(unittest.TestCase):
         self.assertEqual([(p["level"], p["key"]) for p in got], [("warn", "blocked:online.khl.ru")])
         self.assertIn("access_deny@khl.ru", got[0]["text"])
 
+    def test_clips_service_silent_or_vk_refuses(self):
+        """ADR-030, раздел 7: служба clips молчит дольше часа, VK за день не отдал ни одной записи."""
+        ok = {"beat": ago(minutes=20), "days": {"2026-10-03": {"vk_ok": 1, "vk_fail": 5}}}
+        self.assertEqual(self.texts(clips=ok), [])
+        self.assertEqual(self.texts(clips=None), [])   # службы ещё нет — не тревога
+        got = self.texts(clips={"beat": ago(hours=1, minutes=5), "days": {}})
+        self.assertEqual(got, [("bad", "Служба клипов молчит 1 ч 5 мин: голы без секунд и превью. "
+                                       "Проверь systemctl status clips")])
+        vk = {"beat": ago(minutes=2), "info": {"vk_error": "DownloadError: HTTP Error 403"},
+              "days": {"2026-10-03": {"vk_fail": 3}, "2026-10-02": {"vk_ok": 9}}}
+        got = self.texts(clips=vk)
+        self.assertEqual(len(got), 1)
+        self.assertTrue(got[0][1].startswith("VK сегодня не отдал ни одной записи трансляции (3 попытки): "
+                                             "DownloadError: HTTP Error 403. Обычно лечит новый yt-dlp"), got)
+        self.assertEqual(self.texts(clips={**vk, "days": {"2026-10-03": {"vk_fail": 2}}}), [])   # рано
+
+    def test_clips_tiles_from_last_snapshot(self):
+        days = {"2026-10-02": {"goals": 40, "timed": 30, "clips": 20, "ask": 4, "no_video": 3, "vk_ok": 4},
+                "2026-10-03": {"vk_ok": 1}}   # после полуночи снимка ещё нет — берём вчерашний
+        st = healthy(clips={"beat": ago(minutes=1), "days": days}, my_players=5)
+        self.assertEqual(st["sends"]["clips"], {"goals": 40, "timed": 30, "clips": 20, "ask": 4, "no_video": 3})
+        self.assertEqual(st["sends"]["my_players"], 5)
+        self.assertEqual((st["system"]["clips"]["vk_ok"], st["system"]["clips"]["vk_fail"]), (1, 0))
+        self.assertIsNone(healthy()["sends"]["clips"])
+
     def test_no_systemctl_is_a_warning_not_a_crash(self):
         st = healthy(services=None, services_note="systemctl: FileNotFoundError")
         self.assertIsNone(st["system"]["services"])

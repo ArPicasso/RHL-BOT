@@ -8,11 +8,12 @@ ADR-019 (раздел 3), ADR-020 (раздел 3), docs/raskat/contract.md (р�
     /api/raskat/*            зачёт «Раската»
     /api/predict/*           прогнозы
     /api/seen                мини-апп открыли: счётчик людей за день для пульта (ADR-021)
+    /api/me/player           «Мой игрок» (ADR-030, раздел 6): чьи голы бот присылает после матча
     /api/admin/status        пульт админа: здоровье, аудитория, рассылки, игры — только ADMIN_IDS
 
 Авторизация — `Authorization: tma <initData>`: подпись Telegram WebApp, свежесть 24 часа,
 пользователь только из проверенного initData. CORS — только адрес Pages (`PAGES_ORIGIN`).
-Состояние — SQLite `state.db` (`STATE_DB`): `raskat_store.py` и `predict.py`.
+Состояние — SQLite `state.db` (`STATE_DB`): `raskat_store.py`, `predict.py` и `myplayer.py`.
 """
 import asyncio
 import hashlib
@@ -33,6 +34,7 @@ from zoneinfo import ZoneInfo
 from aiohttp import ClientSession, ClientTimeout, web
 
 import admin
+import myplayer
 import predict
 import raskat
 from raskat import rules
@@ -234,6 +236,7 @@ class Api:
         self.rs: RaskatStore | None = None
         self.pr: predict.PredictStore | None = None
         self.adm: admin.AdminStore | None = None
+        self.mp: myplayer.MyPlayerStore | None = None
         teams = json.loads(self.cfg.teams_file.read_text(encoding="utf-8"))
         self.teams = {t["id"]: t["name"] for t in teams}
         # Сверка соли (контракт, раздел 3): None — ещё не сверяли, True — сошлось или не с чем
@@ -257,6 +260,7 @@ class Api:
         self.rs = RaskatStore(self.conn)
         self.pr = predict.PredictStore(self.conn)
         self.adm = admin.AdminStore(self.conn)
+        self.mp = myplayer.MyPlayerStore(self.conn)
         if self._fetch is None:
             self.session = ClientSession(timeout=ClientTimeout(total=15),
                                          headers={"User-Agent": "rhl-u21-api"})
@@ -786,6 +790,26 @@ class Api:
         log.info("predict: болельщик стёр свои прогнозы")
         return reply({})
 
+    # ---------- «Мой игрок» (ADR-030, раздел 6) ----------
+
+    async def mp_get(self, request):
+        user = self.user(request)
+        return reply({"pk": self.mp.get(user["id"])})
+
+    async def mp_put(self, request):
+        user = self.user(request)
+        data = await self.body(request)
+        pk = data.get("pk")
+        if not isinstance(pk, str) or not myplayer.PK_RE.match(pk):
+            raise Fail(400, "Не понял, какой это игрок.")
+        self.mp.set(user["id"], pk, self.now())
+        return reply({"pk": pk})
+
+    async def mp_forget(self, request):
+        user = self.user(request)
+        self.mp.forget(user["id"])
+        return reply({"pk": None})
+
     # ---------- пульт админа (ADR-021) ----------
 
     async def seen(self, request):
@@ -854,7 +878,8 @@ class Api:
             raskat={"on": self.salt_ok is not False, "note": self.salt_note},
             disk=self.disk(), subs=admin.read_json(self.cfg.subs_file),
             app_counts=self.adm.counts(since), games=admin.game_stats(self.conn, since, now.date()),
-            retention=self.adm.retention(now.date()))
+            retention=self.adm.retention(now.date()), clips=admin.read_json(self.cfg.status_dir / "clips.json"),
+            my_players=self.mp.count())
 
     # ---------- обвязка ----------
 
@@ -906,6 +931,9 @@ def make_app(config: Config | None = None, fetch=None, now=None) -> web.Applicat
     r.add_post("/api/seen", api.seen)
     r.add_get("/api/admin/status", api.admin_status)
     r.add_get("/api/live/{name:" + LIVE_NAME + "}.json", api.live)
+    r.add_get("/api/me/player", api.mp_get)
+    r.add_put("/api/me/player", api.mp_put)
+    r.add_delete("/api/me/player", api.mp_forget)
     rs = "/api/raskat"
     r.add_get(rs + "/me", api.rs_me)
     r.add_delete(rs + "/me", api.rs_forget)

@@ -32,6 +32,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,12 +48,13 @@ STABLE = 0.85           # пиксель графики: не меняется �
 SHOWN = 0.75            # табло на экране: столько пикселей графики совпадает с обычным видом
 MIN_PX = 8              # смена в зоне: изменилось не меньше стольких пикселей
 ZONE_SHARE = 0.15       # и не меньше такой доли зоны (цифра 20 px — это 60–150 пикселей)
-GAP = 4                 # пиксели ближе — одна зона: цифры «2:1» — одна зона, часы рядом — другая
+GAP = 2                 # пиксели ближе — одна зона: цифры «2:1» — одна зона, часы рядом — другая
 MIN_ZONE = 12           # зона меньше — шум сжатия
 ZONE_MAX = 10           # зона сменилась чаще — это часы, а не счёт: одна команда больше 10 раз за матч не забивает
 MAX_FLIPS = 15          # пиксель счёта меняется за запись не чаще: минуты часов игры меняются десятки раз
 HOLD = 2                # новое должно держаться ещё в стольких кадрах с табло
 MEDIAN_FRAMES = 200     # обычный вид табло — медиана по стольким кадрам (равномерно по записи)
+TIMELINE = (-20, 0, 5, 10, 15, 20, 30, 45, 60, 90)   # с от гола: кадры ленты табло в --check
 MATCH_WINDOW = (-30, 300)    # с: смена табло, которую сравниваем с голом админа, — от 30 с до гола до 5 минут после
 FORMAT = "b[height<=480][height>=240]/b[height<=480]/w"   # хватает для табло, качается быстро
 
@@ -115,6 +117,13 @@ def save_png(src: str, headers: dict | None, t: float, path: Path, box=None) -> 
     vf = crop_filter(box, gray=False).replace(f"scale={W}:{H}", f"scale={W * 2}:{H * 2}") if box else "scale=640:-2"
     subprocess.run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", *header_args(headers), "-ss", f"{t:.2f}",
                     "-i", src, "-frames:v", "1", "-vf", vf, str(path)], capture_output=True, timeout=120)
+
+
+def save_raw(raw: bytes, path: Path, w: int = W, h: int = H) -> None:
+    """Серую рамку (наши байты) — в картинку вдвое крупнее, пиксели без сглаживания: видно, что именно сравнивали."""
+    subprocess.run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "gray",
+                    "-s", f"{w}x{h}", "-i", "-", "-vf", "scale=iw*2:ih*2:flags=neighbor", str(path)],
+                   input=raw, capture_output=True, timeout=60)
 
 
 # ---------- табло ----------
@@ -182,12 +191,17 @@ def rare(frames: list[bytes], mask: list[int]) -> list[int]:
     return [p for p in mask if 1 <= flips[p] <= MAX_FLIPS]
 
 
-def changes(samples: list[tuple[float, bytes]], mask: list[int], med: dict[int, int]) -> list[dict]:
+def changes(samples: list[tuple[float, bytes]], mask: list[int], med: dict[int, int],
+            report: list | None = None) -> list[dict]:
     """Смены табло по зонам (zones от rare): (последний кадр со старым видом, первый с новым). Новое держится
     HOLD кадров с табло — иначе это мелькание (плашку перекрыло, сменили на миг). Кадры без табло (повтор,
-    перерыв, реклама) пропускаем: ждём, пока плашка вернётся."""
+    перерыв, реклама) пропускаем: ждём, пока плашка вернётся. Зона, которая сменилась чаще ZONE_MAX раз, —
+    скорее часы: её смены помечены `often`, а не выброшены (иначе не видно, что счёт слипся с часами).
+    report — сюда кладём по зоне: место, размер, сколько смен."""
     vis = [(t, f) for t, f in samples if shown(f, mask, med)]
     out = []
+    if not vis:
+        return out
     for zi, zone in enumerate(zones(rare([f for _, f in vis], mask))):
         need = max(MIN_PX, ZONE_SHARE * len(zone))
         mine = []
@@ -202,9 +216,22 @@ def changes(samples: list[tuple[float, bytes]], mask: list[int], med: dict[int, 
             if len(after) == HOLD and all(len(moved(f, g, diff)) < len(diff) / 2 for _, g in after):
                 mine.append({"lo": cur_t, "hi": t, "before": cur, "after": f, "pixels": diff, "zone": zi})
                 cur_t, cur = t, f
-        if len(mine) <= ZONE_MAX:
-            out += mine
-    return sorted(out, key=lambda c: c["hi"])
+        often = len(mine) > ZONE_MAX
+        for c in mine:
+            c["often"] = often
+        out += mine
+        if report is not None:
+            xs, ys = [p % W for p in zone], [p // W for p in zone]
+            report.append({"zone": zi, "size": len(zone), "box": (min(xs), max(xs), min(ys), max(ys)),
+                           "changes": len(mine), "often": often})
+    merged: dict[tuple, dict] = {}   # одна цифра бывает в нескольких зонах — их смены в одном промежутке одна смена
+    for c in sorted(out, key=lambda c: (c["hi"], c["often"])):
+        same = merged.get((c["lo"], c["hi"]))
+        if same and same["often"] == c["often"]:
+            same["pixels"] = same["pixels"] + c["pixels"]
+        else:
+            merged.setdefault((c["lo"], c["hi"]), c)
+    return sorted(merged.values(), key=lambda c: c["hi"])
 
 
 def refine(ch: dict, get, mask: list[int], med: dict[int, int], step: float, tries: int = 10) -> dict:
@@ -334,14 +361,81 @@ def site_goals(live: Path, key: str) -> list[tuple[str, str, float]]:
             for g in replay.goals_of(game or {}) if g["at"]]
 
 
+def steady_change(before: list[bytes], after: list[bytes]) -> list[int]:
+    """Пиксели, которые до гола стоят на месте, после гола тоже стоят, но уже другие: так меняется графика
+    (счёт), а не игра — игра меняется и внутри «до», и внутри «после»."""
+    out = []
+    for p in range(W * H):
+        a, b = [f[p] for f in before], [f[p] for f in after]
+        if max(a) - min(a) <= DIFF and max(b) - min(b) <= DIFF and abs(sum(a) / len(a) - sum(b) / len(b)) > DIFF:
+            out.append(p)
+    return out
+
+
+def timeline(src: str, headers: dict | None, t: int, box, path: Path) -> None:
+    """Лента табло вокруг гола одной картинкой: рамка в моменты TIMELINE сверху вниз. По ней видно на глаз,
+    через сколько секунд сменился счёт, убирали ли плашку на повтор и не поправлял ли оператор счёт."""
+    parts = []
+    for k, d in enumerate(TIMELINE):
+        part = path.with_name(f"{path.stem}_{k:02d}.png")
+        save_png(src, headers, max(0, t + d), part, box)
+        if part.exists():
+            parts.append(part)
+    if parts:
+        args = [x for part in parts for x in ("-i", str(part))]
+        subprocess.run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", *args, "-filter_complex",
+                        f"vstack=inputs={len(parts)}" if len(parts) > 1 else "null", str(path)],
+                       capture_output=True, timeout=120)
+    for part in parts:
+        part.unlink()
+
+
+def check(name: str, src: str, headers: dict | None, truth: dict[str, int], args) -> None:
+    """Быстрая проверка без прохода по записи (--check): у каждого гола админа по три кадра рамки до (за 30–20 с)
+    и после (через after…after+10 с) — что на табло сменилось и где. Картинки рамки до и после, разница и кадр
+    целиком — в папку матча. Так видно, есть ли табло в рамке и насколько заметна смена счёта."""
+    out = args.out / re.sub(r"[^\w.-]+", "_", name)
+    out.mkdir(parents=True, exist_ok=True)
+    for old in out.glob("check_*.png"):
+        old.unlink()
+    print(f"\n{name} — проверка по временам админа", flush=True)
+    x0, y0, bw, bh = args.box
+    for score, t in sorted(truth.items(), key=lambda x: x[1]):
+        tag = score.replace(":", "-")
+        before = [grab(src, headers, args.box, max(0, t - d)) for d in (30, 25, 20)]
+        after = [grab(src, headers, args.box, t + args.after + d) for d in (0, 5, 10)]
+        save_png(src, headers, max(0, t - 20), out / f"check_{tag}_before.png", args.box)
+        save_png(src, headers, t + args.after, out / f"check_{tag}_after.png", args.box)
+        save_png(src, headers, t + args.after, out / f"check_{tag}_frame.png")
+        timeline(src, headers, t, args.box, out / f"check_{tag}_timeline.png")
+        if any(f is None for f in before + after):
+            print(f"  гол {score} ({replay.fmt_t(t)}): кадр не скачался")
+            continue
+        diff = steady_change(before, after)
+        save_raw(bytes(255 if p in set(diff) else before[-1][p] // 3 for p in range(W * H)), out / f"check_{tag}_diff.png")
+        if not diff:
+            print(f"  гол {score} ({replay.fmt_t(t)}): в рамке ничего не сменилось — табло не в рамке, "
+                  f"или через {args.after} с после гола ещё повтор (попробуй --after 60)")
+            continue
+        xs, ys = [p % W for p in diff], [p // W for p in diff]
+        fx = (x0 + bw * min(xs) / W, x0 + bw * (max(xs) + 1) / W)
+        fy = (y0 + bh * min(ys) / H, y0 + bh * (max(ys) + 1) / H)
+        print(f"  гол {score} ({replay.fmt_t(t)}): сменилось {len(diff)} пикселей, в рамке x {min(xs)}–{max(xs)}, "
+              f"y {min(ys)}–{max(ys)}; в кадре x {fx[0]:.2f}–{fx[1]:.2f}, y {fy[0]:.2f}–{fy[1]:.2f}")
+    print(f"  картинки — {out}: check_*_timeline.png — табло через "
+          f"{', '.join(f'{d:+d}' for d in TIMELINE)} с от гола (сверху вниз), check_*_diff.png — что сменилось "
+          f"(белое), check_*_frame.png — кадр целиком", flush=True)
+
+
 def probe(name: str, src: str, headers: dict | None, truth: dict[str, int], site: list, args) -> list:
     out = args.out / re.sub(r"[^\w.-]+", "_", name)
     out.mkdir(parents=True, exist_ok=True)
     for old in out.glob("*.png"):   # картинки прошлого запуска — не путать с новыми
         old.unlink()
-    print(f"\n{name}")
+    print(f"\n{name}\n  качаю запись и смотрю кадр раз в {args.step} с — несколько минут…", flush=True)
+    began = time.monotonic()
     samples = scan(src, headers, args.box, args.step, args.start, args.end)
-    print(f"  кадров первого прохода: {len(samples)} (раз в {args.step} с)")
+    print(f"  кадров первого прохода: {len(samples)} за {round(time.monotonic() - began)} с", flush=True)
     for score, t in sorted(truth.items(), key=lambda x: x[1]):   # кадр целиком через минуту после гола — где табло
         save_png(src, headers, t + 60, out / f"goal_{score.replace(':', '-')}_frame.png")
     if not samples:
@@ -354,15 +448,29 @@ def probe(name: str, src: str, headers: dict | None, truth: dict[str, int], site
         print("  табло в рамке не нашлось: посмотри goal_*_frame.png и задай --box")
         return []
     med = usual(frames, mask)
-    found = changes(samples, mask, med)
+    seen = sum(shown(f, mask, med) for f in frames)
+    print(f"  табло на экране в {seen} кадрах из {len(frames)} ({round(100 * seen / len(frames))}%)")
+    save_raw(bytes(med.get(p, 0) for p in range(W * H)), out / "board_usual.png")
+    report: list = []
+    found = changes(samples, mask, med, report)
+    save_raw(bytes(255 if any(z["box"][0] <= p % W <= z["box"][1] and z["box"][2] <= p // W <= z["box"][3]
+                              for z in report) else med.get(p, 0) // 3 for p in range(W * H)), out / "board_zones.png")
+    print(f"  зон, которые иногда меняются: {len(report)}")
+    for z in report:
+        x1, x2, y1, y2 = z["box"]
+        print(f"    зона {z['zone']}: x {x1}–{x2}, y {y1}–{y2}, пикселей {z['size']}, смен {z['changes']}"
+              + (" — часто, похоже на часы" if z["often"] else ""))
+    print("  уточняю смены до секунды…", flush=True)
     exact = [refine(c, lambda t: grab(src, headers, args.box, t), mask, med, args.step) for c in found]
+    main_ = [c for c in exact if not c["often"]]
     for k, c in enumerate(exact, 1):
         save_png(src, headers, max(0, c["lo"] - 1), out / f"change_{k:02d}_before.png", args.box)
         save_png(src, headers, c["hi"] + 1, out / f"change_{k:02d}_after.png", args.box)
-    picked = align([c["hi"] for c in exact], site)
+    picked = align([c["hi"] for c in main_], site)
     by_t = {t: s for s, t in picked.items()}
-    print(f"  смен табло: {len(exact)}, голов у админа: {len(truth)}, у сайта лиги: {len(site)}")
-    for k, c in enumerate(exact, 1):
+    print(f"  смен табло: {len(main_)} (и ещё {len(exact) - len(main_)} в частых зонах — часы?), "
+          f"голов у админа: {len(truth)}, у сайта лиги: {len(site)}")
+    for k, c in enumerate(main_, 1):
         xs, ys = [p % W for p in c["pixels"]], [p // W for p in c["pixels"]]
         where = f"x {min(xs)}–{max(xs)}, y {min(ys)}–{max(ys)}"
         goal = by_t.get(c["hi"])
@@ -375,12 +483,14 @@ def probe(name: str, src: str, headers: dict | None, truth: dict[str, int], site
             med = lags[len(lags) // 2]
             print(f"  без эталона, по сайту лиги: найдено {len(picked)} из {len(site)}; против админа — запоздание "
                   f"табло {lags}, в пределах ±10 с от медианы {sum(abs(v - med) <= 10 for v in lags)} из {len(truth)}")
-    rows = against([c["hi"] for c in exact], truth)
+    rows = against([c["hi"] for c in main_], truth)
     if truth:
         for score, t, s in rows:
             print(f"    гол {score} у админа {replay.fmt_t(t)}: " + (f"табло через {round(s - t):+d} с" if s is not None else "на табло не нашёлся"))
         print("  " + lag_summary(rows))
-    print(f"  картинки — {out}")
+        if len(main_) < len(exact):   # вдруг счёт слипся в одну зону с часами
+            print("  с частыми зонами: " + lag_summary(against([c["hi"] for c in exact], truth)))
+    print(f"  картинки — {out}: board_usual.png — обычный вид табло, board_zones.png — зоны (белое)")
     return rows
 
 
@@ -393,11 +503,18 @@ def main() -> None:
     ap.add_argument("--step", type=int, default=STEP)
     ap.add_argument("--start", type=int, default=0, help="с какой секунды записи смотреть")
     ap.add_argument("--end", type=int, default=None, help="до какой секунды")
+    ap.add_argument("--check", action="store_true",
+                    help="быстро, без прохода по записи: что сменилось на табло вокруг каждого гола админа")
+    ap.add_argument("--after", type=int, default=40, help="для --check: через сколько секунд после гола смотреть табло")
     ap.add_argument("--live", type=Path, default=Path(os.environ.get("LIVE_DIR") or ROOT / "live"))
     ap.add_argument("--out", type=Path, default=ROOT / "probe" / "scoreboard")
     args = ap.parse_args()
     if args.stream:
-        probe(Path(args.stream).name, args.stream, None, parse_truth(args.truth), [], args)
+        name, truth = Path(args.stream).name, parse_truth(args.truth)
+        if args.check:
+            check(name, args.stream, None, truth, args)
+        else:
+            probe(name, args.stream, None, truth, [], args)
         return
     try:
         marked = json.loads((args.live / "replays.json").read_text(encoding="utf-8")).get("games") or {}
@@ -415,6 +532,9 @@ def main() -> None:
             print(f"\n{key}: поток не получили — {type(err).__name__}: {err}")
             continue
         truth = {s: t for s, t in (entry.get("anchors") or {}).items() if isinstance(t, int)}
+        if args.check:
+            check(key, src, headers, truth, args)
+            continue
         every += probe(key, src, headers, truth, site_goals(args.live, key), args)
     if len(keys) > 1:
         print("\nВсего: " + lag_summary(every))

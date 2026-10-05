@@ -80,7 +80,8 @@ def days_back(today: date, n: int = DAYS) -> set[str]:
 
 def pending(league: dict | None, marked: dict, store: dict, today: date) -> list[tuple[str, str]]:
     """Какие матчи разобрать: (ключ, ролик). Сыгранные за DAYS дней с записью лиги и размеченные админом (его
-    ролик главнее). Уже разобранный ролик не трогаем; новый ролик у матча — разбираем заново; упавший — до TRIES раз."""
+    ролик главнее). Уже разобранный ролик не трогаем; новый ролик у матча — разбираем заново; упавший — до TRIES раз;
+    матч без разметки табло — заново, как только табло клуба появилось в boards.json."""
     days = days_back(today)
     found = sb.recorded(league, days)
     for key, e in (marked or {}).items():
@@ -91,7 +92,8 @@ def pending(league: dict | None, marked: dict, store: dict, today: date) -> list
         video = found[key]["video"]
         was = store.get(key) or {}
         if replay.same_video(was.get("video"), video):
-            if was.get("status") in ("ok", "no_board") or was.get("tries", 0) >= TRIES:
+            marked_now = was.get("status") == "no_board" and key.split("|")[1] in sb.BOARDS   # табло разметили
+            if not marked_now and (was.get("status") in ("ok", "no_board") or was.get("tries", 0) >= TRIES):
                 continue
         out.append((key, video))
     return out

@@ -43,6 +43,10 @@ fi
 
 # Счётчики и пульс служб для пульта админа (ADR-021): бот и pages пишут сюда, api читает
 install -d -m 750 -o rhl -g rhl "$APP/status"
+# Кадры прохода и превью службы clips (ADR-030): пробник, запущенный руками от root, оставлял папки, куда служба
+# не могла писать (05.10). Каталог — службе, пробники — от неё же: sudo -u rhl venv/bin/python tools/…
+install -d -m 750 -o rhl -g rhl "$APP/probe"
+chown -R rhl:rhl "$APP/probe"
 
 # Бэкап состояния раз в сутки (deploy/backup.sh): каталог заводим мы — у rhl нет прав на /var/backups
 if [ -f deploy/backup.timer ]; then

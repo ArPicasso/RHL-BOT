@@ -34,7 +34,8 @@
   `PAGES_TOKEN` в `/etc/rhl/bot.env`. Шаги задания:
   1. `league.py` — протоколы и лидеры со старого движка `nmhl.fhr.ru`, только если задана `LEAGUE_SITE`.
   2. `rhl_site.py` — матчи, протоколы сыгранных и лидеры сезона с `rhl.fhr.ru` (кэш `rhl_site.json`,
-     лидеры — в `leaders.json`).
+     лидеры — в `leaders.json`). Протокол сыгранного матча не разобрался — в журнале «протокол <id> не
+     разобран: <чего нет>», а сама страница — в артефакте запуска `rhl-protocol-unparsed` (три дня).
   3. `tg_channels.py` — посты каналов клубов.
   4. `build_data.py` — `league.json`, `h2h.json`, `matches/`, `feed/`. Календарь пока берётся с r-hockey.ru,
      последний удачный — в кэше `rhockey.json`.

@@ -43,6 +43,8 @@ MAX_PAGES = 24          # страниц матч-центра за запуск
 MAX_VIDEO = 12          # вкладок «Видео» за запуск (rhl_media.py, ADR-019, раздел 7)
 REPORT_EVERY = timedelta(hours=3)   # протокол перечитываем не чаще, пока лига может его поправить (SETTLE_DAYS)
 REPORT_DAYS = 7         # протокола всё нет — ищем его столько дней после матча, каждый запуск
+AUTHORS_WAIT = timedelta(days=1)    # сыгран, а авторов голов на карточке нет — перечитываем её столько
+UNPARSED = BASE / "probe" / "rhl_protocol"   # неразобранные вкладки «Протокол»: задание Pages выкладывает их артефактом
 LEADERS_EVERY = timedelta(hours=6)  # лидеров перечитываем не чаще, если за запуск не пришло новых протоколов
 
 # статус карточки на сайте → статус матча (ADR-012, раздел 1)
@@ -197,10 +199,23 @@ def merge(store: dict, rows: list[dict]) -> None:
                 g[k] = v
 
 
+def goals_done(g: dict) -> bool:
+    """Авторов голов на карточке столько же, сколько голов в счёте. По ходу матча блок авторов пуст и
+    заполняется после сирены — не всегда к тому разу, когда сайт уже назвал победителя."""
+    score, goals = g.get("score"), g.get("goals") or {}
+    if not isinstance(score, list) or len(score) != 2:
+        return False
+    return len(goals.get("home") or []) + len(goals.get("away") or []) >= int(score[0]) + int(score[1])
+
+
 def need_page(g: dict, now: datetime) -> bool:
-    """Страницу матча качаем, пока итог не подтверждён: идёт, сыгран без подробностей или без команд."""
+    """Страницу матча качаем, пока итог не подтверждён: идёт, сыгран без подробностей или без команд.
+    Сыгранный без авторов голов — ещё AUTHORS_WAIT, пока не придёт протокол: он подробнее карточки."""
     if g.get("checked") == "final":
         return False
+    if g.get("checked") == "authors":
+        start = datetime.fromisoformat(g["start"]) if g.get("start") else None
+        return not g.get("report") and start is not None and now - start <= AUTHORS_WAIT
     if g.get("status") in ("live", "final") or not g.get("home"):
         return True
     start = datetime.fromisoformat(g["start"]) if g.get("start") else None
@@ -215,7 +230,7 @@ def apply_page(g: dict, p: dict, seen: datetime | None = None) -> None:
         g["status"], g["score"] = p["status"], p["score"]
     if seen is not None:
         g["seen"] = seen.isoformat(timespec="seconds")
-    g["checked"] = "final" if p["status"] == "final" else "page"
+    g["checked"] = ("final" if goals_done(g) else "authors") if p["status"] == "final" else "page"
 
 
 def live_state(g: dict) -> dict | None:
@@ -297,8 +312,20 @@ async def fetch_reports(s: aiohttp.ClientSession, site: str, store: dict, now: d
             fresh += not g.get("report")
             g["report"] = p.to_json()
         else:
-            logging.warning("протокол %s не разобран: страница незнакомая или матч не окончен", g["id"])
+            logging.warning("протокол %s не разобран: %s", g["id"], rhl_protocol.why_not(html) or "незнакомая вёрстка")
+            keep_unparsed(g["id"], html)
     return fresh
+
+
+def keep_unparsed(game_id, html: str, folder: Path | None = None) -> None:
+    """Вкладку «Протокол», которую не разобрали у сыгранного матча, — в probe/rhl_protocol/<id>.html:
+    по ней видно, что сайт отдаёт до готового протокола, и из неё делается фикстура tests/."""
+    folder = folder or UNPARSED
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{game_id}.html").write_text(html, encoding="utf-8")
+    except OSError as e:
+        logging.warning("протокол %s не сохранён: %s", game_id, e)
 
 
 async def fetch_leaders(s: aiohttp.ClientSession, site: str, store: dict, now: datetime, fresh: int) -> None:

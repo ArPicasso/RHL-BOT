@@ -43,6 +43,7 @@ DAYS = 3            # матчи за столько дней, включая с
 EVERY = 600         # с между проходами
 TRIES = 3           # столько раз пробуем матч, который не скачался или упал
 KEEP_DAYS = 3       # кадры прохода держим столько дней
+VERSION = 2         # разбор поменялся (05.10: голы по порядку протокола) — матчи за DAYS дней разбираем заново
 PREVIEW_BEFORE = 120   # с записи до смены счёта на табло в превью: оператор меняет счёт через 0–90 с после гола
 PREVIEW_AFTER = 5      # и после смены
 PREVIEW_FORMAT = "b[height<=360][height>=240]/b[height<=480]/w"   # превью лёгкое: смотрят в Telegram
@@ -91,7 +92,7 @@ def pending(league: dict | None, marked: dict, store: dict, today: date) -> list
     for key in sorted(found):
         video = found[key]["video"]
         was = store.get(key) or {}
-        if replay.same_video(was.get("video"), video):
+        if replay.same_video(was.get("video"), video) and was.get("v", 1) >= VERSION:
             marked_now = was.get("status") == "no_board" and key.split("|")[1] in sb.BOARDS   # табло разметили
             if not marked_now and (was.get("status") in ("ok", "no_board") or was.get("tries", 0) >= TRIES):
                 continue
@@ -180,7 +181,17 @@ def add_previews(key: str, video: str, goals: dict[str, dict], length: float | N
         log.info("%s %s: превью %s, моментов часов %d", key, score, replay.fmt_t(start), len(cand))
 
 
-def scan_match(key: str, video: str, anchors: dict) -> dict:
+def protocol_order(league: dict | None, key: str) -> list[tuple[str, str, str]]:
+    """Голы протокола матча из league.json по порядку, без буллитов: (счёт, команда, период). Нужны, когда служба
+    live не записала времени голов (03.10): тогда смены табло сопоставляем с голами по порядку."""
+    day, home, away = key.split("|")
+    g = next((g for g in (league or {}).get("games") or []
+              if isinstance(g, dict) and (g.get("date"), g.get("home"), g.get("away")) == (day, home, away)), None)
+    return [(x["score"], x.get("team"), str(x.get("period") or "")) for x in (g or {}).get("goals") or []
+            if isinstance(x, dict) and x.get("period") != "РБ" and isinstance(x.get("score"), str)]
+
+
+def scan_match(key: str, video: str, anchors: dict, order: list[tuple[str, str, str]] | None = None) -> dict:
     """Один матч: проход по записи и голы по табло. Исключения (VK не отдал, ffmpeg упал) — наверх."""
     club = key.split("|")[1]
     src, headers, length = sb.stream_of(video)
@@ -190,11 +201,13 @@ def scan_match(key: str, video: str, anchors: dict) -> dict:
         sb.grid_sheet(src, headers, length, out / "grid.png")
         log.info("%s: табло клуба %s не размечено — grid.png для разметки в boards.json", key, club)
         return {"status": "no_board", "goals": {}}
-    args = SimpleNamespace(out=WORK, step=sb.STEP, start=0, end=None, rescan=False)
+    args = SimpleNamespace(out=WORK, step=sb.STEP, start=0, end=None, rescan=False,
+                           order=[(score, team) for score, team, _ in order or []])
     truth = {s: t for s, t in (anchors or {}).items() if isinstance(t, int)}
     sb.probe(key, src, headers, truth, sb.site_goals(LIVE_DIR, key), sb.BOXES[club], args)
     board = read_json(out / "goals.json").get("goals") or []
-    goals = found_goals(board, live_goals(key))
+    live = live_goals(key) or {score: {"team": team, "period": per} for score, team, per in order or []}
+    goals = found_goals(board, live)
     try:
         add_previews(key, video, goals, length, out)
     except Exception as err:   # без превью голы всё равно записываем: секунды табло уже есть
@@ -208,14 +221,16 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
     todo = pending(league, marked, games, now.date())
     for key, video in todo:
         was = games.get(key) or {}
-        tries = (was.get("tries", 0) if replay.same_video(was.get("video"), video) else 0) + 1
+        same = replay.same_video(was.get("video"), video) and was.get("v", 1) >= VERSION
+        tries = (was.get("tries", 0) if same else 0) + 1
         log.info("%s: разбираю %s (попытка %d)", key, video, tries)
         try:
-            got = scan(key, video, ((marked or {}).get(key) or {}).get("anchors") or {})
+            got = scan(key, video, ((marked or {}).get(key) or {}).get("anchors") or {}, protocol_order(league, key))
         except Exception as err:   # VK не отдал, ffmpeg упал — дальше не ломимся (ADR-012), попробуем в другой проход
             log.warning("%s: не разобрали — %s: %s", key, type(err).__name__, err)
             got = {"status": "error", "error": f"{type(err).__name__}: {err}"[:300], "goals": was.get("goals") or {}}
-        games[key] = {"video": video, "tries": tries, "scanned": now_msk().isoformat(timespec="seconds"), **got}
+        games[key] = {"video": video, "v": VERSION, "tries": tries, "scanned": now_msk().isoformat(timespec="seconds"),
+                      **got}
         timed = sum(1 for g in games[key]["goals"].values() if g.get("t") is not None)
         log.info("%s: %s, голов по табло %d, с секундой %d", key, got["status"], len(games[key]["goals"]), timed)
         store["updated"] = now_msk().isoformat(timespec="seconds")

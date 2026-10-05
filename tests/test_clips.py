@@ -60,17 +60,19 @@ class Pending(unittest.TestCase):
         self.assertIn("2026-10-05|samara|sokol", got)
 
     def test_done_once_per_video_and_retries(self):
-        done = {KEY: {"video": "https://vkvideo.ru/video-100_200", "status": "ok"}}
+        done = {KEY: {"video": "https://vkvideo.ru/video-100_200", "status": "ok", "v": clips.VERSION}}
         self.assertEqual(clips.pending(LEAGUE, {}, done, self.today), [])
-        failed = {KEY: {"video": VIDEO, "status": "error", "tries": 2}}
+        old = {KEY: {**done[KEY], "v": 1}}                                    # разбор поменялся — заново
+        self.assertEqual(len(clips.pending(LEAGUE, {}, old, self.today)), 1)
+        failed = {KEY: {"video": VIDEO, "status": "error", "tries": 2, "v": clips.VERSION}}
         self.assertEqual(len(clips.pending(LEAGUE, {}, failed, self.today)), 1)
         failed[KEY]["tries"] = clips.TRIES
         self.assertEqual(clips.pending(LEAGUE, {}, failed, self.today), [])
-        unmarked = {KEY: {"video": VIDEO, "status": "no_board"}}            # табло «Тверичей» уже размечено — заново
+        unmarked = {KEY: {"video": VIDEO, "status": "no_board", "v": clips.VERSION}}            # табло «Тверичей» уже размечено — заново
         self.assertEqual(len(clips.pending(LEAGUE, {}, unmarked, self.today)), 1)
         with mock.patch.dict(clips.sb.BOARDS, {}, clear=True):                # не размечено — ждём разметки
             self.assertEqual(clips.pending(LEAGUE, {}, unmarked, self.today), [])
-        other = {KEY: {"video": "https://vk.com/video-1_1", "status": "ok"}}   # лига сменила ролик — заново
+        other = {KEY: {"video": "https://vk.com/video-1_1", "status": "ok", "v": clips.VERSION}}   # лига сменила ролик — заново
         self.assertEqual(len(clips.pending(LEAGUE, {}, other, self.today)), 1)
 
 
@@ -101,7 +103,7 @@ class Pass(unittest.TestCase):
         store, disk = self.run_pass(scan)
         self.assertEqual(disk["games"][KEY]["goals"]["0:2"]["t"], 2963)
         self.assertEqual((disk["games"][KEY]["status"], disk["games"][KEY]["tries"]), ("ok", 1))
-        scan.assert_called_once_with(KEY, "https://vk.com/video-100_200", {})
+        scan.assert_called_once_with(KEY, "https://vk.com/video-100_200", {}, [])
 
     def test_vk_refused_is_counted_not_fatal(self):
         store, disk = self.run_pass(mock.Mock(side_effect=RuntimeError("HTTP 403")))
@@ -154,6 +156,27 @@ class Previews(unittest.TestCase):
             clips.add_previews(KEY, VIDEO, goals, None, Path("."))
         stream.assert_not_called()
         self.assertNotIn("ask", goals["0:2"])
+
+
+class ByOrder(unittest.TestCase):
+    """03.10 служба live не записала времени голов: смены табло — голам по порядку протокола."""
+
+    def test_kth_change_is_kth_goal(self):
+        found = [{"zone": "away", "hi": 900.0}, {"zone": "home", "hi": 500.0}, {"zone": "away", "hi": 2000.0}]
+        order = [("1:0", "home"), ("1:1", "away"), ("1:2", "away")]
+        self.assertEqual(sb.align_by_order(found, order), {"1:0": 500.0, "1:1": 900.0, "1:2": 2000.0})
+
+    def test_extra_change_leaves_team_to_admin(self):
+        found = [{"zone": "home", "hi": 500.0}, {"zone": "home", "hi": 560.0}, {"zone": "away", "hi": 900.0}]
+        order = [("1:0", "home"), ("1:1", "away")]
+        self.assertEqual(sb.align_by_order(found, order), {"1:1": 900.0})   # у хозяев смен больше, чем голов
+
+    def test_protocol_order_from_league(self):
+        league = {"games": [{"date": "2026-10-04", "home": "tverichi", "away": "metallurg", "goals": [
+            {"score": "0:1", "team": "away", "period": "1"}, {"score": "1:1", "team": "home", "period": 2},
+            {"score": "2:1", "team": "home", "period": "РБ"}]}]}
+        self.assertEqual(clips.protocol_order(league, KEY), [("0:1", "away", "1"), ("1:1", "home", "2")])
+        self.assertEqual(clips.protocol_order(None, KEY), [])
 
 
 class Replays(unittest.TestCase):

@@ -22,15 +22,17 @@ def digit(cells, n):
     return {(x, y): 230 if ((x - cells[0][0]) // 3 + n) % 3 == 0 else 40 for x, y in cells}
 
 
-def frame(t, goals, hidden=(), rnd=None):
+def frame(t, goals, hidden=(), rnd=None, stale=()):
     """Кадр на секунде t: игра — шум, табло слева сверху со счётом на момент t. goals — [(секунда смены, сторона)].
-    hidden — промежутки, когда плашку убрали (повтор)."""
+    hidden — промежутки, когда плашку убрали (повтор). stale — повтор гола вместе со старым табло: счёт как за 20 с
+    до начала промежутка (так у «Рязани-ВДВ»)."""
     rnd = rnd or random.Random(int(t * 1000))
     px = bytearray(rnd.randrange(256) for _ in range(W * H))
     if any(a <= t < b for a, b in hidden):
         return bytes(px)
-    home = sum(1 for s, side in goals if s <= t and side == "home")
-    away = sum(1 for s, side in goals if s <= t and side == "away")
+    now = next((a - 20 for a, b in stale if a <= t < b), t)
+    home = sum(1 for s, side in goals if s <= now and side == "home")
+    away = sum(1 for s, side in goals if s <= now and side == "away")
     for x, y in BOX:
         px[y * W + x] = 30
     for (x, y), v in {**digit(HOME, home), **digit(AWAY, away)}.items():
@@ -44,8 +46,8 @@ GOALS = [(206, "home"), (476, "away"), (906, "home")]
 HIDDEN = [(212, 227), (482, 497), (912, 927)]                     # повтор после гола — плашки нет
 
 
-def samples(step=10, until=1200, goals=GOALS, hidden=HIDDEN):
-    return [(t, frame(t, goals, hidden)) for t in range(0, until, step)]
+def samples(step=10, until=1200, goals=GOALS, hidden=HIDDEN, stale=(), start=0):
+    return [(t, frame(t, goals, hidden, stale=stale)) for t in range(start, until, step)]
 
 
 class Board(unittest.TestCase):
@@ -88,6 +90,47 @@ class Board(unittest.TestCase):
         rows = sb.against([206, 476, 906], {"1:0": 200, "1:1": 470, "2:1": 900, "3:1": 1100})
         self.assertEqual([round(s - t) if s is not None else None for _, t, s in rows], [6, 6, 6, None])
         self.assertIn("3 из 4", sb.lag_summary(rows))
+
+
+class RealBroadcasts(unittest.TestCase):
+    """Что показала проверка 05.10 на записях 04.10 (ADR-029): плашку убирают надолго, повтор бывает со старым табло."""
+
+    def test_plate_hidden_half_the_time(self):
+        # крупные планы, повторы, заставка «GOAL»: плашки нет 45 с из каждых 100 — в соседних кадрах графика
+        # совпадает реже, чем STABLE, но plate её находит
+        hidden = [(a, a + 45) for a in range(30, 1200, 100)]
+        s = samples(hidden=hidden)
+        frames = [f for _, f in s]
+        inside = {y * W + x for x, y in BOX} - {y * W + x for x, y in CLOCK}
+        self.assertLess(len(set(sb.stable_mask(frames)) & inside), 0.5 * len(inside))
+        mask, med = sb.plate(frames)
+        self.assertGreater(len(set(mask) & inside), 0.9 * len(inside))
+        self.assertLess(len(set(mask) - inside), 50)
+        self.assertTrue(sb.shown(frame(5, GOALS, hidden), mask, med))
+        self.assertFalse(sb.shown(frame(40, GOALS, hidden), mask, med))
+
+    def test_replay_with_old_board_is_one_change(self):
+        # через 14 с после гола 30 с повтора с прежним счётом, потом снова новый: одна смена, первая
+        stale = [(220, 250), (490, 520), (920, 950)]
+        s = samples(hidden=[], stale=stale)
+        mask, med = sb.plate([f for _, f in s])
+        found = sb.changes(s, mask, med)
+        self.assertEqual([(c["lo"], c["hi"]) for c in found], [(200, 210), (470, 480), (900, 910)])
+
+    def test_check_window_every_second(self):
+        # --check: окно от 30 с до гола до 2 минут после, кадр каждую секунду; табло убрали на повтор, потом
+        # повтор со старым табло — смена табло ровно в секунду гола
+        hidden = [(482, 497)]
+        stale = [(497, 512)]
+        s = samples(step=1, start=476 - 30, until=476 + 120, hidden=hidden, stale=stale)
+        found = sb.board_changes(s)
+        first = sb.first_after(found, 470)
+        self.assertEqual(first["hi"], 476)
+        self.assertEqual(len([c for c in found if not c["often"]]), 1)
+
+    def test_no_plate_in_window(self):
+        noise = [(t, frame(t, [], [(0, 10 ** 6)])) for t in range(100)]
+        self.assertIsNone(sb.board_changes(noise))
 
 
 class Align(unittest.TestCase):

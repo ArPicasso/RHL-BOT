@@ -85,7 +85,8 @@ CLOCK_MOVED = 8         # пикселей клетки часов: стольк
 CLUB_LAG = {club: b["lag"] for club, b in BOARDS.items() if b.get("lag") is not None}   # задержка табло клуба, с
 SITE = "rhl.fhr.ru"     # запись лиги — «Смотреть» с этим источником в league.json (rhl_media.py)
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://arpicasso.github.io/RHL-BOT/"
-GRID = (0.0, 0.0, 0.5, 0.35)   # --grid: где искать табло нового клуба — левый верх кадра
+GRID = (0.0, 0.0, 1.0, 1.0)    # --grid: где искать табло нового клуба — весь кадр (05.10 у «Факел-Ямала» и «Красной
+GRID_AT = (0.2, 0.4, 0.6, 0.8)  # Машины» в левом верху табло не было); кадры — с этих долей записи
 DIFF = 40               # разница яркости пикселя (0–255), с которой пиксель считаем изменившимся
 STABLE = 0.85           # пиксель графики: не меняется хотя бы в стольких парах соседних кадров с табло
 TIGHT = 12              # пиксель графики в кадре с табло: яркость почти та же (сжатие дрожит на несколько единиц)
@@ -1040,15 +1041,14 @@ def matches(args) -> dict[str, dict]:
 
 
 def grid_sheet(src: str, headers: dict | None, length: float | None, path: Path) -> None:
-    """Табло нового клуба ещё не размечено: три кадра записи (четверть, половина, три четверти) — левый верх
-    кадра GRID с сеткой: тонкие линии — каждые 0,02 кадра, жёлтые — каждые 0,1. По ней размечаем рамку и клетки
-    (BOARDS)."""
+    """Табло нового клуба ещё не размечено: кадры записи на долях GRID_AT — часть кадра GRID с сеткой: тонкие
+    линии — каждые 0,02 кадра, жёлтые — каждые 0,1. По ней размечаем рамку и клетки (BOARDS)."""
     x, y, w, h = GRID
     vf = (f"crop=iw*{w}:ih*{h}:iw*{x}:ih*{y},scale=960:-2,"
           f"drawgrid=w=iw*{0.02 / w}:h=ih*{0.02 / h}:t=1:c=white@0.35,"
           f"drawgrid=w=iw*{0.1 / w}:h=ih*{0.1 / h}:t=2:c=yellow@0.8")
     parts = []
-    for k, share in enumerate((0.25, 0.5, 0.75)):
+    for k, share in enumerate(GRID_AT):
         part = path.with_name(f"{path.stem}_{k}.png")
         subprocess.run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", *header_args(headers),
                         "-ss", str(int((length or 7200) * share)), "-i", src, "-frames:v", "1", "-vf", vf, str(part)],

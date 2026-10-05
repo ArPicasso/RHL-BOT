@@ -82,7 +82,8 @@ class Board(unittest.TestCase):
 
     def test_refine_to_a_second(self):
         found = sb.changes(self.s, self.mask, self.med)
-        got = [sb.refine(c, lambda t: frame(t, GOALS, HIDDEN), self.mask, self.med, 10) for c in found]
+        visible = lambda f: sb.shown(f, self.mask, self.med)        # noqa: E731
+        got = [sb.refine(c, lambda t: frame(t, GOALS, HIDDEN), visible, 10) for c in found]
         self.assertEqual([round(c["hi"]) for c in got], [206, 476, 906])
         self.assertTrue(all(c["hi"] - c["lo"] <= 1 for c in got))
 
@@ -192,10 +193,11 @@ class FullPass0410(unittest.TestCase):
         ch = next(c for c in sb.changes(s, mask, med, core=kernel) if c["hi"] > 400)
         self.assertEqual((ch["lo"], ch["hi"]), (470, 520))
         get = lambda t: frame(round(t), GOALS, hidden)              # noqa: E731
-        bisect = sb.refine(ch, get, kernel, med, 10)
+        visible = lambda f: sb.shown(f, kernel, med)                 # noqa: E731
+        bisect = sb.refine(ch, get, visible, 10)
         self.assertGreater(bisect["hi"], 500)
         window = lambda a, b: [(t, frame(t, GOALS, hidden)) for t in range(int(a), int(b) + 1)]   # noqa: E731
-        dense = sb.refine(ch, get, kernel, med, 10, window=window)
+        dense = sb.refine(ch, get, visible, 10, window=window)
         self.assertEqual(dense["hi"], 476)
 
     def test_sides_keep_clock_apart(self):
@@ -218,6 +220,81 @@ class FullPass0410(unittest.TestCase):
             got, meta = sb.load_cache(path)
         self.assertEqual(got, s)
         self.assertEqual((meta["name"], meta["truth"]), ("м", {"1:0": 5}))
+
+
+# Табло с разметкой клеток (BOARDS), как у клубов 04.10: название хозяев — буквы, цифры счёта, часы игры
+CELL_BOARD = {"box": (0, 0, 1, 1), "name": (10, 8, 56, 30), "home": (98, 8, 114, 32), "away": (123, 8, 139, 32),
+              "clock": (60, 10, 86, 30)}
+LETTERS = [(x, y) for y in range(8, 30) for x in range(10, 56)]
+CLOCK_PX = [(x, y) for y in range(10, 30) for x in range(60, 86)]
+
+
+def scoreboard(t, goals, hidden=(), stale=(), back=0):
+    """Кадр с табло: фон — шум, лёд (белое) или трибуна (тёмное) по очереди; часы игры идут и встают на 25 с после
+    каждого гола (счёт на табло меняется через 7 с после гола). stale — повтор со старым табло: счёт и часы как
+    за 40 с до начала повтора. back — фон: 0 шум, 1 лёд, 2 трибуна."""
+    rnd = random.Random(int(t * 1000))
+    px = bytearray(rnd.randrange(256) if back == 0 else (250 if back == 1 else 20) for _ in range(W * H))
+    if any(a <= t < b for a, b in hidden):
+        return bytes(px)
+    now = next((a - 40 for a, b in stale if a <= t < b), t)
+    home = sum(1 for g, side in goals if g + 7 <= now and side == "home")
+    away = sum(1 for g, side in goals if g + 7 <= now and side == "away")
+    stopped = sum(min(max(now - g, 0), 25) for g, _ in goals)
+    clock = int(now - stopped)
+    for x, y in BOX:
+        px[y * W + x] = 30
+    for x, y in LETTERS:
+        px[y * W + x] = 230 if (x // 4 + y // 5) % 2 == 0 else 30
+    for (x, y), v in {**digit(HOME, home), **digit(AWAY, away), **digit(CLOCK_PX, clock)}.items():
+        px[y * W + x] = v
+    return bytes(px)
+
+
+class Cells(unittest.TestCase):
+    """Разбор по клеткам табло (BOARDS) — то, что на кадрах 04.10 нашло 14 голов из 15."""
+
+    def test_on_screen_not_fooled_by_ice_or_stands(self):
+        s = [(t, scoreboard(t, GOALS, HIDDEN)) for t in range(0, 1200, 10)]
+        model = sb.name_model([f for _, f in s], CELL_BOARD["name"])
+        self.assertTrue(sb.on_screen(scoreboard(100, GOALS), model))
+        for back in (0, 1, 2):
+            self.assertFalse(sb.on_screen(scoreboard(215, GOALS, HIDDEN, back=back), model))
+
+    def test_changes_by_cell_through_hidden_and_stale_board(self):
+        # после гола табло убрали на 15 с, мелькнул новый счёт, потом 30 с повтора со старыми счётом и часами
+        stale = [(g + 32, g + 62) for g, _ in GOALS]
+        s = [(t, scoreboard(t, GOALS, HIDDEN, stale)) for t in range(0, 1200, 10)]
+        visible, found = sb.analyse(s, CELL_BOARD)
+        self.assertEqual([(c["zone"], c["hi"]) for c in found], [("home", 230), ("away", 500), ("home", 930)])
+
+    def test_clock_stop_is_the_goal(self):
+        # кадр каждую секунду: часы встали в секунду гола, счёт сменился через 7 с
+        dense = [(t, scoreboard(t, GOALS)) for t in range(400, 520)]
+        visible, found = sb.analyse(dense, CELL_BOARD)
+        ch = next(c for c in found if c["zone"] == "away")
+        self.assertEqual(ch["hi"], 483)
+        stop = sb.clock_stop([(t, f) for t, f in dense if visible(f)], ch["hi"], sb.cell_pixels(CELL_BOARD["clock"]), 2)
+        self.assertEqual(stop, (475, 476))                            # с секунды гола часы стоят
+
+    def test_corrected_score_has_no_clock_stop(self):
+        # счёт поправили через 90 с, когда часы уже снова шли: остановки часов на этом значении нет — не врём
+        dense = [(t, scoreboard(t, GOALS)) for t in range(400, 620)]
+        vis = [(t, f) for t, f in dense]
+        self.assertIsNone(sb.clock_stop(vis, 566, sb.cell_pixels(CELL_BOARD["clock"]), 2))
+
+    def test_order_survives_jittered_site_times(self):
+        # «Тверичи — Металлург» 04.10: сайт лиги отмечал голы второго периода неровно (разброс до двух минут), смены
+        # табло гостей — в порядке голов, плюс лишняя смена после матча
+        def c(t, zone):
+            return {"hi": t, "lo": t - 10, "zone": zone}
+        found = [c(1530, "away"), c(3450, "away"), c(3580, "away"), c(4840, "away"), c(6210, "home"),
+                 c(6950, "home"), c(8120, "away")]
+        base = 1_759_000_000
+        goals = [("0:1", "1", base + 1520), ("0:2", "2", base + 3424 + 315), ("0:3", "2", base + 3577 + 435),
+                 ("0:4", "2", base + 4840 + 326), ("1:4", "3", base + 6207 + 542), ("2:4", "3", base + 6925 + 527)]
+        got = sb.align_order(found, goals)
+        self.assertEqual(got, {"0:1": 1530, "0:2": 3450, "0:3": 3580, "0:4": 4840, "1:4": 6210, "2:4": 6950})
 
 
 class Align(unittest.TestCase):

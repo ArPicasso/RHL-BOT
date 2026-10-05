@@ -3,15 +3,17 @@
     apt install -y ffmpeg && venv/bin/pip install yt-dlp     # один раз
     cd /opt/rhl && venv/bin/python tools/probe_scoreboard.py                     # все размеченные матчи
     venv/bin/python tools/probe_scoreboard.py --match 2026-10-04|rostov|krasnodar
+    venv/bin/python tools/probe_scoreboard.py --check                            # быстро: только окна вокруг голов
     venv/bin/python tools/probe_scoreboard.py --stream probe/x.mp4 --truth 1:0=42:53,0:2=49:28   # файл
 
 Табло — плашка со счётом в углу кадра, она стоит на месте всю игру. Пробник смотрит запись целиком и редко
 (кадр раз в `--step` секунд, только ключевые кадры, 480p — качается быстро) и вырезает из каждого кадра рамку
-`--box` (по умолчанию левая верхняя треть). Пиксели, которые почти не меняются от кадра к кадру, — графика
-табло: названия, фон плашки и счёт (он меняется только при голе). Пиксели игры и бегущих часов меняются
-постоянно — их не берём. Смена счёта — когда часть пикселей графики сменилась и новое держится в следующих
-кадрах; плашку убрали на повтор или перерыв — не смена, мы ждём, пока она вернётся. Найденный промежуток
-уточняем делением пополам до секунды.
+табло: у клубов из `BOXES` — вплотную к их плашке, у остальных — левый верх кадра, `--box` — своя. Пиксели,
+которые почти не меняются от кадра к кадру, — графика табло: названия, фон плашки и счёт (он меняется только
+при голе). Пиксели игры и бегущих часов меняются постоянно — их не берём. Смена счёта — когда часть пикселей
+графики сменилась и новое держится в следующих кадрах; плашку убрали на повтор или перерыв — не смена, мы
+ждём, пока она вернётся. Повтор гола бывает со старым табло — смена туда и обратно за пару минут не гол.
+Найденный промежуток уточняем делением пополам до секунды.
 
 Минуты и секунды часов игры на табло меняются десятки раз за запись — такие пиксели не берём, счёт меняется
 редко. Остаются лишние смены (десятки минут на часах, номер периода): какая смена — какой гол, решает время
@@ -23,6 +25,9 @@
 
 Картинки рамки до и после каждой смены и кадр целиком у каждого гола — в probe/scoreboard/<матч>/: по ним
 видно, где на самом деле табло, если рамка мимо (`--box x,y,ш,в` в долях кадра).
+
+`--check` — без прохода по записи: у каждого гола админа кадр каждую секунду от 30 с до гола до 2 минут после,
+и в этом окне — через сколько секунд после гола сменилось табло. Минуты на матч.
 Качаем как плеер (yt-dlp), без обхода защиты: VK закроет или попросит капчу — останавливаемся (ADR-012).
 """
 import argparse
@@ -33,6 +38,7 @@ import shutil
 import subprocess
 import sys
 import time
+from itertools import takewhile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -42,19 +48,31 @@ import replay  # noqa: E402
 
 W, H = 240, 90          # рамка табло после масштаба, пикселей: хватает, чтобы цифра счёта была в 10–20 пикселей
 STEP = 10               # с между кадрами первого прохода
-BOX = (0.0, 0.0, 0.5, 0.3)   # рамка в долях кадра: x, y, ширина, высота — левый верх, где табло у трансляций РХЛ
+BOX = (0.02, 0.02, 0.28, 0.26)   # рамка в долях кадра: x, y, ширина, высота — левый верх, где табло у трансляций РХЛ
+BOXES = {               # рамка вплотную к табло трансляции хозяев: цифры счёта крупнее. По проверке 05.10 (ADR-029)
+    "kaluga": (0.02, 0.02, 0.26, 0.16),
+    "rostov": (0.04, 0.03, 0.23, 0.16),
+    "ryazan-vdv": (0.05, 0.08, 0.17, 0.19),
+    "tverichi": (0.05, 0.05, 0.15, 0.18),
+}
 DIFF = 40               # разница яркости пикселя (0–255), с которой пиксель считаем изменившимся
-STABLE = 0.85           # пиксель графики: не меняется хотя бы в стольких парах соседних кадров
+STABLE = 0.85           # пиксель графики: не меняется хотя бы в стольких парах соседних кадров с табло
+LOOSE = 0.5             # первая прикидка графики по всем кадрам: плашку убирают на повторы и крупные планы
+MIN_PLATE = 200         # графики меньше — табло в рамке нет
 SHOWN = 0.75            # табло на экране: столько пикселей графики совпадает с обычным видом
 MIN_PX = 8              # смена в зоне: изменилось не меньше стольких пикселей
 ZONE_SHARE = 0.15       # и не меньше такой доли зоны (цифра 20 px — это 60–150 пикселей)
 GAP = 2                 # пиксели ближе — одна зона: цифры «2:1» — одна зона, часы рядом — другая
 MIN_ZONE = 12           # зона меньше — шум сжатия
+MIN_SIDE = 3            # зона уже по ширине или высоте — край плашки, который «дрожит» от сжатия, а не цифра
 ZONE_MAX = 10           # зона сменилась чаще — это часы, а не счёт: одна команда больше 10 раз за матч не забивает
 MAX_FLIPS = 15          # пиксель счёта меняется за запись не чаще: минуты часов игры меняются десятки раз
-HOLD = 2                # новое должно держаться ещё в стольких кадрах с табло
+HOLD = 2                # смена: новое видно в большинстве кадров с табло за REPLAY с после неё, и их не меньше стольких
+REPLAY = 180            # с: смена, откат и снова та же смена за столько — повтор со старым табло, а не три смены
 MEDIAN_FRAMES = 200     # обычный вид табло — медиана по стольким кадрам (равномерно по записи)
 TIMELINE = (-20, 0, 5, 10, 15, 20, 30, 45, 60, 90)   # с от гола: кадры ленты табло в --check
+WINDOW = (-30, 120)     # с от гола: окно --check, кадр каждую секунду
+EARLY = 20              # --check: смена табло раньше гола админа больше чем на столько — не этот гол (минута часов)
 MATCH_WINDOW = (-30, 300)    # с: смена табло, которую сравниваем с голом админа, — от 30 с до гола до 5 минут после
 FORMAT = "b[height<=480][height>=240]/b[height<=480]/w"   # хватает для табло, качается быстро
 
@@ -87,9 +105,16 @@ def ffmpeg() -> str:
     return path
 
 
-def scan(src: str, headers: dict | None, box, step: int, start: int = 0, end: int | None = None) -> list[tuple[float, bytes]]:
-    """Первый проход: кадр раз в step секунд, только ключевые кадры (декодировать почти нечего). (секунда, рамка)."""
-    cmd = [ffmpeg(), "-hide_banner", "-loglevel", "error", "-skip_frame", "nokey", *header_args(headers)]
+def fmt_box(box) -> str:
+    return ",".join(f"{v:g}" for v in box)
+
+
+def scan(src: str, headers: dict | None, box, step: int, start: int = 0, end: int | None = None,
+         keyframes: bool = True) -> list[tuple[float, bytes]]:
+    """Первый проход: кадр раз в step секунд, только ключевые кадры (декодировать почти нечего). (секунда, рамка).
+    keyframes=False — все кадры: для окна --check, где кадр нужен каждую секунду."""
+    cmd = [ffmpeg(), "-hide_banner", "-loglevel", "error", *(["-skip_frame", "nokey"] if keyframes else []),
+           *header_args(headers)]
     if start:
         cmd += ["-ss", str(start)]
     cmd += ["-i", src]
@@ -128,7 +153,7 @@ def save_raw(raw: bytes, path: Path, w: int = W, h: int = H) -> None:
 
 # ---------- табло ----------
 
-def stable_mask(frames: list[bytes]) -> list[int]:
+def stable_mask(frames: list[bytes], share: float = STABLE) -> list[int]:
     """Пиксели графики: в большинстве пар соседних кадров не меняются. Игра и бегущие часы — меняются."""
     if len(frames) < 3:
         return []
@@ -138,8 +163,23 @@ def stable_mask(frames: list[bytes]) -> list[int]:
         for p in range(size):
             if abs(a[p] - b[p]) <= DIFF:
                 same[p] += 1
-    need = STABLE * (len(frames) - 1)
+    need = share * (len(frames) - 1)
     return [p for p in range(size) if same[p] >= need]
+
+
+def plate(frames: list[bytes]) -> tuple[list[int], dict[int, int]]:
+    """Графика табло и её обычный вид. Плашку убирают на повторы, крупные планы, заставку «GOAL» и рекламу — у
+    «Тверичей» вокруг гола это половина кадров, и в соседних кадрах графика совпадает реже, чем STABLE. Поэтому
+    сначала прикидка по всем кадрам (LOOSE), по ней — кадры, где табло на экране, и уже среди них графика строго."""
+    mask = stable_mask(frames, LOOSE)
+    if not mask:
+        return [], {}
+    med = usual(frames, mask)
+    vis = [f for f in frames if shown(f, mask, med)]
+    strict = stable_mask(vis)
+    if len(strict) >= MIN_PLATE:
+        return strict, usual(vis, strict)
+    return mask, med
 
 
 def usual(frames: list[bytes], mask: list[int]) -> dict[int, int]:
@@ -155,6 +195,27 @@ def shown(frame: bytes, mask: list[int], med: dict[int, int]) -> bool:
 
 def moved(a: bytes, b: bytes, mask: list[int]) -> list[int]:
     return [p for p in mask if abs(a[p] - b[p]) > DIFF]
+
+
+def alike(a: bytes, b: bytes, pixels: list[int]) -> bool:
+    return len(moved(a, b, pixels)) < len(pixels) / 2
+
+
+def without_replays(mine: list[dict]) -> list[dict]:
+    """Смены одной зоны по порядку. Повтор гола бывает со старым табло (у «Рязани-ВДВ» через 20 с после гола
+    снова старый счёт): смена, откат к прежнему и снова та же смена за REPLAY секунд — одна смена, первая."""
+    out, k = [], 0
+    while k < len(mine):
+        c = mine[k]
+        out.append(c)
+        if k + 2 < len(mine):
+            back, again = mine[k + 1], mine[k + 2]
+            if (again["hi"] - c["hi"] <= REPLAY and alike(back["after"], c["before"], c["pixels"])
+                    and alike(again["after"], c["after"], c["pixels"])):
+                k += 3
+                continue
+        k += 1
+    return out
 
 
 def zones(pixels: list[int]) -> list[list[int]]:
@@ -175,7 +236,8 @@ def zones(pixels: list[int]) -> list[list[int]]:
                         left.remove(q)
                         zone.append(q)
                         todo.append(q)
-        if len(zone) >= MIN_ZONE:
+        xs, ys = {p % W for p in zone}, {p // W for p in zone}
+        if len(zone) >= MIN_ZONE and min(len(xs), len(ys)) >= MIN_SIDE:
             out.append(sorted(zone))
     return sorted(out, key=lambda z: z[0])
 
@@ -193,10 +255,12 @@ def rare(frames: list[bytes], mask: list[int]) -> list[int]:
 
 def changes(samples: list[tuple[float, bytes]], mask: list[int], med: dict[int, int],
             report: list | None = None) -> list[dict]:
-    """Смены табло по зонам (zones от rare): (последний кадр со старым видом, первый с новым). Новое держится
-    HOLD кадров с табло — иначе это мелькание (плашку перекрыло, сменили на миг). Кадры без табло (повтор,
-    перерыв, реклама) пропускаем: ждём, пока плашка вернётся. Зона, которая сменилась чаще ZONE_MAX раз, —
-    скорее часы: её смены помечены `often`, а не выброшены (иначе не видно, что счёт слипся с часами).
+    """Смены табло по зонам (zones от rare): (последний кадр со старым видом, первый с новым). Новое видно в
+    большинстве кадров с табло за REPLAY секунд после смены (и их не меньше HOLD) — иначе это мелькание (плашку
+    перекрыло, сменили на миг, край плашки «дрожит» от сжатия), а повтор гола со старым табло не мешает. Кадры
+    без табло (повтор, перерыв, реклама) пропускаем: ждём, пока плашка вернётся. Зона, которая сменилась чаще
+    ZONE_MAX раз, — скорее часы: её смены помечены `often`, а не выброшены (иначе не видно, что счёт слипся с
+    часами).
     report — сюда кладём по зоне: место, размер, сколько смен."""
     vis = [(t, f) for t, f in samples if shown(f, mask, med)]
     out = []
@@ -212,10 +276,11 @@ def changes(samples: list[tuple[float, bytes]], mask: list[int], med: dict[int, 
             if len(diff) < need:
                 cur_t, cur = t, f
                 continue
-            after = vis[k + 1:k + 1 + HOLD]
-            if len(after) == HOLD and all(len(moved(f, g, diff)) < len(diff) / 2 for _, g in after):
+            after = list(takewhile(lambda x: x[0] - t <= REPLAY, vis[k + 1:]))
+            if len(after) >= HOLD and 2 * sum(alike(f, g, diff) for _, g in after) > len(after):
                 mine.append({"lo": cur_t, "hi": t, "before": cur, "after": f, "pixels": diff, "zone": zi})
                 cur_t, cur = t, f
+        mine = without_replays(mine)
         often = len(mine) > ZONE_MAX
         for c in mine:
             c["often"] = often
@@ -237,7 +302,8 @@ def changes(samples: list[tuple[float, bytes]], mask: list[int], med: dict[int, 
 def refine(ch: dict, get, mask: list[int], med: dict[int, int], step: float, tries: int = 10) -> dict:
     """Уточнить смену до секунды по точным кадрам. Время кадров первого прохода приблизительное (ключевые кадры
     идут раз в 2–4 с), поэтому сначала расширяем промежуток на шаг в обе стороны и проверяем: слева табло
-    старое, справа новое. Дальше делим пополам. Табло убрано (повтор после гола) — дальше не уточняем."""
+    старое, справа новое. Дальше делим пополам. Посередине табло нет (заставка «GOAL») — смотрим соседние
+    секунды; нет и там — дальше не уточняем."""
     def state(t: float) -> str | None:
         f = get(max(0.0, t))
         if f is None or not shown(f, mask, med):
@@ -258,11 +324,14 @@ def refine(ch: dict, get, mask: list[int], med: dict[int, int], step: float, tri
     for _ in range(tries):
         if hi - lo <= 1:
             break
-        mid = (lo + hi) / 2
-        st = state(mid)
+        mid, st = (lo + hi) / 2, None
+        for at in (mid + d for d in (0, 1, -1, 2, -2) if lo < mid + d < hi):
+            st = state(at)
+            if st is not None:
+                break
         if st is None:
             break
-        lo, hi = (mid, hi) if st == "old" else (lo, mid)
+        lo, hi = (at, hi) if st == "old" else (lo, at)
     return {**ch, "lo": lo, "hi": hi}
 
 
@@ -361,17 +430,6 @@ def site_goals(live: Path, key: str) -> list[tuple[str, str, float]]:
             for g in replay.goals_of(game or {}) if g["at"]]
 
 
-def steady_change(before: list[bytes], after: list[bytes]) -> list[int]:
-    """Пиксели, которые до гола стоят на месте, после гола тоже стоят, но уже другие: так меняется графика
-    (счёт), а не игра — игра меняется и внутри «до», и внутри «после»."""
-    out = []
-    for p in range(W * H):
-        a, b = [f[p] for f in before], [f[p] for f in after]
-        if max(a) - min(a) <= DIFF and max(b) - min(b) <= DIFF and abs(sum(a) / len(a) - sum(b) / len(b)) > DIFF:
-            out.append(p)
-    return out
-
-
 def timeline(src: str, headers: dict | None, t: int, box, path: Path) -> None:
     """Лента табло вокруг гола одной картинкой: рамка в моменты TIMELINE сверху вниз. По ней видно на глаз,
     через сколько секунд сменился счёт, убирали ли плашку на повтор и не поправлял ли оператор счёт."""
@@ -390,51 +448,74 @@ def timeline(src: str, headers: dict | None, t: int, box, path: Path) -> None:
         part.unlink()
 
 
-def check(name: str, src: str, headers: dict | None, truth: dict[str, int], args) -> None:
-    """Быстрая проверка без прохода по записи (--check): у каждого гола админа по три кадра рамки до (за 30–20 с)
-    и после (через after…after+10 с) — что на табло сменилось и где. Картинки рамки до и после, разница и кадр
-    целиком — в папку матча. Так видно, есть ли табло в рамке и насколько заметна смена счёта."""
+def board_changes(samples: list[tuple[float, bytes]]) -> list[dict] | None:
+    """Смены табло в кадрах: графика (plate) и смены по зонам. None — табло в рамке не нашлось."""
+    mask, med = plate([f for _, f in samples])
+    if len(mask) < MIN_PLATE:
+        return None
+    return changes(samples, mask, med)
+
+
+def first_after(found: list[dict], t: float) -> dict | None:
+    """--check: смена счёта у гола t — первая смена не раньше чем за EARLY с до гола. Раньше — минута на часах."""
+    return next((c for c in found if not c["often"] and c["hi"] >= t - EARLY), None)
+
+
+def check(name: str, src: str, headers: dict | None, truth: dict[str, int], box, args) -> list:
+    """Быстрая проверка без прохода по записи (--check): у каждого гола админа окно WINDOW, кадр каждую секунду, —
+    через сколько секунд после гола сменилось табло. Плюс лента табло и кадр целиком для глаз."""
     out = args.out / re.sub(r"[^\w.-]+", "_", name)
     out.mkdir(parents=True, exist_ok=True)
     for old in out.glob("check_*.png"):
         old.unlink()
-    print(f"\n{name} — проверка по временам админа", flush=True)
-    x0, y0, bw, bh = args.box
+    print(f"\n{name} — проверка по временам админа, рамка {fmt_box(box)}", flush=True)
+    rows = []
     for score, t in sorted(truth.items(), key=lambda x: x[1]):
         tag = score.replace(":", "-")
-        before = [grab(src, headers, args.box, max(0, t - d)) for d in (30, 25, 20)]
-        after = [grab(src, headers, args.box, t + args.after + d) for d in (0, 5, 10)]
-        save_png(src, headers, max(0, t - 20), out / f"check_{tag}_before.png", args.box)
-        save_png(src, headers, t + args.after, out / f"check_{tag}_after.png", args.box)
-        save_png(src, headers, t + args.after, out / f"check_{tag}_frame.png")
-        timeline(src, headers, t, args.box, out / f"check_{tag}_timeline.png")
-        if any(f is None for f in before + after):
-            print(f"  гол {score} ({replay.fmt_t(t)}): кадр не скачался")
+        timeline(src, headers, t, box, out / f"check_{tag}_timeline.png")
+        try:
+            samples = scan(src, headers, box, 1, max(0, t + WINDOW[0]), t + WINDOW[1], keyframes=False)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            samples = []
+        found = board_changes(samples) if samples else None
+        first = first_after(found or [], t)
+        save_png(src, headers, first["hi"] + 1 if first else t + args.after, out / f"check_{tag}_frame.png")
+        rows.append((score, t, first["hi"] if first else None))
+        head = f"  гол {score} ({replay.fmt_t(t)}): "
+        if not samples:
+            print(head + "кадры не скачались")
             continue
-        diff = steady_change(before, after)
-        save_raw(bytes(255 if p in set(diff) else before[-1][p] // 3 for p in range(W * H)), out / f"check_{tag}_diff.png")
-        if not diff:
-            print(f"  гол {score} ({replay.fmt_t(t)}): в рамке ничего не сменилось — табло не в рамке, "
-                  f"или через {args.after} с после гола ещё повтор (попробуй --after 60)")
+        if found is None:
+            print(head + "табло в рамке не нашлось — посмотри check_*_timeline.png и задай --box")
             continue
-        xs, ys = [p % W for p in diff], [p // W for p in diff]
-        fx = (x0 + bw * min(xs) / W, x0 + bw * (max(xs) + 1) / W)
-        fy = (y0 + bh * min(ys) / H, y0 + bh * (max(ys) + 1) / H)
-        print(f"  гол {score} ({replay.fmt_t(t)}): сменилось {len(diff)} пикселей, в рамке x {min(xs)}–{max(xs)}, "
-              f"y {min(ys)}–{max(ys)}; в кадре x {fx[0]:.2f}–{fx[1]:.2f}, y {fy[0]:.2f}–{fy[1]:.2f}")
+        if not first:
+            print(head + "табло не сменилось — посмотри check_*_timeline.png")
+        else:
+            xs, ys = [p % W for p in first["pixels"]], [p // W for p in first["pixels"]]
+            gap = (f" (между {round(first['lo'] - t):+d} и {round(first['hi'] - t):+d} с табло не было)"
+                   if first["hi"] - first["lo"] > 2 else "")
+            print(head + f"табло сменилось через {round(first['hi'] - t):+d} с{gap}, в рамке x {min(xs)}–{max(xs)}, "
+                  f"y {min(ys)}–{max(ys)}")
+            save_raw(first["before"] + first["after"], out / f"check_{tag}_change.png", W, 2 * H)
+        rest = [round(c["hi"] - t) for c in found if c is not first]
+        if rest:
+            print(f"    ещё смены в окне, с от гола: {rest}")
+    print("  " + lag_summary(rows))
     print(f"  картинки — {out}: check_*_timeline.png — табло через "
-          f"{', '.join(f'{d:+d}' for d in TIMELINE)} с от гола (сверху вниз), check_*_diff.png — что сменилось "
-          f"(белое), check_*_frame.png — кадр целиком", flush=True)
+          f"{', '.join(f'{d:+d}' for d in TIMELINE)} с от гола (сверху вниз), check_*_change.png — рамка до и после "
+          f"смены, check_*_frame.png — кадр целиком", flush=True)
+    return rows
 
 
-def probe(name: str, src: str, headers: dict | None, truth: dict[str, int], site: list, args) -> list:
+def probe(name: str, src: str, headers: dict | None, truth: dict[str, int], site: list, box, args) -> list:
     out = args.out / re.sub(r"[^\w.-]+", "_", name)
     out.mkdir(parents=True, exist_ok=True)
     for old in out.glob("*.png"):   # картинки прошлого запуска — не путать с новыми
         old.unlink()
-    print(f"\n{name}\n  качаю запись и смотрю кадр раз в {args.step} с — несколько минут…", flush=True)
+    print(f"\n{name}, рамка {fmt_box(box)}\n  качаю запись и смотрю кадр раз в {args.step} с — несколько минут…",
+          flush=True)
     began = time.monotonic()
-    samples = scan(src, headers, args.box, args.step, args.start, args.end)
+    samples = scan(src, headers, box, args.step, args.start, args.end)
     print(f"  кадров первого прохода: {len(samples)} за {round(time.monotonic() - began)} с", flush=True)
     for score, t in sorted(truth.items(), key=lambda x: x[1]):   # кадр целиком через минуту после гола — где табло
         save_png(src, headers, t + 60, out / f"goal_{score.replace(':', '-')}_frame.png")
@@ -442,12 +523,11 @@ def probe(name: str, src: str, headers: dict | None, truth: dict[str, int], site
         print("  кадров нет: поток не открылся")
         return []
     frames = [f for _, f in samples]
-    mask = stable_mask(frames)
+    mask, med = plate(frames)
     print(f"  пикселей графики в рамке: {len(mask)} из {W * H}")
-    if len(mask) < 200:
+    if len(mask) < MIN_PLATE:
         print("  табло в рамке не нашлось: посмотри goal_*_frame.png и задай --box")
         return []
-    med = usual(frames, mask)
     seen = sum(shown(f, mask, med) for f in frames)
     print(f"  табло на экране в {seen} кадрах из {len(frames)} ({round(100 * seen / len(frames))}%)")
     save_raw(bytes(med.get(p, 0) for p in range(W * H)), out / "board_usual.png")
@@ -461,11 +541,11 @@ def probe(name: str, src: str, headers: dict | None, truth: dict[str, int], site
         print(f"    зона {z['zone']}: x {x1}–{x2}, y {y1}–{y2}, пикселей {z['size']}, смен {z['changes']}"
               + (" — часто, похоже на часы" if z["often"] else ""))
     print("  уточняю смены до секунды…", flush=True)
-    exact = [refine(c, lambda t: grab(src, headers, args.box, t), mask, med, args.step) for c in found]
+    exact = [refine(c, lambda t: grab(src, headers, box, t), mask, med, args.step) for c in found]
     main_ = [c for c in exact if not c["often"]]
     for k, c in enumerate(exact, 1):
-        save_png(src, headers, max(0, c["lo"] - 1), out / f"change_{k:02d}_before.png", args.box)
-        save_png(src, headers, c["hi"] + 1, out / f"change_{k:02d}_after.png", args.box)
+        save_png(src, headers, max(0, c["lo"] - 1), out / f"change_{k:02d}_before.png", box)
+        save_png(src, headers, c["hi"] + 1, out / f"change_{k:02d}_after.png", box)
     picked = align([c["hi"] for c in main_], site)
     by_t = {t: s for s, t in picked.items()}
     print(f"  смен табло: {len(main_)} (и ещё {len(exact) - len(main_)} в частых зонах — часы?), "
@@ -499,22 +579,24 @@ def main() -> None:
     ap.add_argument("--match", help="ключ матча из live/replays.json: <дата>|<хозяева>|<гости>; без него — все размеченные")
     ap.add_argument("--stream", help="файл или адрес потока вместо ролика VK (для проверки)")
     ap.add_argument("--truth", default="", help="для --stream: голы «1:0=42:53,0:2=49:28»")
-    ap.add_argument("--box", type=parse_box, default=BOX, help="рамка табло в долях кадра: x,y,ширина,высота")
+    ap.add_argument("--box", type=parse_box, help="рамка табло в долях кадра: x,y,ширина,высота; "
+                    "без неё — рамка клуба-хозяина из BOXES или левый верх кадра")
     ap.add_argument("--step", type=int, default=STEP)
     ap.add_argument("--start", type=int, default=0, help="с какой секунды записи смотреть")
     ap.add_argument("--end", type=int, default=None, help="до какой секунды")
     ap.add_argument("--check", action="store_true",
                     help="быстро, без прохода по записи: что сменилось на табло вокруг каждого гола админа")
-    ap.add_argument("--after", type=int, default=40, help="для --check: через сколько секунд после гола смотреть табло")
+    ap.add_argument("--after", type=int, default=40,
+                    help="для --check: кадр целиком через столько секунд после гола, если смена табло не нашлась")
     ap.add_argument("--live", type=Path, default=Path(os.environ.get("LIVE_DIR") or ROOT / "live"))
     ap.add_argument("--out", type=Path, default=ROOT / "probe" / "scoreboard")
     args = ap.parse_args()
     if args.stream:
         name, truth = Path(args.stream).name, parse_truth(args.truth)
         if args.check:
-            check(name, args.stream, None, truth, args)
+            check(name, args.stream, None, truth, args.box or BOX, args)
         else:
-            probe(name, args.stream, None, truth, [], args)
+            probe(name, args.stream, None, truth, [], args.box or BOX, args)
         return
     try:
         marked = json.loads((args.live / "replays.json").read_text(encoding="utf-8")).get("games") or {}
@@ -532,13 +614,15 @@ def main() -> None:
             print(f"\n{key}: поток не получили — {type(err).__name__}: {err}")
             continue
         truth = {s: t for s, t in (entry.get("anchors") or {}).items() if isinstance(t, int)}
+        box = args.box or BOXES.get(key.split("|")[1], BOX)
         if args.check:
-            check(key, src, headers, truth, args)
-            continue
-        every += probe(key, src, headers, truth, site_goals(args.live, key), args)
+            every += check(key, src, headers, truth, box, args)
+        else:
+            every += probe(key, src, headers, truth, site_goals(args.live, key), box, args)
     if len(keys) > 1:
         print("\nВсего: " + lag_summary(every))
-    print("\nПришли этот вывод целиком и 2–3 картинки change_*_before/after.png (ADR-029).")
+    pics = "check_*_timeline.png и check_*_change.png" if args.check else "board_zones.png и change_*_before/after.png"
+    print(f"\nПришли этот вывод целиком и 2–3 картинки {pics} (ADR-029).")
 
 
 if __name__ == "__main__":

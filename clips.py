@@ -15,6 +15,10 @@ league.json («Смотреть» от rhl.fhr.ru) или ссылка адми�
 Кадры прохода и картинки — в probe/scoreboard/<матч>/ (там же, где у пробника), держатся KEEP_DAYS дней с разбора.
 Матчи сезона в clips.json не забываем: по ним сборка ставит «Повтор» и клип у гола.
 
+Пульт (ADR-030, раздел 7): после каждого матча и прохода — пульс и счётчики дня в status/clips.json (`admin.Tracker`):
+отдал ли VK запись (`vk_ok`, `vk_fail`) и снимок каталога голов сезона (`catalog`). Молчит дольше часа или VK за
+день не отдал ни одной записи — тревога админам.
+
     venv/bin/python clips.py            # служба
     venv/bin/python clips.py --once     # один проход и выйти
 """
@@ -35,6 +39,7 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "tools"))
 
+import admin  # noqa: E402
 import probe_cuts as pc  # noqa: E402
 import probe_scoreboard as sb  # noqa: E402
 import replay  # noqa: E402
@@ -56,6 +61,30 @@ PREVIEW_FORMAT = "b[height<=360][height>=240]/b[height<=480]/w"   # превью
 CANDIDATES = 3         # кнопок «Гол на …» под превью — последние остановки часов перед сменой счёта
 
 log = logging.getLogger("clips")
+
+
+class VkError(RuntimeError):
+    """VK не отдал поток записи: на пульте — «VK за день не отдал ни одной записи» (ADR-030, раздел 7)."""
+
+
+def stream(video: str, fmt: str | None = None):
+    """Поток записи (sb.stream_of), отказ VK или yt-dlp — VkError: его считает пульт."""
+    try:
+        return sb.stream_of(video, fmt) if fmt else sb.stream_of(video)
+    except Exception as err:
+        raise VkError(f"{type(err).__name__}: {err}"[:300]) from err
+
+
+def vk_note(track: "admin.Tracker | None", err: Exception | None) -> None:
+    """Отдал ли VK запись: счётчик дня и последняя ошибка — для пульта и тревоги."""
+    if track is None:
+        return
+    if err is None:
+        track.add("vk_ok")
+        track.info(vk_ok=admin.iso(now_msk()))
+    else:
+        track.add("vk_fail")
+        track.info(vk_error=admin.no_ids(str(err))[:200], vk_fail=admin.iso(now_msk()))
 
 
 def now_msk() -> datetime:
@@ -220,7 +249,7 @@ def protocol_order(league: dict | None, key: str) -> list[tuple[str, str, str]]:
 def scan_match(key: str, video: str, anchors: dict, order: list[tuple[str, str, str]] | None = None) -> dict:
     """Один матч: проход по записи и голы по табло. Исключения (VK не отдал, ffmpeg упал) — наверх."""
     club = key.split("|")[1]
-    src, headers, length = sb.stream_of(video)
+    src, headers, length = stream(video)
     out = WORK / safe_name(key)
     out.mkdir(parents=True, exist_ok=True)
     if club not in sb.BOARDS:
@@ -241,8 +270,9 @@ def scan_match(key: str, video: str, anchors: dict, order: list[tuple[str, str, 
     return {"status": "ok", "goals": goals}
 
 
-def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan=scan_match) -> tuple[int, int]:
-    """Один проход: разбирает до SCAN_MAX ждущих матчей по одному и после каждого пишет clips.json.
+def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan=scan_match,
+             track: "admin.Tracker | None" = None) -> tuple[int, int]:
+    """Один проход: разбирает до SCAN_MAX ждущих матчей по одному и после каждого пишет clips.json и пульс.
     Возвращает (сколько разобрано, сколько ещё ждёт)."""
     games = store.setdefault("games", {})
     todo = pending(league, marked, games, now.date())
@@ -253,15 +283,20 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
         log.info("%s: разбираю %s (попытка %d)", key, video, tries)
         try:
             got = scan(key, video, ((marked or {}).get(key) or {}).get("anchors") or {}, protocol_order(league, key))
+            vk_note(track, None)
         except Exception as err:   # VK не отдал, ffmpeg упал — дальше не ломимся (ADR-012), попробуем в другой проход
             log.warning("%s: не разобрали — %s: %s", key, type(err).__name__, err)
             got = {"status": "error", "error": f"{type(err).__name__}: {err}"[:300], "goals": was.get("goals") or {}}
+            if isinstance(err, VkError):
+                vk_note(track, err)
         games[key] = {"video": video, "v": VERSION, "tries": tries, "scanned": now_msk().isoformat(timespec="seconds"),
                       **got, "clips": was.get("clips") or {}}   # выложенные клипы остаются: нарезка сверит их сама
         timed = sum(1 for g in games[key]["goals"].values() if g.get("t") is not None)
         log.info("%s: %s, голов по табло %d, с секундой %d", key, got["status"], len(games[key]["goals"]), timed)
         store["updated"] = now_msk().isoformat(timespec="seconds")
         write_atomic(LIVE_DIR / "clips.json", store)
+        if track is not None:   # пульс после каждого матча: разбор записи — минуты, пульт ждёт не дольше часа
+            track.flush()
     for key in [k for k in games if k[:10] < SINCE.isoformat()]:
         games.pop(key)
     done = min(len(todo), SCAN_MAX)
@@ -342,7 +377,8 @@ def cut_goal(src: str, headers: dict | None, t: int, out: Path, score: str, mark
     return clip, poster, pc.duration(clip) or float(w["length"])
 
 
-def cut_pass(store: dict, league: dict | None, marked: dict, bucket: s3.Store, cut=cut_goal, stream=sb.stream_of) -> int:
+def cut_pass(store: dict, league: dict | None, marked: dict, bucket: s3.Store, cut=cut_goal, stream=stream,
+             track: "admin.Tracker | None" = None) -> int:
     """Нарезка: у каждого разобранного матча — клипы голов с секундой и протоколом, выкладка в бакет, удаление
     клипов скрытых и отменённых голов. После каждого матча — запись clips.json. Возвращает число новых клипов."""
     if not bucket.ok:
@@ -371,8 +407,10 @@ def cut_pass(store: dict, league: dict | None, marked: dict, bucket: s3.Store, c
             mark = (out / "mark.txt", out / "source.txt", pc.font_file())
             try:
                 src, headers, _ = stream(game["video"], pc.FORMAT)
+                vk_note(track, None)
             except Exception as err:   # VK не отдал — в следующий проход (ADR-012)
                 log.warning("%s: поток для клипов не получили — %s: %s", key, type(err).__name__, err)
+                vk_note(track, err)
                 todo = []
             for score, t, how in todo:
                 try:
@@ -398,7 +436,64 @@ def cut_pass(store: dict, league: dict | None, marked: dict, bucket: s3.Store, c
                 log.info("%s %s: клип %s (%s)", key, score, replay.fmt_t(t), how)
         store["updated"] = now_msk().isoformat(timespec="seconds")
         write_atomic(LIVE_DIR / "clips.json", store)
+        if track is not None:
+            track.flush()
     return n
+
+
+# ---------- пульт (ADR-030, раздел 7) ----------
+
+def catalog(store: dict, league: dict | None, marked: dict, today: date) -> dict[str, int]:
+    """Каталог голов сезона для плиток пульта. Матчи — сыгранные с SINCE по league.json. `no_video` — без записи
+    лиги и без ссылки админа: клипов у них не будет. Остальные — `goals` (голы протокола без буллитов; протокола ещё
+    нет — голы, найденные табло), из них `timed` с точной секундой (`timed_admin` — от админа, `timed_auto` — часы и
+    табло), `clips` с клипом, `ask` ждут ответа на превью и `mismatch` — табло нашло гол, которого нет в протоколе
+    (лига отменила гол или поправила счёт)."""
+    days = season_days(today)
+    found = sb.recorded(league, days)
+    for key, e in (marked or {}).items():
+        if key[:10] in days and isinstance(e, dict) and isinstance(e.get("video"), str):
+            found.setdefault(key, {"video": e["video"]})
+    out = dict.fromkeys(admin.CLIPS_GAUGES, 0)
+    games = store.get("games") or {}
+    for g in (league or {}).get("games") or []:
+        if not (isinstance(g, dict) and g.get("date") in days and g.get("score")):
+            continue
+        key = f"{g['date']}|{g.get('home')}|{g.get('away')}"
+        if key not in found:
+            out["no_video"] += 1
+            continue
+        game = games.get(key) if isinstance(games.get(key), dict) else {}
+        admin_e = (marked or {}).get(key) if isinstance((marked or {}).get(key), dict) else None
+        board = game.get("goals") or {}
+        protocol = league_goals(league, key)
+        scores = set(protocol) or set(board)
+        seconds = goal_seconds(game, admin_e) if game else {
+            s: (t, "admin") for s, t in ((admin_e or {}).get("anchors") or {}).items() if isinstance(t, int)}
+        anchors = (admin_e or {}).get("anchors") or {}
+        have = game.get("clips") or {}
+        out["goals"] += len(scores)
+        for score in scores:
+            if score in seconds:
+                out["timed"] += 1
+                out["timed_admin" if seconds[score][1] == "admin" else "timed_auto"] += 1
+            elif isinstance((board.get(score) or {}).get("ask"), dict) and score not in anchors:
+                out["ask"] += 1
+            if score in have:
+                out["clips"] += 1
+        if protocol:
+            out["mismatch"] += sum(1 for s in board if s not in protocol)
+    return out
+
+
+def report(track: "admin.Tracker", store: dict, league: dict | None, marked: dict, now: datetime) -> None:
+    """Снимок каталога — в счётчики дня и на диск: так пульт видит, что служба жива, даже когда разбирать нечего."""
+    try:
+        for k, v in catalog(store, league, marked, now.date()).items():
+            track.gauge(k, v)
+    except Exception:   # счётчики не должны ронять службу
+        log.exception("снимок каталога для пульта не посчитался")
+    track.flush()
 
 
 def clean_work(now: datetime, root: Path = WORK) -> None:
@@ -419,6 +514,8 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     if not shutil.which("ffmpeg"):
         sys.exit("Нет ffmpeg: apt install -y ffmpeg")
+    track = admin.Tracker("clips")
+    logging.getLogger().addHandler(admin.ErrorCount(track))
     bucket = s3.Store()
     if not bucket.ok:
         log.info("ключей хранилища нет (CLIPS_S3_KEY, CLIPS_S3_SECRET в /etc/rhl/bot.env) — клипы не режем")
@@ -430,17 +527,20 @@ def main() -> None:
         try:
             # сначала клипы того, что уже разобрано: они быстрые, а проход по новой записи — минуты, и перезапуск
             # службы (выкладка) посреди него не должен задерживать клипы (05.10 так и не дошло до нарезки)
-            cut = cut_pass(store, league, marked, bucket)
-            n, left = run_pass(store, league, marked, now)
+            cut = cut_pass(store, league, marked, bucket, track=track)
+            n, left = run_pass(store, league, marked, now, track=track)
             if n:
                 log.info("проход: разобрано матчей %d, ждут разбора %d", n, left)
-                cut += cut_pass(store, league, marked, bucket)
+                cut += cut_pass(store, league, marked, bucket, track=track)
             if cut:
                 log.info("проход: новых клипов %d", cut)
             clean_work(now)
+            if cut:
+                track.add("clips_cut", cut)
         except Exception:   # служба не падает из-за одного прохода: следующий через EVERY
             log.exception("проход упал")
             left = 0
+        report(track, store, league, marked, now_msk())
         if args.once:
             return
         time.sleep(60 if left else EVERY)   # VK отказал — следующая попытка не сразу (ADR-012)

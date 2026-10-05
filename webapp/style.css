@@ -1527,3 +1527,14 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 .clip-src { margin-top: 6px; font: 500 12px/1.4 var(--ui); color: var(--muted); }
 .clip-full { padding: 8px 0; margin: -8px 0; border: 0; background: none; color: inherit; font: inherit;
   text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+/* «Все голы матча» (ADR-030, раздел 6): клипы подряд в одном плеере над списком голов */
+.reel-row { margin: 0 0 10px; }
+.clip-box.reel { padding: 0 0 14px; }
+.clip-src b { color: var(--ink); font-weight: 700; }
+
+/* «Мой игрок» (ADR-010, решение 3): пилюля со звёздочкой под «клуб · амплуа»; отмечен — звезда --sun в контуре */
+.side-name .go.mp { align-self: flex-start; min-height: 32px; margin-top: 6px; padding: 0 12px; font-size: 12px; }
+.side-name .go.mp::after { content: ""; position: absolute; inset: -4px 0; }   /* нажатие — 40px */
+.go.mp .mp-star { width: 16px; height: 16px; fill: none; stroke: var(--ink); stroke-width: 1.6; stroke-linejoin: round; }
+.go.mp.on .mp-star { fill: var(--sun); }
+.mp-note { font: 500 12px/1.35 var(--ui); color: var(--muted); }

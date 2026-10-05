@@ -128,6 +128,22 @@
       save();
       return {};
     }
+    // «Мой игрок» (ADR-030, раздел 6): как server.py — ключ игрока или null
+    if (path === "/me/player") {
+      needAuth(auth);
+      if (method === "GET") return { pk: db.player || null };
+      if (method === "PUT") {
+        if (!/^[0-9a-f]{10}$/.test((body && body.pk) || "")) fail(400, "Не понял, какой это игрок.");
+        db.player = body.pk;
+        save();
+        return { pk: db.player };
+      }
+      if (method === "DELETE") {
+        delete db.player;
+        save();
+        return { pk: null };
+      }
+    }
     fail(404, "Такого адреса у сервера нет.");
   };
 })();

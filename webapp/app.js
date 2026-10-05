@@ -4474,12 +4474,7 @@ function replayBtn(x) {
 function toggleClip(btn) {
   const row = btn.closest(".hl-row, .goal") || btn.parentElement;
   const open = row.nextElementSibling && row.nextElementSibling.classList.contains("clip-box") ? row.nextElementSibling : null;
-  document.querySelectorAll(".clip-box").forEach((b) => {
-    const v = b.querySelector("video");
-    if (v) v.pause();
-    b.remove();
-  });
-  document.querySelectorAll('[data-clip][aria-expanded="true"]').forEach((b) => b.setAttribute("aria-expanded", "false"));
+  closeClips();
   if (open) return;
   haptic();
   const full = btn.dataset.full && HTTPS.test(btn.dataset.full)
@@ -4491,6 +4486,72 @@ function toggleClip(btn) {
   if (p && p.catch) p.catch(() => {});   // без жеста пользователя браузер может не дать играть — есть кнопки плеера
 }
 
+// «Все голы матча» (ADR-030, раздел 6): клипы голов подряд в одном плеере над списком голов. Кончился клип —
+// следующий; «Дальше» — пропустить. Открыть клип в строке гола — лента закрывается, и наоборот
+function reelClips(g) {
+  return (g.goals || []).filter((x) => x.period !== "РБ" && x.clip && HTTPS.test(x.clip.mp4 || "") && HTTPS.test(x.clip.poster || ""));
+}
+
+function closeClips() {
+  document.querySelectorAll(".clip-box").forEach((b) => {
+    const v = b.querySelector("video");
+    if (v) v.pause();
+    b.remove();
+  });
+  document.querySelectorAll('[data-clip][aria-expanded="true"], [data-reel][aria-expanded="true"]').forEach((b) => b.setAttribute("aria-expanded", "false"));
+}
+
+function reelCaption(list, i) {
+  const x = list[i];
+  const who = splitName(x.author || "")[0];
+  const next = i < list.length - 1 ? ` · <button type="button" class="clip-full" data-reel-next="${i + 1}">Дальше</button>` : "";
+  return `<b>${i + 1} из ${list.length}</b> · ${esc(x.score)}${who ? `, ${esc(who)}` : ""} · Источник: РХЛ${next}`;
+}
+
+function reelPlay(i) {
+  const box = $("#reel");
+  const g = box && findGame(box.dataset.g);
+  const list = g ? reelClips(g) : [];
+  if (!list[i]) return;
+  const v = box.querySelector("video");
+  box.dataset.i = String(i);
+  v.poster = list[i].clip.poster;
+  v.src = list[i].clip.mp4;
+  box.querySelector(".clip-src").innerHTML = reelCaption(list, i);
+  const p = v.play();
+  if (p && p.catch) p.catch(() => {});   // без жеста пользователя браузер может не дать играть — есть кнопки плеера
+}
+
+function toggleReel(btn, force = false) {
+  const open = !!$("#reel");
+  closeClips();
+  if (open && !force) return;
+  const g = findGame(btn.dataset.reel);
+  if (!g || !reelClips(g).length) return;
+  haptic();
+  btn.closest(".reel-row").insertAdjacentHTML("afterend", `<div class="clip-box reel" id="reel" data-g="${esc(g.id)}"><video controls playsinline preload="metadata"></video><div class="clip-src"></div></div>`);
+  btn.setAttribute("aria-expanded", "true");
+  $("#reel video").addEventListener("ended", () => {
+    const box = $("#reel");
+    if (box) reelPlay(Number(box.dataset.i) + 1);
+  });
+  reelPlay(0);
+}
+
+// Ссылка «Голы матча» из бота (view=goals): лента открывается, как только в разборе появилась кнопка
+let reelWanted = null;
+function reelFromLink() {
+  if (!reelWanted || recapView.id !== reelWanted) return;
+  const btn = document.querySelector(`[data-reel="${CSS.escape(reelWanted)}"]`);
+  const one = !btn && document.querySelectorAll("#recap [data-clip]").length === 1 ? $("#recap [data-clip]") : null;
+  if (!btn && !one) return;   // разбор ещё грузится или клипов пока нет — остаются голы с «Повтором»
+  reelWanted = null;
+  if (btn) toggleReel(btn, true);
+  else toggleClip(one);   // клип один — играет в своей строке
+  const box = document.querySelector("#sheet .clip-box");
+  if (box) box.scrollIntoView({ block: "center", behavior: calm() ? "auto" : "smooth" });   // лента — под разбором
+}
+
 function goalsTab(g, d) {
   const items = (g.goals || []).map((x, i) => ({ kind: "g", x, i, s: x.period === "РБ" ? 1e9 : secs(x.time), p: x.period }));
   const pens = (d && d.penalties) || [];
@@ -4500,6 +4561,10 @@ function goalsTab(g, d) {
     <button data-recap-pens="0" class="${recapView.pens ? "" : "on"}" aria-pressed="${!recapView.pens}">Только голы</button>
     <button data-recap-pens="1" class="${recapView.pens ? "on" : ""}" aria-pressed="${recapView.pens}">С удалениями</button></div>` : "";
   if (!items.length) return html + `<div class="empty">В протоколе нет голов</div>`;
+  const reel = reelClips(g);
+  if (reel.length > 1) {
+    html += `<div class="go-row reel-row"><button type="button" class="go" data-reel="${esc(g.id)}" aria-expanded="false">${LV_ICON.watch}<span>Все голы матча · ${reel.length}</span></button></div>`;
+  }
   html += `<div class="goals">`;
   let period = null;
   for (const it of items) {
@@ -4638,6 +4703,7 @@ function rerenderRecap() {
   box.innerHTML = recapHTML(g);
   placeRunners(box, prev);
   $("#facts").innerHTML = factsHTML(g);
+  reelFromLink();
 }
 
 // Новая вкладка разбора начинается сразу под прилипшими сегментами, а не там, куда
@@ -4701,6 +4767,7 @@ function openMatch(id, from = null, dir = 0) {
   // счёт с ленты сайта — разбора нет по построению (сборка пишет его только из протокола): не спрашиваем
   if (g.score && !recapKnown && !siteOnly(g)) fillRecap(id);
   if (!state.h2h && !g.season) fillH2H(g);
+  reelFromLink();
 }
 
 // «Назад» в листе: к листу, откуда открыли этот (матч, игрок, клуб); иначе закрыть
@@ -4765,6 +4832,53 @@ function goalLineHTML(e, mode) {
   </div>`;
 }
 
+// ---------- «Мой игрок» (ADR-010, решение 3; ADR-030, раздел 6) ----------
+// Звёздочка на странице игрока — на устройстве и в облаке Telegram, как любимая команда. С сервером API ещё и там
+// (PUT /me/player): по ней бот присылает гол игрока после матча. Не дошло до сервера — повторим при следующем
+// открытии: MP_SYNC_KEY помнит, что сервер уже знает. Игрок один: новая звёздочка снимает прежнюю
+const MP_KEY = "my_player";
+const MP_SYNC_KEY = "my_player_sync";   // что знает сервер: ключ или "-" (снята); только на устройстве
+const MP_STAR = `<svg class="mp-star" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5l2.6 6.2 6.7.5-5.1 4.4 1.6 6.5L12 16.6l-5.8 3.5 1.6-6.5L2.7 9.2l6.7-.5z"/></svg>`;
+
+function myPlayer() {
+  const v = lsGet(MP_KEY) || "";
+  return PK.test(v) ? v : "";
+}
+const mpServer = () => liveOn() && (liveMock() ? predAuthed() : inTelegram && !!tg.initData);
+
+function mpSync() {
+  if (!mpServer()) return;
+  const pk = myPlayer();
+  const want = pk || "-";
+  const known = lsGet(MP_SYNC_KEY);
+  if (known === want || (!pk && known === null)) return;   // сервер уже знает или звёздочки не было вовсе
+  (pk ? liveApi("PUT", "/me/player", { pk }, true) : liveApi("DELETE", "/me/player", null, true))
+    .then(() => lsSet(MP_SYNC_KEY, want))
+    .catch(() => {});
+}
+
+function toggleMyPlayer(pk) {
+  if (!PK.test(pk || "")) return;
+  const on = myPlayer() !== pk;
+  haptic();
+  lsSet(MP_KEY, on ? pk : "");
+  const c = cloud();
+  if (c) {
+    if (on) c.setItem(MP_KEY, pk, () => {});
+    else c.removeItem(MP_KEY, () => {});
+  }
+  mpSync();
+  const box = $("#pl-body");
+  if (box && sheetCur === `p:${pk}` && players[pk]) box.innerHTML = playerHTML(players[pk], pk);
+}
+
+function myPlayerHTML(pk) {
+  const on = myPlayer() === pk;
+  const note = !on ? "" : mpServer() ? "Бот пришлёт его голы после матча — с клипом, когда он будет"
+    : "Отмечен на этом устройстве. Голы в боте — когда приложение открыто из Telegram";
+  return `<button type="button" class="go mp${on ? " on" : ""}" data-my-player="${esc(pk)}" aria-pressed="${on}">${MP_STAR}<span>Мой игрок</span></button>${note ? `<div class="mp-note">${esc(note)}</div>` : ""}`;
+}
+
 function sideFail(attr, key) {
   return `<div class="empty">Не удалось загрузить. Проверьте интернет.<br><button type="button" class="retry" ${attr}="${esc(key)}">Повторить</button></div>`;
 }
@@ -4777,18 +4891,18 @@ function openPlayer(pk, from = null, dir = 0) {
   }
   sheetCur = `p:${pk}`;
   const p = players[pk];
-  showSheet(sideHead(`Игрок · сезон ${state.data.season}`) + `<div id="pl-body">${p ? playerHTML(p) : `<div class="empty">Загружаем…</div>`}</div>`, dir);
+  showSheet(sideHead(`Игрок · сезон ${state.data.season}`) + `<div id="pl-body">${p ? playerHTML(p, pk) : `<div class="empty">Загружаем…</div>`}</div>`, dir);
   if (!p) {
     loadSide(`data/players/${pk}.json`, players, pk).then((d) => {
       const box = $("#pl-body");
       if (!box || sheetCur !== `p:${pk}`) return;
-      box.innerHTML = d ? playerHTML(d) : sideFail("data-player", pk);
+      box.innerHTML = d ? playerHTML(d, pk) : sideFail("data-player", pk);
       fadeIn(box);
     });
   }
 }
 
-function playerHTML(p) {
+function playerHTML(p, pk) {
   const [last, first] = splitName(p.name || "");
   const role = p.role === "G" ? "G" : "F";
   const goals = (p.goals || []).filter((e) => e.as !== "assist").length;
@@ -4797,7 +4911,8 @@ function playerHTML(p) {
   let html = `<div class="side-top">
     <span class="ps xl">${figure({ kit: club, role, number: p.no })}</span>
     <div class="side-name"><h2>${esc(last)}</h2>${first ? `<div class="first">${esc(first)}</div>` : ""}
-      <div class="meta">${club ? `<button type="button" class="club-link" data-club="${esc(club)}">${emblem(club)}${esc(team(club).name)}</button>` : ""}${ROLE_NAMES[p.role] ? ` · ${ROLE_NAMES[p.role]}` : ""}</div></div>
+      <div class="meta">${club ? `<button type="button" class="club-link" data-club="${esc(club)}">${emblem(club)}${esc(team(club).name)}</button>` : ""}${ROLE_NAMES[p.role] ? ` · ${ROLE_NAMES[p.role]}` : ""}</div>
+      ${myPlayerHTML(pk)}</div>
   </div>`;
   html += `<div class="label">Голы и передачи<span class="aside">${goalCount(goals, "гол", "гола", "голов")} · ${goalCount(assists, "передача", "передачи", "передач")}</span></div>`;
   html += (p.goals || []).length
@@ -5126,7 +5241,7 @@ function confirmTeam(id = state.draft || state.fav) {
 }
 
 document.addEventListener("click", (e) => {
-  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-home-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],[data-pack],[data-pack-nav],[data-out],[data-vote],[data-md-all],[data-md-cal],[data-ev-all],[data-pred-open],[data-pred-forget],[data-pred-keep],[data-pred-erase],[data-about],[data-player],[data-club],[data-club-cal],[data-club-who],[data-clip],#sheet-backdrop");
+  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-home-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],[data-pack],[data-pack-nav],[data-out],[data-vote],[data-md-all],[data-md-cal],[data-ev-all],[data-pred-open],[data-pred-forget],[data-pred-keep],[data-pred-erase],[data-about],[data-player],[data-club],[data-club-cal],[data-club-who],[data-clip],[data-reel],[data-reel-next],[data-my-player],#sheet-backdrop");
   if (!el || el.disabled) return;
   if (el.dataset.guide) return guideHop(el);
   if (el.hasAttribute("data-meet-close") || (el.hasAttribute("data-coach-back") && state.meet)) return closeCoach();
@@ -5357,6 +5472,9 @@ document.addEventListener("click", (e) => {
     });
   }
   if (el.dataset.clip) return toggleClip(el);
+  if (el.dataset.reel) return toggleReel(el);
+  if (el.dataset.reelNext) return reelPlay(Number(el.dataset.reelNext));
+  if (el.dataset.myPlayer) return toggleMyPlayer(el.dataset.myPlayer);
   if (el.dataset.player) return openPlayer(el.dataset.player, el.closest("#sheet") ? sheetCur : null);
   if (el.dataset.club) return openClub(el.dataset.club, el.closest("#sheet") ? sheetCur : null);
   if (el.dataset.clubWho) {
@@ -5446,6 +5564,11 @@ function matchParam() {
   return q.get("match") || (/^m-/.test(sp) ? sp.slice(2) : null);
 }
 
+// «Голы матча» из бота: ?match=<id>&view=goals — разбор и клипы голов подряд (ADR-030, раздел 6)
+function goalsParam() {
+  return new URLSearchParams(location.search).get("view") === "goals";
+}
+
 // Ссылка на страницу игрока или клуба из бота: startapp=p-<ключ> или c-<клуб>, ?player= и ?club= (ADR-030)
 function sideParam() {
   const fromTg = inTelegram && tg.initDataUnsafe && tg.initDataUnsafe.start_param;
@@ -5527,6 +5650,15 @@ function initTelegram() {
       refreshFeed();
     });
   }
+  // «Мой игрок» отмечен на другом устройстве — он в облаке; здесь звёздочку не трогали — берём оттуда
+  if (c && lsGet(MP_KEY) === null) {
+    c.getItem(MP_KEY, (err, v) => {
+      if (err || !PK.test(v || "") || lsGet(MP_KEY) !== null) return;
+      lsSet(MP_KEY, v);
+      mpSync();
+    });
+  }
+  mpSync();
   if (!state.fav && state.data && c) {
     c.getItem(FAV_KEY, (err, v) => {
       if (err || !v || !state.teams[v] || state.fav) return;
@@ -5621,6 +5753,7 @@ function boot(d, cached = false) {
   const mid = matchParam();
   if (mid && !state.openedFromLink && (games().some((g) => g.id === mid) || /^h\d+$/.test(mid))) {
     state.openedFromLink = true;
+    if (goalsParam()) reelWanted = mid;
     openMatch(mid);
   }
   const side = !state.openedFromLink && sideParam();

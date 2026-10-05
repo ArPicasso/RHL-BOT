@@ -137,6 +137,14 @@ function system(st, now) {
   }
   const r = s.raskat || {};
   html += row(r.on === false ? "bad" : "ok", "Зачёт «Раската»", esc(r.note || ""), r.on === false ? "выключен" : "включён");
+  const c = s.clips;
+  if (c) {
+    const vkBad = v(c, "vk_fail") >= 3 && !v(c, "vk_ok");
+    html += row(minsAgo(c.beat, now) > 60 ? "bad" : "ok", "Пульс службы клипов", c.started ? esc(`запущена ${ago(c.started, now)}`) : "", esc(ago(c.beat, now)));
+    html += row(vkBad ? "bad" : v(c, "vk_fail") ? "warn" : v(c, "vk_ok") ? "ok" : "", "Записи трансляций из VK",
+      esc([`сегодня отдал ${v(c, "vk_ok")}, отказал ${v(c, "vk_fail")}`, v(c, "vk_fail") && c.vk_error ? c.vk_error : ""].filter(Boolean).join(" · ")),
+      c.vk_last_ok ? esc(ago(c.vk_last_ok, now)) : "");
+  }
   const d = s.disk;
   if (d) html += row(d.free < 1 << 30 ? "bad" : d.free < 3 * (1 << 30) ? "warn" : "ok", "Диск", esc(`свободно ${bytes(d.free)} из ${bytes(d.total)} · state.db ${bytes(d.db)}`), "");
   return html + `</section>`;
@@ -186,9 +194,10 @@ function sends(st, now) {
   let html = `<div class="label">Рассылки</div><div class="tiles">
     ${tile(v(t, "remind_sent"), `напоминаний ушло сегодня${v(t, "remind_fail") ? `, не ушло ${v(t, "remind_fail")}` : ""}`)}
     ${tile(v(t, "final_sent"), `финалов ушло сегодня${v(t, "final_fail") ? `, не ушло ${v(t, "final_fail")}` : ""}`)}
-    ${tile(v(t, "replays_todo"), "матчей ждут разметки повторов (/replay)")}
-    ${tile(v(t, "replay_nag"), "напоминаний о повторах админам сегодня")}
+    ${tile(v(t, "replays_todo"), "матчей без превью и секунд (/replay)")}
+    ${tile(v(t, "replay_nag"), "напоминаний о превью админам сегодня")}
   </div>`;
+  html += clipTiles(s.clips, s.my_players, t);
   html += `<section class="card" style="margin-top:12px">${table(days, [["remind_sent", "Напом."], ["final_sent", "Финалы"], [(d) => v(d, "remind_fail") + v(d, "final_fail"), "Не ушло"], ["errors", "Ошибки"]])}</section>`;
   html += `<section class="card"><div class="card-title">Последние рассылки</div>`;
   if (s.log && s.log.length) {
@@ -202,6 +211,23 @@ function sends(st, now) {
   }
   if (s.last_error) html += row("warn", "Последняя ошибка бота", esc([s.last_error.what, s.last_error.exc].filter(Boolean).join(" · ")), esc(ago(s.last_error.at, now)));
   return html + `</section>`;
+}
+
+// Каталог голов сезона (ADR-030, раздел 7): снимок службы clips на её последний проход
+function clipTiles(c, myPlayers, t) {
+  if (!c && typeof myPlayers !== "number") return "";
+  const timed = c ? `с точной секундой: сами ${num(v(c, "timed_auto"))}, админ ${num(v(c, "timed_admin"))}` : "";
+  let html = `<div class="card-title" style="margin:14px 2px 8px">Голы и клипы сезона</div><div class="tiles">`;
+  if (c) {
+    html += tile(v(c, "goals"), "голов в матчах с записью лиги")
+      + tile(v(c, "timed"), timed)
+      + tile(v(c, "clips"), "клипов в хранилище")
+      + tile(v(c, "ask"), "голов ждут ответа на превью")
+      + tile(v(c, "no_video"), "матчей без записи лиги")
+      + (v(c, "mismatch") ? tile(v(c, "mismatch"), "голов табло нет в протоколе") : "");
+  }
+  if (typeof myPlayers === "number") html += tile(myPlayers, `отметили «Моего игрока»${v(t, "my_goal_sent") ? `, голов ушло сегодня ${v(t, "my_goal_sent")}` : ""}`);
+  return html + `</div>`;
 }
 
 function games(st) {

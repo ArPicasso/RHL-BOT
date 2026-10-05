@@ -35,6 +35,14 @@
     "restarts": 0
    },
    {
+    "name": "clips",
+    "title": "Клипы голов",
+    "state": "active",
+    "sub": "running",
+    "since": "2026-10-03T09:12:40+03:00",
+    "restarts": 0
+   },
+   {
     "name": "tg-tunnel",
     "title": "Туннель в Telegram",
     "state": "active",
@@ -130,6 +138,14 @@
    "free": 15032385536,
    "total": 26843545600,
    "db": 3145728
+  },
+  "clips": {
+   "beat": "2026-10-03T19:31:02+03:00",
+   "started": "2026-10-03T09:12:40+03:00",
+   "vk_ok": 0,
+   "vk_fail": 4,
+   "vk_error": "DownloadError: ERROR: [vk] 456239017: Unable to download webpage: HTTP Error 403: Forbidden",
+   "vk_last_ok": "2026-10-02T22:40:11+03:00"
   }
  },
  "audience": {
@@ -527,7 +543,18 @@
    "at": "2026-10-03T19:36:00+03:00",
    "what": "send to %s failed",
    "exc": "TelegramBadRequest"
-  }
+  },
+  "clips": {
+   "goals": 61,
+   "timed": 20,
+   "timed_auto": 14,
+   "timed_admin": 6,
+   "clips": 17,
+   "ask": 23,
+   "no_video": 19,
+   "mismatch": 1
+  },
+  "my_players": 3
  },
  "games": {
   "raskat_players": 1240,
@@ -608,7 +635,9 @@
    "fav:ekoniva-bobrov": 2,
    "raskat": 180,
    "votes": 520,
-   "voters": 300
+   "voters": 300,
+   "my_goal_sent": 0,
+   "previews_wait": 23
   },
   {
    "date": "2026-10-02",
@@ -791,6 +820,16 @@
   {
    "level": "bad",
    "text": "Источник online.khl.ru: ошибок подряд — 4. HTTP 403"
+  },
+  {
+   "level": "bad",
+   "key": "clips:beat",
+   "text": "Служба клипов молчит 1 ч 25 мин: голы без секунд и превью. Проверь systemctl status clips"
+  },
+  {
+   "level": "bad",
+   "key": "clips:vk",
+   "text": "VK сегодня не отдал ни одной записи трансляции (4 попытки): DownloadError: ERROR: [vk] 456239017: Unable to download webpage: HTTP Error 403: Forbidden. Обычно лечит новый yt-dlp: sudo -u rhl /opt/rhl/venv/bin/pip install -U yt-dlp и systemctl restart clips"
   }
  ]
 }

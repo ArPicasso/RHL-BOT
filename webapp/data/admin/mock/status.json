@@ -35,6 +35,14 @@
     "restarts": 0
    },
    {
+    "name": "clips",
+    "title": "Клипы голов",
+    "state": "active",
+    "sub": "running",
+    "since": "2026-10-03T09:12:40+03:00",
+    "restarts": 0
+   },
+   {
     "name": "tg-tunnel",
     "title": "Туннель в Telegram",
     "state": "active",
@@ -130,6 +138,14 @@
    "free": 15032385536,
    "total": 26843545600,
    "db": 3145728
+  },
+  "clips": {
+   "beat": "2026-10-03T20:51:44+03:00",
+   "started": "2026-10-03T09:12:40+03:00",
+   "vk_ok": 5,
+   "vk_fail": 0,
+   "vk_error": null,
+   "vk_last_ok": "2026-10-03T20:41:05+03:00"
   }
  },
  "audience": {
@@ -527,7 +543,18 @@
    "at": "2026-10-03T19:36:00+03:00",
    "what": "send to %s failed",
    "exc": "TelegramBadRequest"
-  }
+  },
+  "clips": {
+   "goals": 84,
+   "timed": 66,
+   "timed_auto": 51,
+   "timed_admin": 15,
+   "clips": 61,
+   "ask": 7,
+   "no_video": 12,
+   "mismatch": 0
+  },
+  "my_players": 41
  },
  "games": {
   "raskat_players": 1240,
@@ -608,7 +635,9 @@
    "fav:ekoniva-bobrov": 12,
    "raskat": 180,
    "votes": 520,
-   "voters": 300
+   "voters": 300,
+   "my_goal_sent": 9,
+   "previews_wait": 7
   },
   {
    "date": "2026-10-02",

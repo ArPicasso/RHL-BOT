@@ -414,6 +414,22 @@ class Forget(Base):
                 self.assertEqual(n, 0, table)
 
 
+class MyPlayer(Base):
+    """«Мой игрок» (ADR-030, раздел 6): звёздочку мини-апп повторяет на сервер, по ней бот шлёт голы."""
+
+    async def test_put_get_delete(self):
+        await self.call("GET", "/api/me/player", status=401)
+        self.assertEqual(await self.call("GET", "/api/me/player", fan(1)), {"pk": None})
+        self.assertEqual(await self.call("PUT", "/api/me/player", fan(1), {"pk": "a1b2c3d4e5"}), {"pk": "a1b2c3d4e5"})
+        self.assertEqual(await self.call("GET", "/api/me/player", fan(1)), {"pk": "a1b2c3d4e5"})
+        self.assertEqual(await self.call("GET", "/api/me/player", fan(2)), {"pk": None})   # у каждого своя
+        for bad in ("123", "A1B2C3D4E5", 7, None, "a1b2c3d4e5f"):
+            await self.call("PUT", "/api/me/player", fan(1), {"pk": bad}, status=400)
+        self.assertEqual(await self.call("DELETE", "/api/me/player", fan(1)), {"pk": None})
+        with sqlite3.connect(self.db) as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM my_player").fetchone()[0], 0)
+
+
 class Salt(Base):
     async def restart(self):
         await self.client.close()
@@ -515,6 +531,15 @@ class AdminPanel(Base):
                          {"new": 2, "back": 0, "known": 2, "d1": {"of": 0, "back": 0},
                           "week": {"of": 0, "back": 0, "days": 7}, "sleeping": 0})
         self.assertNotIn("1003", json.dumps(st))   # на пульте нет id болельщиков
+        self.assertIsNone(st["sends"]["clips"])    # службы clips нет — плиток каталога нет
+        await self.call("PUT", "/api/me/player", fan(3), {"pk": "a1b2c3d4e5"})
+        (self.status / "clips.json").write_text(json.dumps({
+            "beat": "2026-10-03T11:55:00+03:00", "days": {D1: {"vk_ok": 2, "goals": 10, "timed": 7, "clips": 5}}}),
+            encoding="utf-8")
+        st = await self.call("GET", "/api/admin/status", fan(1))
+        self.assertEqual(st["sends"]["my_players"], 1)   # «Мой игрок» — только число
+        self.assertEqual(st["sends"]["clips"], {"goals": 10, "timed": 7, "clips": 5})
+        self.assertEqual(st["system"]["clips"]["vk_ok"], 2)
 
     async def test_alerts_file_for_the_bot(self):
         """Тревоги (ADR-022): список проблем api кладёт в status/alerts.json, разносит его бот."""

@@ -94,15 +94,19 @@ class AdminPanel(unittest.TestCase):
                          ["plain", "today", "remind", "remind", "team", "leaders", "other"])
 
     def test_subscription_counters(self):
-        bot.follow(42, "tambov")
-        bot.follow(42, "sokol")      # вторая команда — не новая подписка
-        bot.follow(43, "tambov")
-        bot.unsubscribe(42)
-        bot.unsubscribe(43, blocked=True)
-        bot.unsubscribe(44, blocked=True)   # его и не было
+        # id как у Telegram, девять цифр: короткий «42» находился в секундах времени записи (03:00:42) — тест плавал
+        a, b, c = 424242001, 424242002, 424242003
+        bot.follow(a, "tambov")
+        bot.follow(a, "sokol")      # вторая команда — не новая подписка
+        bot.follow(b, "tambov")
+        bot.unsubscribe(a)
+        bot.unsubscribe(b, blocked=True)
+        bot.unsubscribe(c, blocked=True)   # его и не было
         self.assertEqual(bot.TRACK.today(), {"sub_new": 2, "sub_off": 2, "blocked": 1})
         bot.TRACK.flush()
-        self.assertNotIn("42", (self.tmp / "bot.json").read_text(encoding="utf-8"))
+        saved = (self.tmp / "bot.json").read_text(encoding="utf-8")
+        for cid in (a, b, c):
+            self.assertNotIn(str(cid), saved)
 
 
 class CustomEmoji(unittest.TestCase):

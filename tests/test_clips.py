@@ -211,3 +211,86 @@ class Replays(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class S3Sign(unittest.TestCase):
+    def test_aws_example_vector(self):
+        """Пример «GET Object» из документации AWS Signature V4: подпись должна совпасть до знака."""
+        import s3
+        h = s3.sign("GET", "examplebucket.s3.amazonaws.com", "/test.txt", {"Range": "bytes=0-9"}, s3.EMPTY,
+                    "AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "us-east-1",
+                    datetime(2013, 5, 24, tzinfo=ZoneInfo("UTC")))
+        self.assertTrue(h.endswith("Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41"))
+        self.assertIn("SignedHeaders=host;range;x-amz-content-sha256;x-amz-date", h)
+
+    def test_store_from_env(self):
+        import s3
+        self.assertFalse(s3.Store({}).ok)
+        st = s3.Store({"CLIPS_S3_KEY": "k", "CLIPS_S3_SECRET": "s"})
+        self.assertTrue(st.ok)
+        self.assertEqual(st.url("clips/2026-10-04/a_b/0-1-60.mp4"),
+                         "https://s3.twcstorage.ru/rhl-clips/clips/2026-10-04/a_b/0-1-60.mp4")
+
+
+class Cutting(unittest.TestCase):
+    """Шаг 6: что резать, что убрать, выкладка в бакет и клип у гола протокола."""
+    game = {"video": VIDEO, "goals": {"0:1": {"t": 2600, "src": "clock", "team": "away"},
+                                      "0:2": {"t": None, "change": 2969}}}
+    protocol = {"0:1": {"score": "0:1", "team": "away", "author": "Иванов", "assists": []},
+                "0:2": {"score": "0:2", "team": "away", "author": "Петров", "assists": ["Игрок скрыт"]}}
+
+    def test_plan_needs_second_and_protocol_and_no_hidden(self):
+        admin = {"video": "https://vkvideo.ru/video-100_200", "anchors": {"0:2": 2960}}
+        cut, drop = clips.clip_plan(self.game, admin, self.protocol)
+        self.assertEqual((cut, drop), ([("0:1", 2600, "clock")], []))   # 0:2 — ассистент скрыт
+        self.assertEqual(clips.clip_plan(self.game, None, {}), ([], []))  # протокола нет — ждём
+        done = {**self.game, "clips": {"0:1": {"t": 2600, "team": "away"}}}
+        self.assertEqual(clips.clip_plan(done, None, self.protocol), ([], []))
+        moved = {**done, "goals": {"0:1": {"t": 2610, "src": "clock"}}}
+        self.assertEqual(clips.clip_plan(moved, None, self.protocol)[0], [("0:1", 2610, "clock")])
+        gone = {**done, "clips": {"0:1": {"t": 2600, "team": "home"}}}   # счета сдвинулись: другой команды
+        self.assertEqual(clips.clip_plan(gone, None, self.protocol)[1], ["0:1"])
+
+    def test_admin_second_wins(self):
+        admin = {"video": VIDEO, "anchors": {"0:1": 2590}}
+        self.assertEqual(clips.goal_seconds(self.game, admin)["0:1"], (2590, "admin"))
+        other = {"video": "https://vk.com/video-9_9", "anchors": {"0:1": 10}}
+        self.assertEqual(clips.goal_seconds(self.game, other)["0:1"], (2600, "clock"))
+
+    def test_pass_uploads_and_records(self):
+        bucket = mock.Mock(ok=True)
+        bucket.put.side_effect = lambda name, body, ct: f"https://s3.twcstorage.ru/rhl-clips/{name}"
+        store = {"games": {KEY: json.loads(json.dumps(self.game))}}
+        league = {"games": [{"date": "2026-10-04", "home": "tverichi", "away": "metallurg",
+                             "goals": list(self.protocol.values())}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            clip, poster = Path(tmp) / "c.mp4", Path(tmp) / "p.jpg"
+            clip.write_bytes(b"mp4")
+            poster.write_bytes(b"jpg")
+            cut = mock.Mock(return_value=(clip, poster, 30.0))
+            stream = mock.Mock(return_value=("src", {}, 7200))
+            with mock.patch.object(clips, "LIVE_DIR", Path(tmp)), mock.patch.object(clips, "WORK", Path(tmp)), \
+                    mock.patch.object(clips.pc, "font_file", return_value="font.ttf"):
+                self.assertEqual(clips.cut_pass(store, league, {}, bucket, cut=cut, stream=stream), 1)
+        c = store["games"][KEY]["clips"]["0:1"]
+        self.assertEqual((c["t"], c["team"], c["dur"]), (2600, "away", 30.0))
+        self.assertEqual(c["mp4"], "https://s3.twcstorage.ru/rhl-clips/clips/2026-10-04/tverichi_metallurg/0-1-2600.mp4")
+        self.assertEqual([x.args[0] for x in bucket.put.call_args_list],
+                         ["clips/2026-10-04/tverichi_metallurg/0-1-2600.mp4", "clips/2026-10-04/tverichi_metallurg/0-1-2600.jpg"])
+
+    def test_no_keys_no_cutting(self):
+        self.assertEqual(clips.cut_pass({"games": {KEY: dict(self.game)}}, None, {}, mock.Mock(ok=False)), 0)
+
+    def test_build_clip_on_protocol_goal(self):
+        g = {"date": "2026-10-04", "home": "tverichi", "away": "metallurg", "goals": [
+            {"period": "1", "score": "0:1", "team": "away", "author": "Иванов", "assists": []},
+            {"period": "1", "score": "0:2", "team": "away", "author": b.HIDDEN_NAME, "assists": []},
+            {"period": "2", "score": "1:2", "team": "home", "author": "Сидоров", "assists": []}]}
+        url = "https://s3.twcstorage.ru/rhl-clips/clips/x"
+        have = {KEY: {"clips": {"0:1": {"team": "away", "mp4": url + ".mp4", "poster": url + ".jpg", "dur": 30},
+                                "0:2": {"team": "away", "mp4": url + "2.mp4", "poster": url + "2.jpg"},
+                                "1:2": {"team": "away", "mp4": url + "3.mp4", "poster": url + "3.jpg"}}}}
+        self.assertEqual(b.apply_clips([g], have), 1)
+        self.assertEqual(g["goals"][0]["clip"], {"mp4": url + ".mp4", "poster": url + ".jpg", "dur": 30})
+        self.assertNotIn("clip", g["goals"][1])   # скрыт по просьбе
+        self.assertNotIn("clip", g["goals"][2])   # клип другой команды — не этот гол

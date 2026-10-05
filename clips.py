@@ -33,8 +33,10 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "tools"))
 
-import replay  # noqa: E402
+import probe_cuts as pc  # noqa: E402
 import probe_scoreboard as sb  # noqa: E402
+import replay  # noqa: E402
+import s3  # noqa: E402
 
 TZ = ZoneInfo("Europe/Moscow")
 LIVE_DIR = Path(os.environ.get("LIVE_DIR") or ROOT / "live")
@@ -230,7 +232,7 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
             log.warning("%s: не разобрали — %s: %s", key, type(err).__name__, err)
             got = {"status": "error", "error": f"{type(err).__name__}: {err}"[:300], "goals": was.get("goals") or {}}
         games[key] = {"video": video, "v": VERSION, "tries": tries, "scanned": now_msk().isoformat(timespec="seconds"),
-                      **got}
+                      **got, "clips": was.get("clips") or {}}   # выложенные клипы остаются: нарезка сверит их сама
         timed = sum(1 for g in games[key]["goals"].values() if g.get("t") is not None)
         log.info("%s: %s, голов по табло %d, с секундой %d", key, got["status"], len(games[key]["goals"]), timed)
         store["updated"] = now_msk().isoformat(timespec="seconds")
@@ -239,6 +241,137 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
     for key in [k for k in games if k[:10] < min(old)]:
         games.pop(key)
     return len(todo)
+
+
+# ---------- клипы (шаг 6) ----------
+# Гол с точной секундой (админ, часы, табло) и протоколом — клип 30 с со знаком «Навигатор РХЛ» и обложка в бакет S3.
+# Протокол нужен: только по нему видно, что ни автор, ни ассистенты не скрыты по просьбе. Кто забил, к клипу не
+# пришиваем — это делает сборка; клип помнит счёт, команду и секунду, по ним его сверяют с протоколом.
+
+
+def league_goals(league: dict | None, key: str) -> dict[str, dict]:
+    """Голы протокола матча из league.json: счёт → гол (команда, автор, ассистенты). Буллиты не берём."""
+    day, home, away = key.split("|")
+    g = next((g for g in (league or {}).get("games") or []
+              if isinstance(g, dict) and (g.get("date"), g.get("home"), g.get("away")) == (day, home, away)), None)
+    return {x["score"]: x for x in (g or {}).get("goals") or []
+            if isinstance(x, dict) and x.get("period") != "РБ" and isinstance(x.get("score"), str)}
+
+
+def hidden_goal(x: dict) -> bool:
+    """На клипе виден человек: скрытый по просьбе автор или ассистент — клипа нет (ADR-029, ADR-030)."""
+    return x.get("author") == pc.HIDDEN_NAME or pc.HIDDEN_NAME in (x.get("assists") or [])
+
+
+def goal_seconds(game: dict, admin: dict | None) -> dict[str, tuple[int, str]]:
+    """Точная секунда каждого гола в ролике службы: отметка админа (если ролик тот же) главнее часов и табло."""
+    out = {s: (int(g["t"]), g.get("src") or "board") for s, g in (game.get("goals") or {}).items()
+           if isinstance(g, dict) and isinstance(g.get("t"), (int, float))}
+    if admin and replay.same_video(admin.get("video"), game.get("video")):
+        out.update({s: (int(t), "admin") for s, t in (admin.get("anchors") or {}).items() if isinstance(t, int)})
+    return out
+
+
+def clip_plan(game: dict, admin: dict | None, protocol: dict[str, dict]) -> tuple[list[tuple[str, int, str]], list[str]]:
+    """Что резать и что убрать: ([(счёт, секунда, откуда)], [счёт клипа к удалению]). Режем гол с секундой и
+    протоколом, без скрытых, если клипа нет или секунда поменялась. Убираем клип скрытого игрока и гол, которого
+    в протоколе нет или он другой команды (лига отменила гол — счета сдвинулись)."""
+    have = game.get("clips") or {}
+    cut, drop = [], []
+    for score, (t, src) in sorted(goal_seconds(game, admin).items(), key=lambda x: x[1][0]):
+        x = protocol.get(score)
+        if not x or hidden_goal(x):
+            continue
+        if (have.get(score) or {}).get("t") != t:
+            cut.append((score, t, src))
+    if protocol:
+        for score, c in have.items():
+            x = protocol.get(score)
+            if not x or hidden_goal(x) or (c.get("team") and x.get("team") != c.get("team")):
+                drop.append(score)
+    return cut, drop
+
+
+def clip_names(key: str, score: str, t: int) -> tuple[str, str]:
+    """Имена файлов в бакете: секунда в имени — поправили секунду, появился новый файл (кэш не мешает)."""
+    day, home, away = key.split("|")
+    base = f"clips/{day}/{home}_{away}/{score.replace(':', '-')}-{t}"
+    return base + ".mp4", base + ".jpg"
+
+
+def poster_cmd(src: str, headers: dict | None, t: int, path: Path) -> list[str]:
+    return [sb.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", *sb.header_args(headers), "-ss", str(t),
+            "-i", src, "-frames:v", "1", "-vf", "scale=-2:720", "-q:v", "4", str(path)]
+
+
+def cut_goal(src: str, headers: dict | None, t: int, out: Path, score: str, mark: tuple) -> tuple[Path, Path, float]:
+    """Клип вокруг секунды гола (20 до, 10 после, знак лиги) и обложка в секунду гола. Не вышло — исключение."""
+    w = pc.windows({score: t})[0]
+    clip, poster = out / f"clip_{w['file']}", out / f"poster_{score.replace(':', '-')}.jpg"
+    for cmd in (pc.cut_cmd(src, headers, w["start"], w["length"], clip, mark), poster_cmd(src, headers, t, poster)):
+        run = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        if run.returncode != 0:
+            raise RuntimeError((run.stderr.strip().splitlines() or ["ffmpeg без ошибки"])[-1][:200])
+    return clip, poster, pc.duration(clip) or float(w["length"])
+
+
+def cut_pass(store: dict, league: dict | None, marked: dict, bucket: s3.Store, cut=cut_goal, stream=sb.stream_of) -> int:
+    """Нарезка: у каждого разобранного матча — клипы голов с секундой и протоколом, выкладка в бакет, удаление
+    клипов скрытых и отменённых голов. После каждого матча — запись clips.json. Возвращает число новых клипов."""
+    if not bucket.ok:
+        return 0
+    n = 0
+    for key, game in sorted((store.get("games") or {}).items()):
+        if not isinstance(game, dict) or not game.get("video"):
+            continue
+        protocol = league_goals(league, key)
+        todo, drop = clip_plan(game, (marked or {}).get(key), protocol)
+        if not todo and not drop:
+            continue
+        clips_ = game.setdefault("clips", {})
+        for score in drop:
+            for name in clips_.pop(score, {}).get("files") or []:
+                try:
+                    bucket.delete(name)
+                except Exception as err:
+                    log.warning("%s %s: не удалили %s — %s", key, score, name, err)
+            log.info("%s %s: клип убран (скрыт по просьбе или гола нет в протоколе)", key, score)
+        if todo:
+            out = WORK / safe_name(key)
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "mark.txt").write_text(pc.MARK, encoding="utf-8")
+            (out / "source.txt").write_text(pc.SOURCE, encoding="utf-8")
+            mark = (out / "mark.txt", out / "source.txt", pc.font_file())
+            try:
+                src, headers, _ = stream(game["video"], pc.FORMAT)
+            except Exception as err:   # VK не отдал — в следующий проход (ADR-012)
+                log.warning("%s: поток для клипов не получили — %s: %s", key, type(err).__name__, err)
+                todo = []
+            for score, t, how in todo:
+                try:
+                    clip, poster, dur = cut(src, headers, t, out, score, mark)
+                    mp4_name, jpg_name = clip_names(key, score, t)
+                    mp4 = bucket.put(mp4_name, clip.read_bytes(), "video/mp4")
+                    jpg = bucket.put(jpg_name, poster.read_bytes(), "image/jpeg")
+                except Exception as err:
+                    log.warning("%s %s: клип не вышел — %s: %s", key, score, type(err).__name__, err)
+                    continue
+                for name in (clips_.get(score) or {}).get("files") or []:   # прежняя секунда — старые файлы
+                    try:
+                        bucket.delete(name)
+                    except Exception:
+                        pass
+                x = protocol.get(score) or {}
+                clips_[score] = {"t": t, "src": how, "team": x.get("team"), "period": x.get("period"), "mp4": mp4,
+                                 "poster": jpg, "dur": round(dur, 1), "files": [mp4_name, jpg_name],
+                                 "cut": now_msk().isoformat(timespec="seconds")}
+                for f in (clip, poster):
+                    f.unlink(missing_ok=True)
+                n += 1
+                log.info("%s %s: клип %s (%s)", key, score, replay.fmt_t(t), how)
+        store["updated"] = now_msk().isoformat(timespec="seconds")
+        write_atomic(LIVE_DIR / "clips.json", store)
+    return n
 
 
 def clean_work(today: date, root: Path = WORK) -> None:
@@ -258,6 +391,9 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     if not shutil.which("ffmpeg"):
         sys.exit("Нет ffmpeg: apt install -y ffmpeg")
+    bucket = s3.Store()
+    if not bucket.ok:
+        log.info("ключей хранилища нет (CLIPS_S3_KEY, CLIPS_S3_SECRET в /etc/rhl/bot.env) — клипы не режем")
     while True:
         now = now_msk()
         store = read_json(LIVE_DIR / "clips.json")
@@ -267,6 +403,9 @@ def main() -> None:
             n = run_pass(store, league, marked, now)
             if n:
                 log.info("проход: разобрано матчей %d", n)
+            cut = cut_pass(store, league, marked, bucket)
+            if cut:
+                log.info("проход: новых клипов %d", cut)
             clean_work(now.date())
         except Exception:   # служба не падает из-за одного прохода: следующий через EVERY
             log.exception("проход упал")

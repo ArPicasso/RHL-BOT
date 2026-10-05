@@ -11,7 +11,7 @@ APP=${APP:-/opt/rhl}
 DEST=${BACKUP_DIR:-/var/backups/rhl}
 KEEP=${BACKUP_KEEP:-14}
 # live/replays.json — опоры повторов голов (ADR-027): их отмечает админ руками, заново не соберёшь
-STATE="subscribers.json announced.json raskat_waitlist.json reminded.json goals_off.json live/replays.json"
+STATE="subscribers.json announced.json raskat_waitlist.json reminded.json goals_off.json live/replays.json live/clips.json"
 day=$(date +%F)
 
 # Каталог заводит rhl-update: от пользователя rhl в /var/backups не создать

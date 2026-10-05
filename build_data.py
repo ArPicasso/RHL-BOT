@@ -207,6 +207,27 @@ def load_clips(path: Path = CLIPS_FILE) -> dict:
     return load_replays(path)
 
 
+CLIP_URL = re.compile(r"^https://[^\s\"'<>\\]{4,500}$")
+
+
+def apply_clips(games: list[dict], clips: dict | None) -> int:
+    """Свой клип гола (ADR-030, шаг 6): `clip` у гола протокола — mp4, обложка, длина. Клип садится, только если
+    совпали счёт и команда, записанные при нарезке; автор и ассистенты не скрыты по просьбе — иначе клипа нет,
+    даже если файл ещё лежит в бакете (служба уберёт его на следующем проходе). Возвращает число голов с клипом."""
+    n = 0
+    for g in games:
+        have = ((clips or {}).get(f"{g['date']}|{g['home']}|{g['away']}") or {}).get("clips") or {}
+        for x in g.get("goals") or []:
+            c = have.get(x.get("score")) if x.get("period") != "РБ" else None
+            if (not isinstance(c, dict) or (c.get("team") and c["team"] != x.get("team"))
+                    or x.get("author") == HIDDEN_NAME or HIDDEN_NAME in (x.get("assists") or [])
+                    or not CLIP_URL.match(str(c.get("mp4") or "")) or not CLIP_URL.match(str(c.get("poster") or ""))):
+                continue
+            x["clip"] = {"mp4": c["mp4"], "poster": c["poster"], "dur": c.get("dur")}
+            n += 1
+    return n
+
+
 def apply_replays(games: list[dict], replays: dict, clips: dict | None = None) -> int:
     """Ссылка на повтор (`replay`) у гола матча: ключ «<дата>|<хозяева>|<гости>», гол — по счёту после него.
     Счёт уникален в матче и одинаков у службы live и у протокола. Матч без голов протокола (протокол ещё не
@@ -1081,6 +1102,7 @@ def build(teams: Teams, raw: list[rhockey.RawGame], results: league.Results,
     apply_channel_events(games, teams, list(channels), posts or {}, events, datetime.now(TZ))
     apply_goal_authors(games, protocols, list(channels), hidden)   # авторы голов по ходу из постов (ADR-026)
     apply_replays(games, replays or {}, clips)             # последним: голы уже на месте (ADR-027, ADR-030)
+    apply_clips(games, clips)                              # свои клипы голов — после протокола (ADR-030, шаг 6)
     names = {t["id"]: t["name"] for t in teams.all}
     details = {g["id"]: match_detail(g, protocols[g["id"]], names, hidden) for g in games if g["id"] in protocols}
     if catalog_out is not None:
@@ -1208,6 +1230,7 @@ def main() -> None:
           f"лента из каналов: {count('events')} (ADR-019)")
     print(f"Голов с повтором: {sum(1 for g in data['games'] for x in g.get('goals') or [] if x.get('replay'))}, "
           f"до протокола: {sum(len(g.get('replays') or {}) for g in data['games'])} (ADR-027, ADR-028)")
+    print(f"Голов со своим клипом: {sum(1 for g in data['games'] for x in g.get('goals') or [] if x.get('clip'))} (ADR-030)")
     print(f"Каталог голов: {sum(len(v) for v in cat['clubs'].values())} голов, игроков: {len(cat['players'])}"
           + ("" if os.environ.get("PLAYER_SALT") else " — ключи игроков без секрета PLAYER_SALT") + " (ADR-030)")
     for u in unmatched:

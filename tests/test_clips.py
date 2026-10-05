@@ -206,6 +206,18 @@ class Previews(unittest.TestCase):
 class ByOrder(unittest.TestCase):
     """03.10 служба live не записала времени голов: смены табло — голам по порядку протокола."""
 
+    def test_changes_follow_score_order(self):
+        """«Калуга — Динамо 576» 05.10: 4:0 сел на смену через 22 с после 1:0, 5:1 — раньше 4:1."""
+        picked = {"1:0": 9758, "4:0": 9780, "2:0": 10423, "3:0": 10644, "5:1": 11160, "4:1": 11174}
+        got = sb.in_order(picked)
+        self.assertEqual(list(got), ["1:0", "2:0", "3:0"])   # 4:1 или 5:1 — не угадываем, оба админу
+        self.assertEqual(sb.goal_rank("4:1"), 5)
+        self.assertEqual(sb.in_order({}), {})
+
+    def test_sides_by_score_not_site_time(self):
+        goals = [("1:0", "1", 100.0), ("2:0", "2", 300.0), ("2:1", "3", 500.0), ("3:1", "3", 450.0)]   # сайт: 3:1 раньше 2:1
+        self.assertEqual(sb.goal_sides(goals), {"1:0": "home", "2:0": "home", "2:1": "away", "3:1": "home"})
+
     def test_kth_change_is_kth_goal(self):
         found = [{"zone": "away", "hi": 900.0}, {"zone": "home", "hi": 500.0}, {"zone": "away", "hi": 2000.0}]
         order = [("1:0", "home"), ("1:1", "away"), ("1:2", "away")]
@@ -295,6 +307,8 @@ class Cutting(unittest.TestCase):
         self.assertEqual(clips.clip_plan(moved, None, self.protocol)[0], [("0:1", 2610, "clock")])
         gone = {**done, "clips": {"0:1": {"t": 2600, "team": "home"}}}   # счета сдвинулись: другой команды
         self.assertEqual(clips.clip_plan(gone, None, self.protocol)[1], ["0:1"])
+        lost = {**done, "goals": {"0:1": {"t": None, "src": None}}}   # разбор поправили: секунды у гола нет
+        self.assertEqual(clips.clip_plan(lost, None, self.protocol), ([], ["0:1"]))
 
     def test_admin_second_wins(self):
         admin = {"video": VIDEO, "anchors": {"0:1": 2590}}

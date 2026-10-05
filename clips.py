@@ -48,7 +48,8 @@ SCAN_MAX = 2        # записей за проход: разбор — мин�
 EVERY = 600         # с между проходами; пока есть неразобранные записи сезона — через минуту
 TRIES = 3           # столько раз пробуем матч, который не скачался или упал
 KEEP_DAYS = 3       # кадры прохода держим столько дней
-VERSION = 2         # разбор поменялся (05.10: голы по порядку протокола) — матчи за DAYS дней разбираем заново
+VERSION = 3         # разбор поменялся — матчи разбираем заново (05.10: голы по порядку протокола; 06.10: смены
+                    # табло — в порядке счёта, у двух голов не бывает одной остановки часов)
 PREVIEW_BEFORE = 120   # с записи до смены счёта на табло в превью: оператор меняет счёт через 0–90 с после гола
 PREVIEW_AFTER = 5      # и после смены
 PREVIEW_FORMAT = "b[height<=360][height>=240]/b[height<=480]/w"   # превью лёгкое: смотрят в Telegram
@@ -298,21 +299,23 @@ def goal_seconds(game: dict, admin: dict | None) -> dict[str, tuple[int, str]]:
 
 def clip_plan(game: dict, admin: dict | None, protocol: dict[str, dict]) -> tuple[list[tuple[str, int, str]], list[str]]:
     """Что резать и что убрать: ([(счёт, секунда, откуда)], [счёт клипа к удалению]). Режем гол с секундой и
-    протоколом, без скрытых, если клипа нет или секунда поменялась. Убираем клип скрытого игрока и гол, которого
-    в протоколе нет или он другой команды (лига отменила гол — счета сдвинулись)."""
+    протоколом, без скрытых, если клипа нет или секунда поменялась. Убираем клип скрытого игрока, гол, которого
+    в протоколе нет или он другой команды (лига отменила гол — счета сдвинулись), и гол, у которого секунды больше
+    нет (разбор поправили: 05.10 клип 4:0 вырезали на секунде гола 1:0)."""
     have = game.get("clips") or {}
     cut, drop = [], []
-    for score, (t, src) in sorted(goal_seconds(game, admin).items(), key=lambda x: x[1][0]):
+    seconds = goal_seconds(game, admin)
+    for score, (t, src) in sorted(seconds.items(), key=lambda x: x[1][0]):
         x = protocol.get(score)
         if not x or hidden_goal(x):
             continue
         if (have.get(score) or {}).get("t") != t:
             cut.append((score, t, src))
-    if protocol:
-        for score, c in have.items():
-            x = protocol.get(score)
-            if not x or hidden_goal(x) or (c.get("team") and x.get("team") != c.get("team")):
-                drop.append(score)
+    for score, c in have.items():
+        x = protocol.get(score) if protocol else {}
+        if (protocol and (not x or hidden_goal(x) or (c.get("team") and x.get("team") != c.get("team")))
+                or score not in seconds):
+            drop.append(score)
     return cut, drop
 
 

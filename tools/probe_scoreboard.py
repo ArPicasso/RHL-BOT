@@ -85,7 +85,8 @@ CLOCK_MOVED = 8         # пикселей клетки часов: стольк
 CLUB_LAG = {club: b["lag"] for club, b in BOARDS.items() if b.get("lag") is not None}   # задержка табло клуба, с
 SITE = "rhl.fhr.ru"     # запись лиги — «Смотреть» с этим источником в league.json (rhl_media.py)
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://arpicasso.github.io/RHL-BOT/"
-GRID = (0.0, 0.0, 0.5, 0.35)   # --grid: где искать табло нового клуба — левый верх кадра
+GRID = (0.0, 0.0, 1.0, 1.0)    # --grid: где искать табло нового клуба — весь кадр (05.10 у «Факел-Ямала» и «Красной
+GRID_AT = (0.2, 0.4, 0.6, 0.8)  # Машины» в левом верху табло не было); кадры — с этих долей записи
 DIFF = 40               # разница яркости пикселя (0–255), с которой пиксель считаем изменившимся
 STABLE = 0.85           # пиксель графики: не меняется хотя бы в стольких парах соседних кадров с табло
 TIGHT = 12              # пиксель графики в кадре с табло: яркость почти та же (сжатие дрожит на несколько единиц)
@@ -500,10 +501,36 @@ def align(found: list[float], goals: list[tuple[str, str, float]], tol: float = 
     return out
 
 
+def goal_rank(score: str) -> int:
+    """Номер гола в матче — сумма счёта: порядок голов знает счёт, а не время сайта лиги (05.10 сайт отметил 5:1
+    раньше 4:1)."""
+    h, a = (int(x) for x in score.split(":"))
+    return h + a
+
+
+def in_order(picked: dict[str, float]) -> dict[str, float]:
+    """Смены табло идут в порядке голов: (k+1)-й гол сменил счёт позже k-го. Оставляем голы, которые стоят в любом
+    самом длинном ряду, где это так (наибольшая возрастающая подпоследовательность); спорные и выпавшие — админу
+    (превью): клип не того гола хуже, чем никакого. «Калуга — Динамо 576» 05.10: гол 4:0 сел на смену через 22 с
+    после 1:0, раньше 2:0 и 3:0; 5:1 — раньше 4:1."""
+    items = sorted(picked.items(), key=lambda x: (goal_rank(x[0]), x[1]))
+    before = lambda i, j: items[i][1] < items[j][1] and goal_rank(items[i][0]) < goal_rank(items[j][0])  # noqa: E731
+    n = len(items)
+    left = [1] * n    # самый длинный ряд, кончающийся на голе
+    for j in range(n):
+        left[j] = 1 + max((left[i] for i in range(j) if before(i, j)), default=0)
+    right = [1] * n   # самый длинный ряд, начинающийся с гола
+    for i in reversed(range(n)):
+        right[i] = 1 + max((right[j] for j in range(i + 1, n) if before(i, j)), default=0)
+    top = max(left, default=0)
+    on = [k for k in range(n) if left[k] + right[k] - 1 == top]
+    return {items[k][0]: items[k][1] for k in on if sum(left[m] == left[k] for m in on) == 1}
+
+
 def goal_sides(goals: list[tuple[str, str, float]]) -> dict[str, str | None]:
     """Чей гол: счёт → «home»/«away» по прошлому счёту. Скачок сразу на два — не знаем (None)."""
     out, prev = {}, (0, 0)
-    for score, _, _ in sorted(goals, key=lambda g: g[2]):
+    for score, _, _ in sorted(goals, key=lambda g: (goal_rank(g[0]), g[2])):
         h, a = (int(x) for x in score.split(":"))
         d = (h - prev[0], a - prev[1])
         out[score] = "home" if d == (1, 0) else "away" if d == (0, 1) else None
@@ -662,7 +689,8 @@ def align_order(found: list[dict], goals: list[tuple[str, str, float]]) -> dict[
     middle = sorted(shift.values())[len(shift) // 2]
     out: dict[str, float] = {}
     for team in ("home", "away"):
-        gs = sorted((at + shift.get(p, middle), s) for s, p, at in goals if side[s] == team)
+        gs = [(at + shift.get(p, middle), s) for s, p, at in
+              sorted((g for g in goals if side[g[0]] == team), key=lambda g: goal_rank(g[0]))]
         cs = sorted(c["hi"] for c in found if c["zone"] == team)
         # best[i][j] — (−пар, промах) для первых i голов и j смен; пропуск смены бесплатный, гола — ORDER_TOL
         best = [[(0, 0.0)] * (len(cs) + 1) for _ in range(len(gs) + 1)]
@@ -904,6 +932,7 @@ def probe(name: str, src: str | None, headers: dict | None, truth: dict[str, int
         print(f"  времени голов от сайта лиги нет — по порядку протокола: {len(picked)} из {len(order)}")
     else:
         picked = align_order(main_, site) if cells else align_sides(main_, site)[0]
+    picked = in_order(picked)
     by_t = {t: s for s, t in picked.items()}
     print(f"  смен табло: {len(main_)}, голов у админа: {len(truth)}, у сайта лиги: {len(site)}; "
           f"по сайту лиги нашлось {len(picked)} из {len(site)}")
@@ -922,8 +951,8 @@ def probe(name: str, src: str | None, headers: dict | None, truth: dict[str, int
                 got = clock_stop(dense, e, clock, 2)
             else:
                 got = clock_stop([(t, f) for t, f in samples if visible(f)], e, clock, args.step)
-            if got:
-                stops[score] = got
+            if got and got[0] > max((c for s, c in picked.items() if goal_rank(s) < goal_rank(score)), default=-1):
+                stops[score] = got   # остановка до смены прошлого гола — его, не этого (05.10 у 1:0 и 4:0 одна)
     nearest = against([c["hi"] for c in main_], truth)
     rows = [(score, t, picked.get(score)) for score, t, _ in nearest] if site else nearest
     exact_t = {c["hi"] for c in main_ if c["hi"] - c["lo"] <= EXACT}
@@ -1012,15 +1041,14 @@ def matches(args) -> dict[str, dict]:
 
 
 def grid_sheet(src: str, headers: dict | None, length: float | None, path: Path) -> None:
-    """Табло нового клуба ещё не размечено: три кадра записи (четверть, половина, три четверти) — левый верх
-    кадра GRID с сеткой: тонкие линии — каждые 0,02 кадра, жёлтые — каждые 0,1. По ней размечаем рамку и клетки
-    (BOARDS)."""
+    """Табло нового клуба ещё не размечено: кадры записи на долях GRID_AT — часть кадра GRID с сеткой: тонкие
+    линии — каждые 0,02 кадра, жёлтые — каждые 0,1. По ней размечаем рамку и клетки (BOARDS)."""
     x, y, w, h = GRID
     vf = (f"crop=iw*{w}:ih*{h}:iw*{x}:ih*{y},scale=960:-2,"
           f"drawgrid=w=iw*{0.02 / w}:h=ih*{0.02 / h}:t=1:c=white@0.35,"
           f"drawgrid=w=iw*{0.1 / w}:h=ih*{0.1 / h}:t=2:c=yellow@0.8")
     parts = []
-    for k, share in enumerate((0.25, 0.5, 0.75)):
+    for k, share in enumerate(GRID_AT):
         part = path.with_name(f"{path.stem}_{k}.png")
         subprocess.run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", *header_args(headers),
                         "-ss", str(int((length or 7200) * share)), "-i", src, "-frames:v", "1", "-vf", vf, str(part)],

@@ -95,6 +95,10 @@ PREVIEW_MAX = 4                    # превью за один проход п�
 PREVIEW_KEEP = timedelta(days=4)   # записи о превью держим столько
 MY_PLAYER_WAIT = timedelta(hours=8)   # «Мой игрок»: клипа нет столько после начала матча — шлём гол без клипа
 PREVIEW_V = 2                      # 05.10: превью уходили без длины и размера — «0:01» в чате; старые шлём заново
+# Табло клуба-хозяина не размечено (ADR-030, дополнение 06.10): служба clips держит кадр с сеткой в probe/grids/,
+# бот один раз присылает его админам файлом — по нему табло размечают в boards.json, и матчи клуба разбираются заново
+GRIDS_FILE = BASE / "grids.json"   # кадры табло, которые ушли админам: клуб → когда и по какому матчу. Не в git
+GRID_MAX = 2                       # кадров за один проход пульса
 
 DOW = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
@@ -1708,6 +1712,12 @@ def board_covers(g: dict, found: dict | None) -> bool:
                for x in replay.goals_of(g))
 
 
+def goal_place(item: tuple[str, dict]) -> float:
+    """Где гол в записи для порядка превью: смена счёта на табло, а у гола, которого табло не нашло, — оценка `est`."""
+    g = item[1] or {}
+    return g.get("change") or g.get("est") or 0
+
+
 def previews_waiting(clips: dict | None, marked: dict) -> dict[str, list[str]]:
     """Голы, которые ждут ответа на превью (ADR-030, раздел 7): табло знает, какой это гол, секунды нет ни у табло,
     ни у админа, а превью есть — ушло в чат или уйдёт. Ключ матча → счета голов по порядку."""
@@ -1716,7 +1726,7 @@ def previews_waiting(clips: dict | None, marked: dict) -> dict[str, list[str]]:
         if not isinstance(game, dict):
             continue
         anchors = ((marked or {}).get(key) or {}).get("anchors") or {}
-        for score, g in sorted((game.get("goals") or {}).items(), key=lambda x: (x[1] or {}).get("change") or 0):
+        for score, g in sorted((game.get("goals") or {}).items(), key=goal_place):
             if isinstance((g or {}).get("ask"), dict) and g.get("t") is None and score not in anchors:
                 out.setdefault(key, []).append(score)
     return out
@@ -1728,9 +1738,10 @@ def key_title(key: str) -> str:
 
 
 def replay_nag(todo: list[tuple[str, int, dict]], waiting: dict[str, list[str]] | None = None,
-               now: datetime | None = None) -> tuple[str, InlineKeyboardMarkup]:
-    """«Ждут превью: 7 голов в 3 матчах» (ADR-030, раздел 7) и матчи, где табло не дало ни секунд, ни превью, —
-    их размечают временами в /replay, как раньше (ADR-028). Кнопка на матч — открывает его в /replay."""
+               now: datetime | None = None, boards: dict | None = None) -> tuple[str, InlineKeyboardMarkup]:
+    """«Ждут превью: 7 голов в 3 матчах» (ADR-030, раздел 7), клубы, чьё табло не размечено (дополнение 06.10: их
+    домашние матчи без секунд и клипов, пока не разметят), и матчи, где табло не дало ни секунд, ни превью, — их
+    размечают временами в /replay, как раньше (ADR-028). Кнопка на матч — открывает его в /replay."""
     waiting = waiting or {}
     parts, rows, seen = [], [], set()
     if waiting:
@@ -1740,6 +1751,10 @@ def replay_nag(todo: list[tuple[str, int, dict]], waiting: dict[str, list[str]] 
         parts.append(f"🎬 Ждут превью: {n} {plural(n, 'гол', 'гола', 'голов')} в {m} "
                      f"{plural(m, 'матче', 'матчах', 'матчах')} — {html.escape(names)}.\n"
                      "Превью — выше в чате: нажми момент гола или пришли время в видео.")
+    if boards:
+        names = ", ".join(f"{tname(club)} ({int((e or {}).get('matches') or 0)})" for club, e in sorted(boards.items()))
+        parts.append(f"🖼 Табло не размечено: {html.escape(names)} — в скобках домашние матчи без секунд и клипов.\n"
+                     "Кадры табло — выше в чате файлами: переслать в сессию Claude для разметки в boards.json.")
     if todo:
         names = ", ".join(f"{tname(g.get('home', ''))} — {tname(g.get('away', ''))}" for _, _, g in todo)
         head = "Без превью" if waiting else "🎬 Без превью"
@@ -1771,13 +1786,16 @@ async def replay_nag_step(bot: Bot, now: datetime) -> int:
     if not ADMIN_IDS:
         return 0
     todo = replay_todo(now, await published_league())
-    waiting = previews_waiting(read_live("clips.json"), load_replays()["games"])
+    found = read_live("clips.json")
+    waiting = previews_waiting(found, load_replays()["games"])
+    boards = {c: e for c, e in ((found or {}).get("boards") or {}).items() if isinstance(e, dict)}
     TRACK.gauge("replays_todo", len(todo))
     TRACK.gauge("previews_wait", sum(len(v) for v in waiting.values()))
-    if (not todo and not waiting) or quiet(now) or now.astimezone(TZ).time() < REPLAY_NAG_AT \
+    if (not todo and not waiting and not boards) or quiet(now) or now.astimezone(TZ).time() < REPLAY_NAG_AT \
             or TRACK.today().get("replay_nag"):
         return 0
-    text, kb = replay_nag(todo, waiting, now)
+    text, kb = replay_nag(todo, waiting, now, boards)
+    kb = kb if kb.inline_keyboard else None   # только «Табло не размечено» — кнопок на матчи нет
     sent = 0
     for cid in sorted(ADMIN_IDS):
         try:
@@ -1825,7 +1843,7 @@ def preview_todo(clips: dict | None, marked: dict, sent: dict) -> list[tuple[str
         if not isinstance(game, dict):
             continue
         anchors = ((marked or {}).get(key) or {}).get("anchors") or {}
-        for score, g in sorted((game.get("goals") or {}).items(), key=lambda x: (x[1] or {}).get("change") or 0):
+        for score, g in sorted((game.get("goals") or {}).items(), key=goal_place):
             ask = (g or {}).get("ask")
             was = sent.get(f"{key}|{score}")
             if (isinstance(ask, dict) and ask.get("file") and g.get("t") is None and score not in anchors
@@ -1835,14 +1853,20 @@ def preview_todo(clips: dict | None, marked: dict, sent: dict) -> list[tuple[str
 
 
 def preview_caption(key: str, score: str, ask: dict) -> tuple[str, InlineKeyboardMarkup]:
+    """Подпись и кнопки превью. Гол, которого табло не нашло (`est`, дополнение 06.10): видео длиннее и взято по
+    времени сайта лиги, кнопок-моментов нет — только «Пришлю время»."""
     day, home, away = key.split("|")
     text = (f"🎬 <b>{day[8:10]}.{day[5:7]} {html.escape(tname(home))} — {html.escape(tname(away))}</b>, гол "
-            f"<b>{html.escape(score)}</b>\nГде в этом видео гол? Нажми момент или пришли время в видео, "
-            "например 1:05.")
+            f"<b>{html.escape(score)}</b>\n")
+    if ask.get("est"):
+        text += ("Табло этот гол не нашло — видео взято по времени сайта лиги, гол где-то внутри. Пришли время гола "
+                 "в видео, например 3:05. Гола в видео нет — пришли его время в записи через /replay.")
+    else:
+        text += "Где в этом видео гол? Нажми момент или пришли время в видео, например 1:05."
     tok = preview_token(key, score)
     rows = [[InlineKeyboardButton(text=f"Гол на {replay.fmt_clock(t)}", callback_data=f"pv:{tok}:{k}")]
             for k, t in enumerate(ask.get("cand") or [])]
-    rows.append([InlineKeyboardButton(text="Другое время", callback_data=f"pv:{tok}:x")])
+    rows.append([InlineKeyboardButton(text="Другое время" if rows else "Пришлю время", callback_data=f"pv:{tok}:x")])
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1995,6 +2019,72 @@ async def h_preview_time(m: Message):
         return
     PREVIEW_ASK.pop(m.chat.id, None)
     await preview_answer(m.bot, m.chat.id, key, score, ask, video, t)
+
+
+# ---------- кадры табло для разметки (ADR-030, дополнение 06.10) ----------
+# Табло клуба-хозяина не размечено — служба clips не находит голов его домашних матчей: ни секунд, ни превью, ни
+# клипов. Кадр с сеткой для разметки она держит в probe/grids/<клуб>.png, а в clips.json — `boards`. Бот присылает
+# кадр админам один раз на клуб: переслать в сессию Claude — разметка одним PR в boards.json, после выкладки служба
+# сама переберёт матчи клуба.
+
+
+def load_grids() -> dict:
+    try:
+        data = json.loads(GRIDS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def grid_todo(boards: dict | None, sent: dict) -> list[tuple[str, dict]]:
+    """Клубы без разметки табло, чей кадр есть и ещё не уходил админам: (клуб, {matches, key, grid})."""
+    return [(club, e) for club, e in sorted((boards or {}).items())
+            if isinstance(e, dict) and isinstance(e.get("grid"), str) and club not in sent]
+
+
+def grid_caption(club: str, e: dict) -> str:
+    n = int(e.get("matches") or 0)
+    key = e.get("key") or ""
+    last = f" (последний — {key[8:10]}.{key[5:7]} {key_title(key)})" if key.count("|") == 2 else ""
+    return (f"🖼 <b>Табло «{html.escape(tname(club))}» не размечено</b> — без секунд голов, превью и клипов "
+            f"{n} {plural(n, 'домашний матч', 'домашних матча', 'домашних матчей')}{html.escape(last)}.\n"
+            f"Перешли этот файл в сессию Claude: «разметь табло <code>{html.escape(club)}</code> в boards.json по "
+            "grid.png». После выкладки служба clips сама переберёт матчи клуба.")
+
+
+async def grid_step(bot: Bot, now: datetime) -> int:
+    """Раз в минуту: кадр табло клуба без разметки — админам, файлом: фото Telegram сжимает, а клетки табло
+    размечают по пикселям. Один раз на клуб; клуб разметили — запись о нём стираем. Ночью молчим, как тревоги."""
+    found = read_live("clips.json")
+    if not ADMIN_IDS or quiet(now) or found is None:
+        return 0
+    boards = {c: e for c, e in (found.get("boards") or {}).items() if isinstance(e, dict)}
+    old = load_grids()
+    sent = {c: v for c, v in old.items() if c in boards}
+    n = 0
+    for club, e in grid_todo(boards, sent)[:GRID_MAX]:
+        path = BASE / e["grid"]
+        if not path.is_file():
+            continue
+        caption = grid_caption(club, e)
+        got, file_id = [], None
+        for cid in sorted(ADMIN_IDS):
+            try:
+                msg = await sending(lambda: bot.send_document(
+                    cid, file_id or FSInputFile(path, filename=f"grid-{club}.png"), caption=caption))
+                got.append(cid)
+                file_id = file_id or (msg.document.file_id if msg.document else None)
+            except Exception:
+                logging.exception("grid to %s failed", cid)
+            await asyncio.sleep(0.05)
+        if got:   # не дошло ни до кого — попробуем через минуту
+            sent[club] = {"at": admin.iso(now), "key": e.get("key")}
+            n += 1
+    if sent != old:
+        write_atomic(GRIDS_FILE, sent)
+    if n:
+        TRACK.add("grids", n)
+    return n
 
 
 # ---------- болельщик пишет живому человеку (ADR-025) ----------
@@ -2855,7 +2945,8 @@ async def alerts_step(bot: Bot, now: datetime) -> int:
 
 async def status_loop(bot: Bot):
     """Пульс для пульта (ADR-021): раз в минуту getMe через туннель и запись status/bot.json.
-    Тем же проходом — тревоги админам (ADR-022) и напоминание о неразмеченных повторах (ADR-028)."""
+    Тем же проходом — тревоги админам (ADR-022), напоминание о неразмеченных повторах (ADR-028), превью голов и кадры
+    табло клубов без разметки (ADR-030)."""
     while True:
         now = datetime.now(TZ)
         try:
@@ -2877,6 +2968,10 @@ async def status_loop(bot: Bot):
             await preview_step(bot, now)
         except Exception:
             logging.exception("preview step failed")
+        try:
+            await grid_step(bot, now)
+        except Exception:
+            logging.exception("grid step failed")
         await asyncio.sleep(STATUS_EVERY)
 
 

@@ -552,7 +552,9 @@
    "clips": 61,
    "ask": 7,
    "no_video": 12,
-   "mismatch": 0
+   "mismatch": 0,
+   "no_board": 3,
+   "boards": 2
   },
   "my_players": 41
  },

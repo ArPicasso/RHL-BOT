@@ -224,6 +224,8 @@ function clipTiles(c, myPlayers, t) {
       + tile(v(c, "clips"), "клипов в хранилище")
       + tile(v(c, "ask"), "голов ждут ответа на превью")
       + tile(v(c, "no_video"), "матчей без записи лиги")
+      // табло клуба-хозяина не размечено: голов этих матчей служба не видит, кадры для разметки — у админов в боте
+      + (v(c, "no_board") ? tile(v(c, "no_board"), `матчей ждут разметки табло, клубов — ${num(v(c, "boards"))}`) : "")
       + (v(c, "mismatch") ? tile(v(c, "mismatch"), "голов табло нет в протоколе") : "");
   }
   if (typeof myPlayers === "number") html += tile(myPlayers, `отметили «Моего игрока»${v(t, "my_goal_sent") ? `, голов ушло сегодня ${v(t, "my_goal_sent")}` : ""}`);

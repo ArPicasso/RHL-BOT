@@ -152,6 +152,9 @@ jobs:
         env:
           BOT_LINK: ${{ vars.BOT_LINK }}
           APP_LINK: ${{ vars.APP_LINK }}
+          # Settings → Secrets → PLAYER_SALT: ключ игрока в данных вместо id лиги (ADR-030). Задать один раз и не менять:
+          # от него зависят адреса страниц игроков и «Мой игрок»
+          PLAYER_SALT: ${{ secrets.PLAYER_SALT }}
         run: python build_data.py
 
       # «Раскат» (ADR-018): расклады дней в webapp/data/raskat/. Упадёт — мини-апп всё равно

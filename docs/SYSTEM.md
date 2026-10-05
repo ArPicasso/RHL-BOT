@@ -173,6 +173,7 @@
 | `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_SSH_KEY` | Secrets | Выкладка на сервер. Печатает `setup.sh` |
 | `RASKAT_SALT` | Secrets | Соль раскладов. Без неё берётся соль из `raskat/rules.py`. На сервере — то же значение в `/etc/rhl/bot.env` |
 | `BOT_TOKEN` | Secrets | Только для стенда «Запустить бота». На сервере токен — в `/etc/rhl/bot.env` |
+| `PLAYER_SALT` | Secrets | Ключ игрока в данных мини-аппа вместо id лиги (ADR-030). Задать один раз любой длинной случайной строкой и не менять: от него зависят адреса страниц игроков. Без секрета — ключ из `build_data.py` |
 | `LEAGUE_SITE` | Variables | Сайт лиги на старом движке (`nmhl.fhr.ru`) для `league.py`. Для `rhl.fhr.ru` не нужна: его читает `rhl_site.py` |
 | `RASKAT_API` | Variables | `https://<хост>/api/raskat` — зачёт «Раската». Пусто — задание «Мини-апп» берёт `https://<ip-через-дефисы>.sslip.io/api/raskat` по `DEPLOY_HOST`, если API отвечает и зачёт включён |
 | `LIVE_API` | Variables | `https://<хост>/api` — матч-центр и прогнозы. Пусто — тот же адрес sslip.io по `DEPLOY_HOST`, если API отвечает; не отвечает — без живого и без «Кто победит?». Нужна, только если у API свой домен |

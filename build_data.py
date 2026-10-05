@@ -4,6 +4,8 @@
 местное время арены, если её пояс (`tz` хозяев в teams.json) не московский. Источники по старшинству:
 schedule.json сервера, протокол лиги (в нём местное время), пост клуба в день игры (matchday.py)."""
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -40,6 +42,9 @@ EVENTS_DAYS = 3                              # и держится три дня
 MOSCOW = "Europe/Moscow"
 HIDDEN_NAME = "Игрок скрыт"
 H2H_LAST = 5
+# Ключ игрока в данных мини-аппа (ADR-030): id на сайте лиги туда не выгружаем (ADR-008, пункт 6), вместо него —
+# HMAC от id с секретом задания Pages. Ключ один и тот же от сборки к сборке и по нему не найти страницу у лиги.
+PLAYER_SALT = os.environ.get("PLAYER_SALT") or "rhl-player-key"
 
 
 def norm(name: str) -> str:
@@ -425,6 +430,21 @@ def apply_site(games: list[dict], store: dict, teams: "Teams", protocols: dict[s
 # ---------- результаты ----------
 
 
+def player_key(pid, salt: str | None = None) -> str | None:
+    """Ключ игрока для мини-аппа (ADR-030): 10 знаков HMAC-SHA256 от id игрока на сайте лиги. Нет id — None."""
+    if not isinstance(pid, int) or isinstance(pid, bool):
+        return None
+    key = (salt if salt is not None else PLAYER_SALT).encode()
+    return hmac.new(key, str(pid).encode(), hashlib.sha256).hexdigest()[:10]
+
+
+def shown_key(player: dict | None, hidden: set[int] = frozenset()) -> str | None:
+    """Ключ игрока, если его можно показать: скрытому по просьбе ключа нет — ни страницы, ни клипов."""
+    if not player or player.get("id") in hidden:
+        return None
+    return player_key(player.get("id"))
+
+
 def load_hidden(path: Path = HIDDEN_FILE) -> set[int]:
     """Id игроков на сайте лиги, которых не показываем по просьбе (ADR-007, ADR-008)."""
     try:
@@ -472,10 +492,23 @@ def fill_result(g: dict, p: dict, hidden: set[int] = frozenset(), zones: dict[st
     g["score"] = {"home": p["home_score"], "away": p["away_score"], "decision": p["decision"],
                   "periods": p["periods"]}
     gk = goalies_of(p)
-    g["goals"] = [{"period": x["period"], "time": x["time"], "team": x["team"], "score": x["score"],
-                   "strength": x["strength"], "author": shown(x["author"], hidden),
-                   "assists": [shown(a, hidden) for a in x["assists"]],
-                   **sticker(x["author"], x["team"], gk, hidden)} for x in p["goals"]]
+    g["goals"] = [goal_row(x, gk, hidden) for x in p["goals"]]
+
+
+def goal_row(x: dict, gk: set[tuple[str, int]], hidden: set[int] = frozenset()) -> dict:
+    """Гол протокола для мини-аппа. `pk` — ключ автора, `apk` — ключи ассистентов по порядку (None — скрыт или
+    без id): по ним гол попадает на страницу игрока (ADR-030)."""
+    row = {"period": x["period"], "time": x["time"], "team": x["team"], "score": x["score"],
+           "strength": x["strength"], "author": shown(x["author"], hidden),
+           "assists": [shown(a, hidden) for a in x["assists"]],
+           **sticker(x["author"], x["team"], gk, hidden)}
+    pk = shown_key(x["author"], hidden)
+    if pk:
+        row["pk"] = pk
+    apk = [shown_key(a, hidden) for a in x["assists"]]
+    if any(apk):
+        row["apk"] = apk
+    return row
 
 
 def attach_results(games: list[dict], teams: Teams, results: league.Results,
@@ -720,6 +753,9 @@ def match_detail(g: dict, p: dict, teams: dict[str, str], hidden: set[int] = fro
             continue
         row = {"no": k["player"]["number"], "name": k["player"]["name"], "cap": k.get("captain", ""),
                "g": k.get("goals", 0), "a": k.get("assists", 0)}
+        pk = player_key(k["player"].get("id"))
+        if pk:
+            row["pk"] = pk   # страница игрока из состава (ADR-030)
         if not k["played"]:
             row["dnp"] = True
         rosters[k["team"]][k["role"]].append(row)
@@ -747,6 +783,58 @@ def match_detail(g: dict, p: dict, teams: dict[str, str], hidden: set[int] = fro
         "linesmen": p.get("linesmen", []),
         "coaches": dict(zip(("home", "away"), p.get("coaches", ["", ""]))),
     }
+
+def goal_entry(g: dict, x: dict) -> dict:
+    """Гол для ленты голов клуба и игрока (ADR-030): матч, соперник, счёт, время, кто забил и отдал, повтор."""
+    side = x["team"]
+    e = {"game": g["id"], "date": g["date"], "club": g[side], "opp": g["away" if side == "home" else "home"],
+         "home": side == "home", "score": x["score"], "period": x["period"], "time": x["time"],
+         "strength": x.get("strength", ""), "author": x["author"], "assists": x.get("assists", [])}
+    for k in ("pk", "apk", "no", "replay", "clip"):
+        if x.get(k):
+            e[k] = x[k]
+    return e
+
+
+def catalog(games: list[dict], protocols: dict[str, dict], hidden: set[int] = frozenset()) -> tuple[dict, dict]:
+    """Каталог голов сезона (ADR-030): голы каждого клуба и страницы игроков, свежие сверху. Привязка к игроку —
+    по ключу из протокола, который сборка перечитывает каждый раз: поправила лига автора — гол у другого игрока.
+    Буллиты не входят. Игрок — всякий, кто есть в протоколах сезона (составы, авторы, ассистенты), кроме скрытых:
+    его страница открывается и из состава, даже без голов. (клуб → голы, ключ игрока → игрок)."""
+    clubs: dict[str, list[dict]] = {}
+    players: dict[str, dict] = {}
+    for g in sorted(games, key=lambda g: (g["date"], g["id"])):
+        p = protocols.get(g["id"])
+        if not p:
+            continue
+        seen = [(k.get("team"), k.get("player"), k.get("role")) for k in p.get("lineups", [])]
+        seen += [(x.get("team"), pl, None) for x in p.get("goals", []) for pl in (x.get("author"), *(x.get("assists") or ()))]
+        for side, pl, role in seen:
+            pk = shown_key(pl, hidden) if side in ("home", "away") else None
+            if not pk:
+                continue
+            me = players.setdefault(pk, {"pk": pk, "name": pl["name"], "goals": []})
+            me.update(name=pl["name"], club=g[side])          # последний матч — нынешний клуб и номер
+            if pl.get("number") is not None:
+                me["no"] = pl["number"]
+            if role:
+                me["role"] = role
+        for x in g.get("goals") or []:
+            if x.get("period") == "РБ":
+                continue
+            e = goal_entry(g, x)
+            clubs.setdefault(e["club"], []).append(e)
+            if x.get("pk") in players:
+                players[x["pk"]]["goals"].append({**e, "as": "goal"})
+            for a in dict.fromkeys(k for k in x.get("apk") or [] if k):
+                if a in players:
+                    players[a]["goals"].append({**e, "as": "assist"})
+    for rows in clubs.values():
+        rows.reverse()
+    for me in players.values():
+        me["goals"].reverse()
+    return clubs, players
+
 
 # ---------- таблица ----------
 
@@ -931,6 +1019,9 @@ def leaders(teams: Teams, src: dict, hidden: set[int] = frozenset(), past: dict[
             seen.add(tid)
             row = {"rank": r["rank"], "name": r["name"], "role": r.get("role", ""), "number": r.get("number"),
                    **{k: r.get(k) for k in fields}}
+            pk = player_key(r.get("id"))
+            if pk:
+                row["pk"] = pk   # страница игрока из лидеров (ADR-030)
             if tid:
                 row["team"] = tid
                 kit = tid
@@ -962,12 +1053,14 @@ def links(env=os.environ) -> dict[str, str]:
 def build(teams: Teams, raw: list[rhockey.RawGame], results: league.Results,
           hidden: set[int] = frozenset(), *, schedule: list[dict] = (), channels: list[dict] = (),
           posts: dict | None = None, site: dict | None = None,
-          events: dict | None = None, replays: dict | None = None) -> tuple[dict, list[str], dict[str, dict]]:
+          events: dict | None = None, replays: dict | None = None,
+          catalog_out: dict | None = None) -> tuple[dict, list[str], dict[str, dict]]:
     """league.json, непривязанные протоколы и разборы сыгранных матчей по id матча.
 
     schedule — строки schedule.json сервера, channels и posts — каналы клубов и их посты: время начала,
     онлайн, «Смотреть» и лента матча (ADR-019), events — кэш этой ленты (channel_events.json), его сборка
-    дополняет, replays — повторы голов (ADR-027). Всё необязательно: без них у матча только время из протокола."""
+    дополняет, replays — повторы голов (ADR-027). Всё необязательно: без них у матча только время из протокола.
+    catalog_out, если передан, получает каталог голов: `clubs` и `players` (ADR-030)."""
     games = merge_calendar(teams, raw, official_games(teams))
     protocols: dict[str, dict] = {}
     unmatched = attach_results(games, teams, results, protocols, hidden)
@@ -982,6 +1075,8 @@ def build(teams: Teams, raw: list[rhockey.RawGame], results: league.Results,
     apply_replays(games, replays or {})                    # последним: голы уже на месте (ADR-027)
     names = {t["id"]: t["name"] for t in teams.all}
     details = {g["id"]: match_detail(g, protocols[g["id"]], names, hidden) for g in games if g["id"] in protocols}
+    if catalog_out is not None:
+        catalog_out["clubs"], catalog_out["players"] = catalog(games, protocols, hidden)
     data = {
         "season": "2026/27",
         "league": "РХЛ — Первенство России U21",
@@ -1000,6 +1095,24 @@ def build(teams: Teams, raw: list[rhockey.RawGame], results: league.Results,
         "kits": load_kits(),
     }
     return data, unmatched, details
+
+
+def write_catalog(out_dir: Path, teams: Teams, season: str, cat: dict, updated: str) -> None:
+    """highlights/<клуб>.json — у каждого из 26 клубов, даже без голов; players/<ключ>.json — у каждого игрока
+    сезона. Файлы игроков, которых больше нет (скрыт по просьбе, лига убрала из протокола), удаляются (ADR-030)."""
+    hl = out_dir / "highlights"
+    hl.mkdir(parents=True, exist_ok=True)
+    for t in teams.all:
+        body = {"club": t["id"], "season": season, "updated": updated, "goals": cat["clubs"].get(t["id"], [])}
+        (hl / f"{t['id']}.json").write_text(json.dumps(body, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    pl = out_dir / "players"
+    pl.mkdir(parents=True, exist_ok=True)
+    for old in pl.glob("*.json"):
+        if old.stem not in cat["players"]:
+            old.unlink()
+    for pk, me in cat["players"].items():
+        body = {**me, "season": season, "updated": updated}
+        (pl / f"{pk}.json").write_text(json.dumps(body, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
 
 
 def load_channels(path: Path = CHANNELS_FILE) -> list[dict]:
@@ -1050,9 +1163,11 @@ def main() -> None:
     raw = rhockey.season()   # не ответил — календарь прошлой сборки
     channels, posts = load_channels(), load_posts()
     events = load_events()
+    cat: dict = {}
     data, unmatched, details = build(teams, raw, league.load_results(args.results), load_hidden(),
                                      schedule=load_schedule(), channels=channels, posts=posts,
-                                     site=rhl_site.load_store(), events=events, replays=load_replays())
+                                     site=rhl_site.load_store(), events=events, replays=load_replays(),
+                                     catalog_out=cat)
     EVENTS_FILE.write_text(json.dumps(events, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
@@ -1072,6 +1187,7 @@ def main() -> None:
             old.unlink()
     for gid, d in details.items():
         (matches / f"{gid}.json").write_text(json.dumps(d, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    write_catalog(args.out.parent, teams, data["season"], cat, data["updated"])
     top = leaders(teams, load_leaders(), load_hidden())
     if top:
         (args.out.parent / "leaders.json").write_text(json.dumps(top, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
@@ -1084,6 +1200,8 @@ def main() -> None:
           f"лента из каналов: {count('events')} (ADR-019)")
     print(f"Голов с повтором: {sum(1 for g in data['games'] for x in g.get('goals') or [] if x.get('replay'))}, "
           f"до протокола: {sum(len(g.get('replays') or {}) for g in data['games'])} (ADR-027, ADR-028)")
+    print(f"Каталог голов: {sum(len(v) for v in cat['clubs'].values())} голов, игроков: {len(cat['players'])}"
+          + ("" if os.environ.get("PLAYER_SALT") else " — ключи игроков без секрета PLAYER_SALT") + " (ADR-030)")
     for u in unmatched:
         print("Протокол не привязан к матчу:", u)
 

@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -24,7 +25,8 @@ class Windows(unittest.TestCase):
         self.assertEqual(pc.windows({"1:0": 100}, before=20, after=40)[0]["length"], 60)
 
     def test_copy_not_reencode(self):
-        cmd = pc.cut_cmd("https://x/rec.m3u8", {"Referer": "https://vk.com/"}, 2553, 30, Path("out.mp4"))
+        with mock.patch.object(pc, "ffmpeg", return_value="ffmpeg"):   # на раннере GitHub ffmpeg нет
+            cmd = pc.cut_cmd("https://x/rec.m3u8", {"Referer": "https://vk.com/"}, 2553, 30, Path("out.mp4"))
         self.assertLess(cmd.index("-ss"), cmd.index("-i"))          # качается только окно
         self.assertEqual(cmd[cmd.index("-c") + 1], "copy")
         self.assertIn("Referer: https://vk.com/\r\n", cmd)

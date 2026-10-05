@@ -103,7 +103,7 @@ class RealBroadcasts(unittest.TestCase):
         frames = [f for _, f in s]
         inside = {y * W + x for x, y in BOX} - {y * W + x for x, y in CLOCK}
         self.assertLess(len(set(sb.stable_mask(frames)) & inside), 0.5 * len(inside))
-        mask, med = sb.plate(frames)
+        mask, med, _ = sb.plate(frames)
         self.assertGreater(len(set(mask) & inside), 0.9 * len(inside))
         self.assertLess(len(set(mask) - inside), 50)
         self.assertTrue(sb.shown(frame(5, GOALS, hidden), mask, med))
@@ -113,7 +113,7 @@ class RealBroadcasts(unittest.TestCase):
         # через 14 с после гола 30 с повтора с прежним счётом, потом снова новый: одна смена, первая
         stale = [(220, 250), (490, 520), (920, 950)]
         s = samples(hidden=[], stale=stale)
-        mask, med = sb.plate([f for _, f in s])
+        mask, med, _ = sb.plate([f for _, f in s])
         found = sb.changes(s, mask, med)
         self.assertEqual([(c["lo"], c["hi"]) for c in found], [(200, 210), (470, 480), (900, 910)])
 
@@ -131,6 +131,93 @@ class RealBroadcasts(unittest.TestCase):
     def test_no_plate_in_window(self):
         noise = [(t, frame(t, [], [(0, 10 ** 6)])) for t in range(100)]
         self.assertIsNone(sb.board_changes(noise))
+
+
+class FullPass0410(unittest.TestCase):
+    """Что сломалось в полном проходе 05.10 по записям 04.10 (ADR-029)."""
+
+    def test_static_corner_kaluga(self):
+        # угол кадра — трибуна, камера почти не двигается: прикидка считает графикой почти всю рамку. Тогда
+        # графика — строго по всем кадрам, табло на экране, голы находятся. Почему у «Калуги» 04.10 табло не было
+        # видно ни в одном кадре, синтетика не повторяет — это скажут её кадры (frames_*.gz)
+        back = bytes((x * 7 + y * 13) % 256 for y in range(H) for x in range(W))
+
+        def still(t):
+            f = bytearray(frame(t, GOALS, HIDDEN))
+            noise = random.Random(int(t)).random() < 0.2          # пятая часть кадров — камера повернулась
+            for p in range(W * H):
+                if not (5 <= p // W < 35 and 5 <= p % W < 160) and not noise:
+                    f[p] = back[p]
+            return bytes(f)
+        s = [(t, still(t)) for t in range(0, 1200, 10)]
+        mask, med, kernel = sb.plate([f for _, f in s])
+        self.assertLess(len(mask), W * H)
+        seen = sum(sb.shown(f, kernel, med) for _, f in s)
+        self.assertGreater(seen, 0.7 * len(s))
+        found = sb.changes(s, mask, med, core=kernel)
+        self.assertEqual([c["hi"] for c in found], [210, 480, 910])
+
+    def test_see_through_plate_rostov(self):
+        # плашка полупрозрачная: сквозь неё то лёд, то трибуна (камера поворачивается раз в минуту); буквы и цифры
+        # непрозрачные. По ядру (буквы) табло на экране при любом фоне
+        letters = {y * W + x for y in range(8, 32) for x in range(10, 60) if (x // 4 + y // 4) % 2 == 0}
+
+        def glass(t):
+            f = bytearray(frame(t, GOALS, HIDDEN))
+            if any(a <= t < b for a, b in HIDDEN):
+                return bytes(f)
+            under = 230 if (t // 60) % 2 else 40
+            for x, y in BOX:
+                p = y * W + x
+                if p in letters:
+                    f[p] = 250
+                elif f[p] == 30:                                    # фон плашки — полупрозрачный
+                    f[p] = 15 + under // 2
+            return bytes(f)
+        s = [(t, glass(t)) for t in range(0, 1200, 10)]
+        mask, med, kernel = sb.plate([f for _, f in s])
+        shown_ = [t for t, f in s if sb.shown(f, kernel, med)]
+        hidden = [t for t, _ in s if any(a <= t < b for a, b in HIDDEN)]
+        self.assertEqual(len(shown_), len(s) - len(hidden))
+        found = sb.changes(s, mask, med, core=kernel)
+        self.assertEqual([c["hi"] for c in found], [210, 480, 910])
+
+    def test_dense_refine_through_goal_splash(self):
+        # после смены табло сразу убрали на 40 с (заставка «GOAL» и повтор): кадр первого прохода с новым счётом
+        # только через 44 с. Деление пополам упирается в пустоту, кадр каждую секунду — нет
+        hidden = [(477, 520)]
+        s = samples(hidden=hidden)
+        frames = [f for _, f in s]
+        mask, med, kernel = sb.plate(frames)
+        ch = next(c for c in sb.changes(s, mask, med, core=kernel) if c["hi"] > 400)
+        self.assertEqual((ch["lo"], ch["hi"]), (470, 520))
+        get = lambda t: frame(round(t), GOALS, hidden)              # noqa: E731
+        bisect = sb.refine(ch, get, kernel, med, 10)
+        self.assertGreater(bisect["hi"], 500)
+        window = lambda a, b: [(t, frame(t, GOALS, hidden)) for t in range(int(a), int(b) + 1)]   # noqa: E731
+        dense = sb.refine(ch, get, kernel, med, 10, window=window)
+        self.assertEqual(dense["hi"], 476)
+
+    def test_sides_keep_clock_apart(self):
+        # «Ростов — Краснодар»: гости забили 4, а смен у табло 9 — номер периода и минуты часов. Зона гостей одна
+        def c(t, zone):
+            return {"hi": t, "lo": t - 10, "zone": zone}
+        found = [c(2800, 1), c(3030, 2), c(3100, 1), c(3700, 2), c(5170, 1), c(5600, 0), c(7400, 2), c(7440, 1)]
+        goals = [("0:1", "1", 2800 - 30), ("0:2", "2", 3100 - 30), ("0:3", "2", 5170 - 30), ("0:4", "3", 7440 - 30)]
+        picked, zones = sb.align_sides(found, goals)
+        self.assertEqual(picked, {"0:1": 2800, "0:2": 3100, "0:3": 5170, "0:4": 7440})
+        self.assertEqual(zones[1], 1)
+        self.assertEqual(sb.goal_sides(goals + [("1:4", "3", 8000)])["1:4"], "home")
+
+    def test_cache_round_trip(self):
+        import tempfile
+        s = samples(until=100)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "frames.gz"
+            sb.save_cache(path, s, {"name": "м", "box": [0, 0, 1, 1], "step": 10, "truth": {"1:0": 5}, "site": []})
+            got, meta = sb.load_cache(path)
+        self.assertEqual(got, s)
+        self.assertEqual((meta["name"], meta["truth"]), ("м", {"1:0": 5}))
 
 
 class Align(unittest.TestCase):

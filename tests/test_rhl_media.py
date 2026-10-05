@@ -6,7 +6,7 @@ import io
 import json
 import sys
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
@@ -103,8 +103,12 @@ class Wanted(unittest.TestCase):
         g["video"] = "https://vk.com/video-187307324_456239889"
         self.assertFalse(rhl_media.need_video(g, now))                      # нашлась — больше не спрашиваем
         g = s["games"]["905113"]
-        g["video_tries"] = rhl_media.VIDEO_TRIES
-        self.assertFalse(rhl_media.need_video(g, now))                      # сыгран, три раза пусто — не будет
+        g["video_asked"] = (now - timedelta(minutes=30)).isoformat()
+        self.assertFalse(rhl_media.need_video(g, now))                      # сыгран, спрашивали полчаса назад
+        g["video_asked"] = (now - rhl_media.VIDEO_EVERY).isoformat()
+        self.assertTrue(rhl_media.need_video(g, now))                       # запись выкладывают и через часы
+        g.pop("video_asked")
+        self.assertTrue(rhl_media.need_video(g, msk("2026-10-06T20:00:00")))   # и на третий день
         self.assertFalse(rhl_media.need_video(s["games"]["905114"], msk("2026-10-07T12:00:00")))   # давно сыгран
 
 
@@ -160,6 +164,19 @@ class Loading(unittest.TestCase):
         with self.assertLogs(level="WARNING"):
             self.run_media(s, session, now)
         self.assertNotIn(f"{SITE}/matchcenter/1432/905111/video/", session.asked)   # нашлась — не спрашиваем
+
+    def test_played_asked_again_later_oldest_first(self):
+        """Запись лига выкладывает и через часы: сыгранный матч спрашиваем снова, кого дольше не спрашивали — первым."""
+        now = msk("2026-10-05T12:00:00")
+        games = {str(i): {"id": i, "t": 1432, "start": "2026-10-04T17:00:00+03:00", "status": "final",
+                          "video_asked": f"2026-10-05T0{i}:00:00+03:00"} for i in (5, 7, 9)}
+        session = FakeSession({})
+        with mock.patch.object(rhl_site, "MAX_VIDEO", 2), self.assertLogs(level="WARNING"):
+            self.run_media({"games": games}, session, now)
+        self.assertEqual(session.asked[1:], [f"{SITE}/matchcenter/1432/5/video/", f"{SITE}/matchcenter/1432/7/video/"])
+        self.assertEqual(games["5"]["video_asked"], now.isoformat(timespec="seconds"))
+        self.assertTrue(rhl_media.need_video(games["9"], now))
+        self.assertFalse(rhl_media.need_video(games["5"], now + timedelta(hours=1)))
 
     def test_translations_page_down(self):
         s = store()

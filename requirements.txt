@@ -1,2 +1,3 @@
 aiogram>=3.20,<4
 aiohttp-socks>=0.8   # TELEGRAM_PROXY=socks5://… для бота на VPS в России
+yt-dlp>=2025.1      # служба clips: поток записи трансляции VK, как у плеера (ADR-030)

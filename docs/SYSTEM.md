@@ -131,6 +131,17 @@
 - Перед сервером бот жил на раннере GitHub («Запустить бота»). Это теперь только стенд: две
   копии одновременно ломают друг другу polling.
 
+### Голы по табло — служба `clips` (ADR-030)
+
+- `clips.py`, раз в 10 минут: сыгранные за три дня матчи с записью лиги (или ссылкой админа в `/replay`) — проход
+  по записи (ffmpeg, yt-dlp), голы по табло трансляции. Секунды — в `live/clips.json`, API отдаёт
+  `/api/live/clips.json`, задание Pages кладёт копию `clips.json`: «Повтор» точный у найденных голов без разметки
+  админа. В `/replay` такие голы — ⏱ (встали часы) и 📺 (смена счёта на табло).
+- Каждый ролик разбирается один раз; VK не отдал — до трёх попыток, ошибка — в `live/clips.json`. Табло клуба-хозяина
+  не размечено — `probe/scoreboard/<матч>/grid.png`: прислать в сессию Claude, разметка — в `boards.json`.
+- Низкий приоритет (`Nice`, `CPUQuota`, idle-диск). Кадры прохода — `probe/scoreboard/`, держатся три дня.
+- Нужен ffmpeg (`rhl-update` ставит сам) и yt-dlp (`requirements.txt`). VK сменил плеер — `venv/bin/pip install -U yt-dlp`.
+
 ### Пульт админа (ADR-021)
 
 - Страница `admin.html` рядом с мини-аппом. Открывается из бота: `/admin` → «Открыть пульт». Пускает
@@ -213,6 +224,7 @@
 | Зачёт «временно выключен» | Опубликованный расклад дня не читается: `curl -s 127.0.0.1:8080/api/health` → `raskat.note`. Если там про соль — выровнять `RASKAT_SALT` в `/etc/rhl/bot.env` под секрет Pages, `systemctl restart api` |
 | HTTPS не открывается, сертификат | `journalctl -u caddy -n 50`; открыты ли 80 и 443 у хостинга и в `ufw status`; повторить `bash /opt/rhl/deploy/https.sh` |
 | Живого счёта нет | `systemctl status live`, `journalctl -u live -n 50`, `ls -l /opt/rhl/live` |
+| Голы по табло не находятся | `journalctl -u clips -n 80`; ошибка матча — в `/opt/rhl/live/clips.json`; VK не отдаёт поток — `sudo -u rhl /opt/rhl/venv/bin/pip install -U yt-dlp`, `systemctl restart clips` |
 | Мини-апп открывается с 404 «There isn't a GitHub Pages site here» | Адрес Pages сменился (репозиторий переименовали: `bogdanov` → `RHL-BOT`). `WEBAPP_URL=https://arpicasso.github.io/RHL-BOT/` в `/etc/rhl/bot.env`, `systemctl restart bot api`, и тот же адрес в @BotFather → `/myapps` → Edit Web App URL |
 | Тревоги не приходят | `ADMIN_IDS` в `/etc/rhl/bot.env` (после правки — `systemctl restart bot api`), `ls -l /opt/rhl/status/alerts.json` (должен быть свежее двух минут), `journalctl -u api -n 30` |
 | Тревоги приходят об одном и том же | Причина не ушла — смотри её на пульте. Напоминание раз в час на причину так и задумано |

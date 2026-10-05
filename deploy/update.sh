@@ -7,7 +7,7 @@ set -euo pipefail
 APP=/opt/rhl
 SELF=/usr/local/sbin/rhl-update
 # служба:файл кода. Файла ещё нет в main — служба пропускается, выкладка не падает
-SERVICES="bot:bot.py live:live.py api:server.py pages:pages_kick.py"
+SERVICES="bot:bot.py live:live.py api:server.py pages:pages_kick.py clips:clips.py"
 cd "$APP"
 
 if [ -z "${RHL_BEFORE:-}" ]; then
@@ -27,6 +27,9 @@ else
 fi
 after=$(sudo -u rhl git rev-parse HEAD)
 sudo -u rhl venv/bin/pip install -q --disable-pip-version-check -r requirements.txt
+# Службе clips нужен ffmpeg (ADR-030): разбор записи трансляции и нарезка
+command -v ffmpeg >/dev/null || { apt-get install -y -q ffmpeg >/dev/null && echo "Поставлен ffmpeg"; } \
+  || echo "ffmpeg не поставился: apt install -y ffmpeg руками, иначе служба clips не заработает"
 
 # Правки только в webapp/, docs/, art/, stickers/ и *.md службам не нужны — как paths-ignore в
 # deploy.yml: такие коммиты служб не перезапускают. Запуск руками без новых коммитов — перезапускает

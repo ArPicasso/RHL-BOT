@@ -1493,7 +1493,9 @@ def replay_title(day: str, g: dict) -> str:
 def replay_text(day: str, g: dict, entry: dict | None, protocol: list[dict] | None = None,
                 video: str | None = None) -> str:
     """Голы матча и что с повторами: точный (отмечен), расчётный или нет. Ссылки — чтобы проверить сразу.
-    video — запись лиги из league.json: пока своей разметки нет, её и размечаем (ADR-028)."""
+    video — запись лиги из league.json: пока своей разметки нет, её и размечаем (ADR-028). Голы, которые служба
+    clips нашла по табло (ADR-030), — точные, с пометкой ⏱ (встали часы) или 📺 (смена счёта)."""
+    entry = replay.with_board(entry, ((read_live("clips.json") or {}).get("games") or {}).get(match_key(g)))
     links = {x["score"]: x for x in (entry or {}).get("goals") or []}
     goals = replay_goals(g, protocol)
     lines = [f"🎬 <b>{html.escape(replay_title(day, g))}</b>"]
@@ -1510,13 +1512,13 @@ def replay_text(day: str, g: dict, entry: dict | None, protocol: list[dict] | No
         per = f" · {per}-й" if per.isdigit() else f" · {html.escape(per)}" if per else ""
         r = links.get(x["score"])
         url = replay.at_link(entry["video"], r["t"]) if r else None   # заново: старые записи хранят прежний формат
-        mark = (f' — <a href="{html.escape(url)}">{"✅" if r["exact"] else "≈"} {replay.fmt_t(r["t"])}</a>'
-                if url else "")
+        sign = {"clock": "⏱", "board": "📺"}.get(r.get("src"), "✅") if r and r["exact"] else "≈"
+        mark = f' — <a href="{html.escape(url)}">{sign} {replay.fmt_t(r["t"])}</a>' if url else ""
         lines.append(f"{k}. <b>{x['score']}</b> {who}{author}{per}{mark}")
     lines.append("")
     if entry:
-        lines.append("✅ — по твоему времени, ≈ — посчитан от отмеченного гола того же периода (начинается "
-                     "раньше гола). Мимо — нажми на гол и пришли его время.")
+        lines.append("✅ — по твоему времени, ⏱ и 📺 — нашла служба по табло (встали часы, сменился счёт), ≈ — посчитан "
+                     "от отмеченного гола того же периода (начинается раньше гола). Мимо — нажми на гол и пришли его время.")
     what = "времена" if entry or video else "ссылку на запись и времена"
     lines.append(f"Пришли {what} всех {len(goals)} голов по порядку, по строке на гол: "
                  "1:08:03. Или нажми на гол и пришли время одного.")

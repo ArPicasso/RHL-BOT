@@ -37,6 +37,7 @@ CHANNELS_FILE = BASE / "channels.json"       # каналы клубов для 
 POSTS_FILE = BASE / "channel_posts.json"     # их посты: собирает tg_channels.py перед этим шагом
 SCHEDULE_FILE = BASE / "schedule.json"       # время матчей с сервера (ADR-019, раздел 5), кладёт шаг Pages
 REPLAYS_FILE = BASE / "replays.json"         # повторы голов с сервера (ADR-027), кладёт шаг Pages
+CLIPS_FILE = BASE / "clips.json"             # секунды голов по табло службы clips (ADR-030), кладёт шаг Pages
 EVENTS_FILE = BASE / "channel_events.json"   # лента матчей из постов каналов: копится между запусками (кэш Pages)
 EVENTS_DAYS = 3                              # и держится три дня
 MOSCOW = "Europe/Moscow"
@@ -201,14 +202,21 @@ def load_replays(path: Path = REPLAYS_FILE) -> dict:
     return games if isinstance(games, dict) else {}
 
 
-def apply_replays(games: list[dict], replays: dict) -> int:
+def load_clips(path: Path = CLIPS_FILE) -> dict:
+    """Голы по табло из live/clips.json сервера (ADR-030): ключ матча → ролик и секунды. Нет файла — без них."""
+    return load_replays(path)
+
+
+def apply_replays(games: list[dict], replays: dict, clips: dict | None = None) -> int:
     """Ссылка на повтор (`replay`) у гола матча: ключ «<дата>|<хозяева>|<гости>», гол — по счёту после него.
     Счёт уникален в матче и одинаков у службы live и у протокола. Матч без голов протокола (протокол ещё не
     пришёл) получает `replays` — счёт → ссылка: по нему мини-апп ставит «Повтор» у гола в ленте матча
-    (ADR-028, раздел 4). Возвращает число голов с повтором."""
+    (ADR-028, раздел 4). clips — секунды голов по табло (ADR-030): точные у голов без отметки админа.
+    Возвращает число голов с повтором."""
     n = 0
     for g in games:
-        links = replay.by_score(replays.get(f"{g['date']}|{g['home']}|{g['away']}") or {})
+        key = f"{g['date']}|{g['home']}|{g['away']}"
+        links = replay.by_score(replay.with_board(replays.get(key), (clips or {}).get(key)) or {})
         if not links:
             continue
         if not any(x.get("period") != "РБ" for x in g.get("goals") or []):
@@ -1053,7 +1061,7 @@ def links(env=os.environ) -> dict[str, str]:
 def build(teams: Teams, raw: list[rhockey.RawGame], results: league.Results,
           hidden: set[int] = frozenset(), *, schedule: list[dict] = (), channels: list[dict] = (),
           posts: dict | None = None, site: dict | None = None,
-          events: dict | None = None, replays: dict | None = None,
+          events: dict | None = None, replays: dict | None = None, clips: dict | None = None,
           catalog_out: dict | None = None) -> tuple[dict, list[str], dict[str, dict]]:
     """league.json, непривязанные протоколы и разборы сыгранных матчей по id матча.
 
@@ -1072,7 +1080,7 @@ def build(teams: Teams, raw: list[rhockey.RawGame], results: league.Results,
     apply_media(games, site or {})                         # «Смотреть» от лиги — первой кнопкой
     apply_channel_events(games, teams, list(channels), posts or {}, events, datetime.now(TZ))
     apply_goal_authors(games, protocols, list(channels), hidden)   # авторы голов по ходу из постов (ADR-026)
-    apply_replays(games, replays or {})                    # последним: голы уже на месте (ADR-027)
+    apply_replays(games, replays or {}, clips)             # последним: голы уже на месте (ADR-027, ADR-030)
     names = {t["id"]: t["name"] for t in teams.all}
     details = {g["id"]: match_detail(g, protocols[g["id"]], names, hidden) for g in games if g["id"] in protocols}
     if catalog_out is not None:
@@ -1167,7 +1175,7 @@ def main() -> None:
     data, unmatched, details = build(teams, raw, league.load_results(args.results), load_hidden(),
                                      schedule=load_schedule(), channels=channels, posts=posts,
                                      site=rhl_site.load_store(), events=events, replays=load_replays(),
-                                     catalog_out=cat)
+                                     clips=load_clips(), catalog_out=cat)
     EVENTS_FILE.write_text(json.dumps(events, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")

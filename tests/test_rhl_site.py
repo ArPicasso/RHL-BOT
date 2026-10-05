@@ -1,7 +1,7 @@
 """Разбор сайта РХЛ rhl.fhr.ru (rhl_site.py) на настоящих страницах 03.10.2026 и счёт в league.json."""
 import sys
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -94,6 +94,22 @@ class Store(unittest.TestCase):
         rhl_site.apply_page(g, rhl_site.parse_match(page("rhl_match_905113_final.html")))
         self.assertFalse(rhl_site.need_page(g, now))                 # итог подтверждён — больше не качаем
         self.assertEqual(g["start"], "2026-10-03T13:00:00+03:00")
+
+    def test_final_without_authors_is_read_again(self):
+        """Сайт назвал победителя, а блок авторов ещё пуст (05.10.2026, №11) — карточку перечитываем, пока
+        авторы не придут, не придёт протокол или не пройдут сутки."""
+        s = self.store()
+        now = datetime(2026, 10, 3, 17, 55, tzinfo=TZ)
+        g = s["games"]["905113"]
+        final = rhl_site.parse_match(page("rhl_match_905113_final.html"))
+        rhl_site.apply_page(g, {**final, "goals": {"home": [], "away": final["goals"]["away"][:2]}})
+        self.assertEqual((g["status"], g["checked"]), ("final", "authors"))
+        self.assertTrue(rhl_site.need_page(g, now))
+        self.assertFalse(rhl_site.need_page(g, now + timedelta(days=2)))    # сутки прошли — хватит
+        self.assertFalse(rhl_site.need_page({**g, "report": {"n": 3}}, now))  # протокол подробнее карточки
+        rhl_site.apply_page(g, final)                                       # авторы пришли — итог подтверждён
+        self.assertEqual(g["checked"], "final")
+        self.assertFalse(rhl_site.need_page(g, now))
 
     def test_merge_keeps_known(self):
         s = self.store()

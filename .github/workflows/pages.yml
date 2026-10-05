@@ -78,6 +78,15 @@ jobs:
         continue-on-error: true
         run: python rhl_site.py
 
+      # Вкладки «Протокол» сыгранных матчей, которые rhl_site.py не разобрал (probe/rhl_protocol/<id>.html):
+      # по ним видно, что сайт отдаёт до готового протокола, из них — фикстуры tests/. Нет таких — шаг молчит
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rhl-protocol-unparsed
+          path: probe/rhl_protocol/
+          if-no-files-found: ignore
+          retention-days: 3
+
       # Посты каналов клубов для листа «Главной» (ADR-015): превью с t.me/s, по одному запросу в секунду.
       # Упадёт или половина каналов не откроется — лист соберётся из своих данных, шаг станет красным
       - name: Посты каналов клубов

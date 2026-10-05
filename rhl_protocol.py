@@ -167,17 +167,34 @@ def _staff(page: str) -> tuple[tuple[str, str], tuple[str, ...], tuple[str, ...]
     return coaches[:2], people.get("Главные судьи", ()), people.get("Линейные судьи", ())
 
 
+def why_not(html: str) -> str | None:
+    """Почему страница не протокол: первая не найденная часть шапки или вкладки. None — всё на месте.
+    Для журнала задания Pages: протокол сыгранного матча сайт отдаёт не сразу, а чего именно ему не
+    хватает в первый час после сирены, по одному «не разобран» не понять (матч №11, 05.10.2026)."""
+    day = re.search(r'param-day">\s*(\d{1,2})\s+(\S+)\s*<', html)
+    checks = (
+        (len(re.findall(r'matchcenter-hero__team-name">', html)) == 2, "нет двух команд в шапке"),
+        (re.search(r'matchcenter-hero__score-main">\s*\d+\s*:\s*\d+', html), "нет счёта в шапке"),
+        (re.search(r'class="matchcenter-hero\s+matchcenter-hero--winner-(?:home|guest)', html),
+         "нет победителя в шапке: матч не окончен"),
+        (re.search(r'param-num">\s*№\s*\d+', html), "нет номера матча"),
+        (day and day.group(2) in MONTHS, "нет даты матча"),
+        (re.search(r'param-date">[^<]*?\d{4},\s*\d{1,2}:\d{2}', html), "нет времени начала"),
+        ('class="matchcenter-protocol"' in html, "нет вкладки протокола (matchcenter-protocol)"),
+    )
+    return next((why for ok, why in checks if not ok), None)
+
+
 def parse_protocol(html: str, game_id: int) -> Protocol | None:
-    """None — матч не окончен (нет победителя в шапке), протокола нет или вёрстка незнакомая."""
+    """None — матч не окончен (нет победителя в шапке), протокола нет или вёрстка незнакомая: что именно,
+    скажет why_not."""
+    if why_not(html):
+        return None
     names = [_text(x) for x in re.findall(r'matchcenter-hero__team-name">(.*?)</div>', html, re.S)]
     score = re.search(r'matchcenter-hero__score-main">\s*(\d+)\s*:\s*(\d+)', html)
-    winner = re.search(r'class="matchcenter-hero\s+matchcenter-hero--winner-(?:home|guest)', html)
     num = re.search(r'param-num">\s*№\s*(\d+)', html)
     day = re.search(r'param-day">\s*(\d{1,2})\s+(\S+)\s*<', html)
     when = re.search(r'param-date">[^<]*?(\d{4}),\s*(\d{1,2}:\d{2})', html)
-    if (len(names) != 2 or not score or not winner or not num or not day or not when
-            or day.group(2) not in MONTHS or 'class="matchcenter-protocol"' not in html):
-        return None
     kind = re.search(r'matchcenter-hero__score-type">(.*?)</div>', html, re.S)
     kind = _text(kind.group(1)).lower() if kind else ""
     decision = "Б" if re.search(r"\bб\b|буллит", kind) else "ОТ" if re.search(r"\bот\b|\bot\b|овертайм", kind) else ""

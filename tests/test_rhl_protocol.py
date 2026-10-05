@@ -139,6 +139,14 @@ class NotAProtocol(unittest.TestCase):
     def test_final_card_without_protocol_tab(self):
         # карточка сыгранного матча без вкладки «Протокол» — не протокол
         self.assertIsNone(rhl_protocol.parse_protocol(page("rhl_match_905113_final.html"), 905113))
+        self.assertEqual(rhl_protocol.why_not(page("rhl_match_905113_final.html")),
+                         "нет вкладки протокола (matchcenter-protocol)")
+
+    def test_why_not(self):
+        self.assertIsNone(rhl_protocol.why_not(page("rhl_protocol_905111.html")))
+        self.assertEqual(rhl_protocol.why_not(page("rhl_match_905111_live.html")),
+                         "нет победителя в шапке: матч не окончен")
+        self.assertEqual(rhl_protocol.why_not("<html><body>Страница не найдена</body></html>"), "нет двух команд в шапке")
 
 
 class Leaders(unittest.TestCase):
@@ -189,10 +197,11 @@ class Reports(unittest.TestCase):
         self.assertEqual(rhl_site.season_code(datetime(2026, 10, 3, tzinfo=TZ)), "2026-2027")
         self.assertEqual(rhl_site.season_code(datetime(2027, 3, 1, tzinfo=TZ)), "2026-2027")
 
-    async def reports_with(self, store: dict, html: str) -> int:
+    async def reports_with(self, store: dict, html: str, unparsed: Path) -> int:
         async def fake_get(session, url):
             return html
-        with mock.patch.object(rhl_site, "_get", fake_get), mock.patch.object(rhl_site, "PAUSE", 0):
+        with mock.patch.object(rhl_site, "_get", fake_get), mock.patch.object(rhl_site, "PAUSE", 0), \
+                mock.patch.object(rhl_site, "UNPARSED", unparsed):
             return await rhl_site.fetch_reports(None, "https://rhl.fhr.ru", store, self.NOW, 5)
 
     def test_update_offline(self):
@@ -218,7 +227,8 @@ class Reports(unittest.TestCase):
             top = json.loads(leaders_path.read_text(encoding="utf-8"))
             with self.assertLogs(level="WARNING") as logs:     # протокол не разобрался — в журнал, без падения
                 again["games"]["905113"]["report_at"] = "2026-10-03T12:00+03:00"
-                fresh = asyncio.run(self.reports_with(again, "<html><body></body></html>"))
+                fresh = asyncio.run(self.reports_with(again, "<html><body></body></html>", Path(d) / "unparsed"))
+            kept = (Path(d) / "unparsed" / "905113.html").read_text(encoding="utf-8")
         games = again["games"]
         self.assertEqual({k for k, g in games.items() if g.get("report")}, {"905111", "905112", "905113"})
         self.assertEqual(games["905111"]["report"]["goals"][0]["author"]["name"], "Абашкин Кирилл")
@@ -226,7 +236,8 @@ class Reports(unittest.TestCase):
         self.assertEqual(games["905111"]["report_at"], "2026-10-03T21:00+03:00")
         self.assertNotIn("report", games["905114"])     # сыгран по ленте, но карточка не скачалась: начала нет
         self.assertEqual(fresh, 0)
-        self.assertTrue(any("905113" in x for x in logs.output))
+        self.assertTrue(any("905113" in x and "нет двух команд" in x for x in logs.output))   # и почему
+        self.assertEqual(kept, "<html><body></body></html>")            # страница — для разбора, что не так
         self.assertEqual(len(games["905113"]["report"]["goals"]), 6)    # прежний протокол не затёрт
         self.assertEqual(len(urls), len(set(urls)))                     # каждая страница — один раз
         self.assertLessEqual(sum("/matchcenter/" in u and not u.endswith("/video/") for u in urls), rhl_site.MAX_PAGES)

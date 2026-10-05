@@ -98,7 +98,9 @@ class PastRecaps(unittest.TestCase):
         d = out["h900942"]
         self.assertEqual((d["game"]["season"], d["game"]["score"]["home"], len(d["game"]["goals"])), ("25/26", 6, 7))
         self.assertEqual(d["shots"], {"home": 45, "away": 15})
-        self.assertEqual(d["lineups"]["home"]["D"][1], {"no": 85, "name": "Захаров Иван Сер.", "cap": "", "g": 0, "a": 0})
+        row = dict(d["lineups"]["home"]["D"][1])
+        self.assertEqual(len(row.pop("pk")), 10)                  # ключ игрока вместо id лиги (ADR-030)
+        self.assertEqual(row, {"no": 85, "name": "Захаров Иван Сер.", "cap": "", "g": 0, "a": 0})
         self.assertTrue(d["story"].startswith("Первыми забили гости"))
         self.assertEqual(b.past_recaps([h], protocols, set(), {}), {})
 

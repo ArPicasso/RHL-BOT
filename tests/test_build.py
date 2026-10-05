@@ -355,6 +355,23 @@ class MatchRecap(unittest.TestCase):
         self.assertNotIn('"id": 4', json.dumps(g["goals"]))
         self.assertNotIn("44596", json.dumps(d))
 
+    def test_player_keys_instead_of_ids(self):
+        """ADR-030: у гола и в составе — ключ игрока, по нему страница игрока; id лиги в данных нет (ADR-008)."""
+        g, d = self.detail("protocol_900942_regular.html", 900942, "ryazan-vdv", "belgorod")
+        first = g["goals"][0]
+        self.assertEqual(first["pk"], b.player_key(44596))
+        self.assertEqual(len(first["apk"]), len(first["assists"]))
+        self.assertTrue(all(len(k) == 10 for x in g["goals"] for k in [x["pk"], *filter(None, x.get("apk", []))]))
+        keys = {r["pk"] for grp in d["lineups"]["home"].values() for r in grp}
+        self.assertTrue(all(x["pk"] in keys for x in g["goals"] if x["team"] == "home"))
+        self.assertNotEqual(b.player_key(44596, "другая соль"), b.player_key(44596))
+        self.assertIsNone(b.player_key(None))
+
+    def test_hidden_player_has_no_key(self):
+        g, _ = self.detail("protocol_900942_regular.html", 900942, "ryazan-vdv", "belgorod", {44596})
+        self.assertNotIn("pk", g["goals"][0])
+        self.assertNotIn(b.player_key(44596), json.dumps(g))
+
     def test_old_protocol_without_details(self):
         g, p = protocol_game("protocol_900942_regular.html", 900942, "ryazan-vdv", "belgorod")
         for k in ("penalties", "lineups", "referees", "linesmen", "coaches"):
@@ -365,6 +382,62 @@ class MatchRecap(unittest.TestCase):
 
     def test_hidden_file_is_a_list(self):
         self.assertIsInstance(json.loads((ROOT / "hidden_players.json").read_text(encoding="utf-8")), list)
+
+
+class Catalog(unittest.TestCase):
+    """ADR-030: голы клуба и страницы игроков из протоколов сезона."""
+
+    def setUp(self):
+        self.g, self.p = protocol_game("protocol_900942_regular.html", 900942, "ryazan-vdv", "belgorod")
+
+    def test_club_goals_newest_first(self):
+        clubs, _ = b.catalog([self.g], {"n1": self.p})
+        home = [x for x in self.g["goals"] if x["team"] == "home"]
+        self.assertEqual([e["score"] for e in clubs["ryazan-vdv"]], [x["score"] for x in reversed(home)])
+        e = clubs["belgorod"][0]
+        self.assertEqual((e["game"], e["club"], e["opp"], e["home"], e["pk"]), ("n1", "belgorod", "ryazan-vdv", False,
+                                                                                 b.player_key(44596)))
+
+    def test_player_goals_and_assists(self):
+        _, players = b.catalog([self.g], {"n1": self.p})
+        x = next(x for x in self.g["goals"] if x.get("apk"))
+        me = players[x["pk"]]
+        self.assertEqual((me["club"], me["name"]), (self.g[x["team"]], x["author"]))
+        self.assertIn(x["score"], [e["score"] for e in me["goals"] if e["as"] == "goal"])
+        helper = players[x["apk"][0]]
+        self.assertIn(x["score"], [e["score"] for e in helper["goals"] if e["as"] == "assist"])
+        self.assertIn(me["role"], ("G", "D", "F"))
+        # в составе без очков — страница всё равно есть, голов на ней нет
+        self.assertTrue(any(not v["goals"] for v in players.values()))
+
+    def test_hidden_and_shootout_left_out(self):
+        g, p = protocol_game("protocol_900942_regular.html", 900942, "ryazan-vdv", "belgorod", {44596})
+        clubs, players = b.catalog([g], {"n1": p}, {44596})
+        self.assertNotIn(b.player_key(44596), players)
+        self.assertEqual(clubs["belgorod"][0]["author"], b.HIDDEN_NAME)
+        self.assertNotIn("pk", clubs["belgorod"][0])
+        g, p = protocol_game("protocol_901033_shootout.html", 901033, "kristall", "ryazan-vdv")
+        clubs, _ = b.catalog([g], {"n1": p})
+        self.assertFalse(any(e["period"] == "РБ" for rows in clubs.values() for e in rows))
+
+    def test_files_for_every_club_and_player(self):
+        clubs, players = b.catalog([self.g], {"n1": self.p})
+        teams = b.load_teams()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "players").mkdir()
+            (out / "players" / "ушёл.json").write_text("{}", encoding="utf-8")
+            b.write_catalog(out, teams, "2026/27", {"clubs": clubs, "players": players}, "2026-10-05T18:00+03:00")
+            self.assertEqual(len(list((out / "highlights").glob("*.json"))), 26)
+            self.assertEqual({f.stem for f in (out / "players").glob("*.json")}, set(players))
+            empty = json.loads((out / "highlights" / "samara.json").read_text(encoding="utf-8"))
+            self.assertEqual((empty["goals"], empty["season"]), ([], "2026/27"))
+            self.assertNotIn("44596", (out / "highlights" / "belgorod.json").read_text(encoding="utf-8"))
+
+    def test_build_fills_catalog(self):
+        cat: dict = {}
+        b.build(b.load_teams(), [], {}, catalog_out=cat)
+        self.assertEqual((cat["clubs"], cat["players"]), ({}, {}))
 
 
 def seq(*teams: str, period: str = "2") -> list[dict]:
@@ -511,7 +584,8 @@ class Leaders(unittest.TestCase):
         rows = top["categories"]["pts"]
         self.assertEqual([r["rank"] for r in rows], [*range(1, 11), 12, 13])   # клуба вне РХЛ за десяткой нет
         self.assertEqual(rows[-1]["team"], "vityaz-podolsk")                   # прежнее название — нынешний клуб
-        self.assertEqual(set(rows[0]), {"rank", "name", "role", "number", "gp", "g", "a", "pts", "team", "kit"})   # без id
+        self.assertEqual(set(rows[0]), {"rank", "name", "role", "number", "gp", "g", "a", "pts", "team", "kit", "pk"})
+        self.assertEqual(rows[0]["pk"], b.player_key(1))                       # ключ, а не id лиги (ADR-030)
 
     def test_club_outside_league_keeps_name(self):
         src = {**self.src, "categories": {"pts": [{**self.src["categories"]["pts"][10], "rank": 1}]}}

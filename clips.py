@@ -400,10 +400,13 @@ def main() -> None:
         marked = read_json(LIVE_DIR / "replays.json").get("games") or {}
         league = sb.league_json(None)
         try:
+            # сначала клипы того, что уже разобрано: они быстрые, а проход по новой записи — минуты, и перезапуск
+            # службы (выкладка) посреди него не должен задерживать клипы (05.10 так и не дошло до нарезки)
+            cut = cut_pass(store, league, marked, bucket)
             n = run_pass(store, league, marked, now)
             if n:
                 log.info("проход: разобрано матчей %d", n)
-            cut = cut_pass(store, league, marked, bucket)
+                cut += cut_pass(store, league, marked, bucket)
             if cut:
                 log.info("проход: новых клипов %d", cut)
             clean_work(now.date())

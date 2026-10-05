@@ -115,6 +115,39 @@ class Pass(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()), ["2026-10-04_c_d", "x"])
 
 
+class Previews(unittest.TestCase):
+    """Шаг 3: превью гола без секунды — окно до смены табло и моменты, когда вставали часы."""
+
+    def test_window_before_change(self):
+        self.assertEqual(clips.preview_window(2969.6), (2849, 125))
+        self.assertEqual(clips.preview_window(60), (0, 65))
+        self.assertEqual(clips.preview_window(3000, length=3002), (2880, 122))
+
+    def test_clock_stops(self):
+        clock = list(range(10))
+        run = lambda k: bytes([k * 50 % 256] * 10)   # noqa: E731 — часы идут: клетка меняется каждую секунду
+        still = bytes([7] * 10)
+        vis = [(t, run(t)) for t in range(100, 105)] + [(t, still) for t in range(105, 110)]
+        vis += [(t, run(t)) for t in range(110, 113)] + [(t, still) for t in range(113, 116)]
+        with mock.patch.object(clips.sb, "CLOCK_MOVED", 8):
+            self.assertEqual(clips.clock_stops(vis, clock), [104, 112])
+            self.assertEqual(clips.clock_stops(vis[:3] + vis[6:], clock), [112])   # разрыв в кадрах — не остановка
+
+    def test_preview_exact_start(self):
+        with mock.patch.object(clips.sb, "ffmpeg", return_value="ffmpeg"):   # на раннере GitHub ffmpeg нет
+            cmd = clips.preview_cmd("http://x/s.m3u8", {"Referer": "https://vk.com"}, 2849, 125, Path("p.mp4"))
+        self.assertLess(cmd.index("-ss"), cmd.index("-i"))
+        self.assertIn("libx264", cmd)                       # перекодируем: нулевая секунда превью — ровно 2849
+        self.assertEqual(cmd[cmd.index("-t") + 1], "125")
+
+    def test_only_goals_without_second(self):
+        goals = {"0:2": {"t": 2963, "change": 2969}, "0:1": {"t": None, "change": None}}
+        with mock.patch.object(clips.sb, "stream_of") as stream:
+            clips.add_previews(KEY, VIDEO, goals, None, Path("."))
+        stream.assert_not_called()
+        self.assertNotIn("ask", goals["0:2"])
+
+
 class Replays(unittest.TestCase):
     board = {"video": VIDEO, "goals": {"0:2": {"t": 2963, "src": "clock", "team": "away"},
                                        "0:3": {"t": 3500, "src": "board", "team": "away"},

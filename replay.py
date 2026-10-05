@@ -104,6 +104,14 @@ def fmt_t(sec: int) -> str:
     return (f"{h}h" if h else "") + (f"{m}m" if h or m else "") + f"{s}s"
 
 
+def fmt_clock(sec: int) -> str:
+    """Секунды → «1:05», «12:03», «1:02:03» — время в коротком видео для людей."""
+    sec = max(0, int(sec))
+    h, rest = divmod(sec, 3600)
+    m, s = divmod(rest, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
 def at_link(video: str, sec: int) -> str | None:
     """Ролик и секунда → ссылка на повтор: плеер VK `https://vkvideo.ru/video_ext.php?oid=-X&id=Y&t=2563`.
 

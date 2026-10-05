@@ -134,7 +134,8 @@ class Previews(unittest.TestCase):
             self.assertEqual(clips.clock_stops(vis[:3] + vis[6:], clock), [112])   # разрыв в кадрах — не остановка
 
     def test_preview_exact_start(self):
-        cmd = clips.preview_cmd("http://x/s.m3u8", {"Referer": "https://vk.com"}, 2849, 125, Path("p.mp4"))
+        with mock.patch.object(clips.sb, "ffmpeg", return_value="ffmpeg"):   # на раннере GitHub ffmpeg нет
+            cmd = clips.preview_cmd("http://x/s.m3u8", {"Referer": "https://vk.com"}, 2849, 125, Path("p.mp4"))
         self.assertLess(cmd.index("-ss"), cmd.index("-i"))
         self.assertIn("libx264", cmd)                       # перекодируем: нулевая секунда превью — ровно 2849
         self.assertEqual(cmd[cmd.index("-t") + 1], "125")

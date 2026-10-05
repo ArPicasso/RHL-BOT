@@ -4,6 +4,7 @@
     cd /opt/rhl && venv/bin/python tools/probe_scoreboard.py                     # все размеченные матчи
     venv/bin/python tools/probe_scoreboard.py --match 2026-10-04|rostov|krasnodar
     venv/bin/python tools/probe_scoreboard.py --check                            # быстро: только окна вокруг голов
+    venv/bin/python tools/probe_scoreboard.py --days 3                           # и все сыгранные с записью лиги
     venv/bin/python tools/probe_scoreboard.py --stream probe/x.mp4 --truth 1:0=42:53,0:2=49:28   # файл
 
 Табло — плашка со счётом в углу кадра, она стоит на месте всю игру. Пробник смотрит запись целиком и редко
@@ -44,8 +45,11 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.request
+from datetime import date, timedelta
 from itertools import takewhile
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -75,6 +79,12 @@ EXACT = 15              # с: табло между старым и новым �
 ORDER_TOL = 300         # с: смена годится голу, если не дальше стольких секунд от ожидаемой по сайту лиги
 CLOCK_BACK = 120        # с: остановку часов перед сменой счёта ищем не раньше стольких секунд до неё
 CLOCK_MOVED = 8         # пикселей клетки часов: столько сменилось — часы идут (секунды меняются каждую секунду)
+CLUB_LAG = {            # проверенная задержка табло клуба, с: счёт меняют ровно через столько после гола (ADR-029)
+    "tverichi": 6,      # 04.10: пять голов, 5–9 с
+}
+SITE = "rhl.fhr.ru"     # запись лиги — «Смотреть» с этим источником в league.json (rhl_media.py)
+WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://arpicasso.github.io/RHL-BOT/"
+GRID = (0.0, 0.0, 0.5, 0.35)   # --grid: где искать табло нового клуба — левый верх кадра
 DIFF = 40               # разница яркости пикселя (0–255), с которой пиксель считаем изменившимся
 STABLE = 0.85           # пиксель графики: не меняется хотя бы в стольких парах соседних кадров с табло
 TIGHT = 12              # пиксель графики в кадре с табло: яркость почти та же (сжатие дрожит на несколько единиц)
@@ -611,6 +621,17 @@ def clock_stop(vis: list[tuple[float, bytes]], hi: float, clock: list[int], gap:
     return stop
 
 
+def goal_time(change: float, exact: bool, stop: tuple | None, lag: float | None) -> tuple[float | None, str | None]:
+    """Секунда гола для повтора и клипа по табло (решение 05.10): часы встали — последняя секунда, когда они
+    шли; табло не пропадало и задержка клуба проверена — смена счёта минус задержка. Иначе не знаем: (None, None),
+    гол — админу (превью). (секунда, источник «clock»/«board»)."""
+    if stop:
+        return stop[0], "clock"
+    if exact and lag is not None:
+        return change - lag, "board"
+    return None, None
+
+
 def align_order(found: list[dict], goals: list[tuple[str, str, float]]) -> dict[str, float]:
     """Какая смена — какой гол, когда смены по клеткам цифр (zone «home»/«away»). Цифра команды только растёт,
     поэтому k-я смена цифры хозяев — k-й гол хозяев: голы и смены одной команды сопоставляем по порядку
@@ -904,8 +925,94 @@ def probe(name: str, src: str | None, headers: dict | None, truth: dict[str, int
         print("  точные: " + lag_summary(exact))
         if stops:
             print("  по часам: " + lag_summary([(s, t, stops[s][1] if s in stops else None) for s, t, _ in rows]))
-    print(f"  картинки — {out}: change_*.png — рамка до и после смены; кадры — {cache.name}")
+    lag = CLUB_LAG.get(name.split("|")[1]) if name.count("|") == 2 else None
+    goals = []
+    for score, e in sorted(picked.items(), key=lambda x: x[1]):
+        t, how = goal_time(e, e in exact_t, stops.get(score), lag)
+        goals.append({"score": score, "change": e, "exact": e in exact_t, "clock": list(stops[score]) if score in stops
+                      else None, "t": t, "src": how})
+    timed = [g for g in goals if g["t"] is not None]
+    (out / "goals.json").write_text(json.dumps({"key": name, "goals": goals}, ensure_ascii=False, indent=1),
+                                    encoding="utf-8")
+    print(f"  время гола по табло (для повтора и клипа): {len(timed)} из {len(site) or len(goals)}"
+          + (" — " + ", ".join(f"{g['score']} {replay.fmt_t(int(g['t']))} ({'часы' if g['src'] == 'clock' else 'табло'})"
+                               for g in timed) if timed else ""))
+    print(f"  картинки — {out}: change_*.png — рамка до и после смены; голы — goals.json; кадры — {cache.name}")
     return rows, exact
+
+
+def data_url(name: str) -> str:
+    """Файл данных рядом с мини-аппом на Pages: .../data/<name> (как в bot.py)."""
+    u = urlsplit(WEBAPP_URL)
+    path = u.path if u.path.endswith("/") else u.path.rsplit("/", 1)[0] + "/"
+    return urlunsplit(u._replace(path=path + "data/" + name, query="", fragment=""))
+
+
+def league_json(path: Path | None) -> dict | None:
+    """league.json: файл (--league) или опубликованный с мини-аппом. Не достали — None."""
+    try:
+        if path:
+            return json.loads(path.read_text(encoding="utf-8"))
+        with urllib.request.urlopen(data_url("league.json"), timeout=30) as r:
+            return json.load(r)
+    except (OSError, ValueError) as err:
+        print(f"league.json не достали — {type(err).__name__}: {err}")
+        return None
+
+
+def recorded(league: dict | None, days: set[str]) -> dict[str, dict]:
+    """Сыгранные матчи этих дней с записью лиги («Смотреть» от rhl.fhr.ru в league.json, ADR-028): ключ матча
+    как у службы live → {"video": страница ролика VK, "anchors": {}} — опор админа у них нет."""
+    out = {}
+    for g in (league or {}).get("games") or []:
+        if not (isinstance(g, dict) and g.get("date") in days and g.get("score")):
+            continue
+        for w in g.get("watch") or []:
+            got = replay.parse_link(w.get("url") or "") if isinstance(w, dict) and w.get("src") == SITE else None
+            if got:
+                out[f"{g['date']}|{g.get('home')}|{g.get('away')}"] = {"video": got[0], "anchors": {}}
+                break
+    return out
+
+
+def matches(args) -> dict[str, dict]:
+    """Какие матчи разбирать: размеченные админом (live/replays.json) и, с --days/--date, все сыгранные с записью
+    лиги за эти дни. Размеченный главнее: у него опоры админа."""
+    try:
+        marked = json.loads((args.live / "replays.json").read_text(encoding="utf-8")).get("games") or {}
+    except (OSError, ValueError):
+        marked = {}
+    days = set(args.date or [])
+    if args.days:
+        today = date.today()
+        days |= {(today - timedelta(days=k)).isoformat() for k in range(args.days)}
+    found = recorded(league_json(args.league), days) if days else {}
+    return {**found, **marked}
+
+
+def grid_sheet(src: str, headers: dict | None, length: float | None, path: Path) -> None:
+    """Табло нового клуба ещё не размечено: три кадра записи (четверть, половина, три четверти) — левый верх
+    кадра GRID с сеткой: тонкие линии — каждые 0,02 кадра, жёлтые — каждые 0,1. По ней размечаем рамку и клетки
+    (BOARDS)."""
+    x, y, w, h = GRID
+    vf = (f"crop=iw*{w}:ih*{h}:iw*{x}:ih*{y},scale=960:-2,"
+          f"drawgrid=w=iw*{0.02 / w}:h=ih*{0.02 / h}:t=1:c=white@0.35,"
+          f"drawgrid=w=iw*{0.1 / w}:h=ih*{0.1 / h}:t=2:c=yellow@0.8")
+    parts = []
+    for k, share in enumerate((0.25, 0.5, 0.75)):
+        part = path.with_name(f"{path.stem}_{k}.png")
+        subprocess.run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", *header_args(headers),
+                        "-ss", str(int((length or 7200) * share)), "-i", src, "-frames:v", "1", "-vf", vf, str(part)],
+                       capture_output=True, timeout=180)
+        if part.exists():
+            parts.append(part)
+    if parts:
+        args = [a for part in parts for a in ("-i", str(part))]
+        subprocess.run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", *args, "-filter_complex",
+                        f"vstack=inputs={len(parts)}" if len(parts) > 1 else "null", str(path)],
+                       capture_output=True, timeout=120)
+    for part in parts:
+        part.unlink()
 
 
 def main() -> None:
@@ -925,6 +1032,9 @@ def main() -> None:
     ap.add_argument("--rescan", action="store_true", help="качать запись заново, даже если кадры уже в кэше")
     ap.add_argument("--cache", type=Path, nargs="+",
                     help="файлы кадров frames_*.gz прошлых запусков: разбор без сети и без сервера")
+    ap.add_argument("--days", type=int, help="ещё все сыгранные матчи с записью лиги за столько последних дней")
+    ap.add_argument("--date", action="append", help="ещё все сыгранные матчи с записью лиги за этот день (ГГГГ-ММ-ДД)")
+    ap.add_argument("--league", type=Path, help="league.json с диска вместо опубликованного на Pages")
     ap.add_argument("--live", type=Path, default=Path(os.environ.get("LIVE_DIR") or ROOT / "live"))
     ap.add_argument("--out", type=Path, default=ROOT / "probe" / "scoreboard")
     args = ap.parse_args()
@@ -946,22 +1056,28 @@ def main() -> None:
         else:
             probe(name, args.stream, None, truth, [], args.box or BOX, args)
         return
-    try:
-        marked = json.loads((args.live / "replays.json").read_text(encoding="utf-8")).get("games") or {}
-    except (OSError, ValueError):
-        marked = {}
+    marked = matches(args)
     keys = [args.match] if args.match else sorted(marked)
     if not keys or any(k not in marked for k in keys):
-        sys.exit(f"Нет размеченного матча в {args.live / 'replays.json'}: сначала /replay в боте")
+        sys.exit(f"Нет матча с записью: размеченного в {args.live / 'replays.json'} (/replay в боте) или с записью "
+                 "лиги за --days/--date")
     for key in keys:
         entry = marked[key]
         try:
-            src, headers, _ = stream_of(entry["video"])
+            src, headers, length = stream_of(entry["video"])
         except Exception as err:   # VK не отдал — дальше не ломимся (ADR-012)
             print(f"\n{key}: поток не получили — {type(err).__name__}: {err}")
             continue
         truth = {s: t for s, t in (entry.get("anchors") or {}).items() if isinstance(t, int)}
-        box = args.box or BOXES.get(key.split("|")[1], BOX)
+        club = key.split("|")[1]
+        if not args.box and club not in BOARDS:
+            out = args.out / re.sub(r"[^\w.-]+", "_", key)
+            out.mkdir(parents=True, exist_ok=True)
+            grid_sheet(src, headers, length, out / "grid.png")
+            print(f"\n{key}: табло клуба «{club}» ещё не размечено — пропускаю. Пришли {out / 'grid.png'}: по нему "
+                  "размечу рамку и клетки (BOARDS)")
+            continue
+        box = args.box or BOXES.get(club, BOX)
         if args.check:
             every += check(key, src, headers, truth, box, args)
         else:

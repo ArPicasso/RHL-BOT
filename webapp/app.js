@@ -4460,8 +4460,35 @@ function matchSticker(g, side, no, gk) {
 // Повтор гола (ADR-027): запись трансляции лиги в VK с секунды гола. Ссылку ставит сборка, только https.
 // Вторичная пилюля, как «Смотреть»: в разборе, в подписи под «Ходом матча» и в ленте матча (ADR-028)
 function replayBtn(x) {
+  const c = x.clip;
+  // свой клип (ADR-030): играет тут же, под строкой гола; ссылка на всю трансляцию — под ним
+  if (c && HTTPS.test(c.mp4 || "") && HTTPS.test(c.poster || "")) {
+    const full = typeof x.replay === "string" && HTTPS.test(x.replay) ? ` data-full="${esc(x.replay)}"` : "";
+    return `<button type="button" class="go replay" data-clip="${esc(c.mp4)}" data-poster="${esc(c.poster)}"${full} aria-expanded="false" aria-label="${esc(`Повтор гола ${x.score}, ${x.author}`)}">${LV_ICON.watch}<span>Повтор</span></button>`;
+  }
   if (typeof x.replay !== "string" || !HTTPS.test(x.replay)) return "";
   return `<button type="button" class="go replay" data-out="${esc(x.replay)}" aria-label="${esc(`Повтор гола ${x.score}, ${x.author}`)}">${LV_ICON.watch}<span>Повтор</span></button>`;
+}
+
+// Клип под строкой гола: второе нажатие закрывает; открытый в другой строке — останавливаем и убираем
+function toggleClip(btn) {
+  const row = btn.closest(".hl-row, .goal") || btn.parentElement;
+  const open = row.nextElementSibling && row.nextElementSibling.classList.contains("clip-box") ? row.nextElementSibling : null;
+  document.querySelectorAll(".clip-box").forEach((b) => {
+    const v = b.querySelector("video");
+    if (v) v.pause();
+    b.remove();
+  });
+  document.querySelectorAll('[data-clip][aria-expanded="true"]').forEach((b) => b.setAttribute("aria-expanded", "false"));
+  if (open) return;
+  haptic();
+  const full = btn.dataset.full && HTTPS.test(btn.dataset.full)
+    ? ` · <button type="button" class="clip-full" data-out="${esc(btn.dataset.full)}">Вся трансляция с этого места</button>` : "";
+  row.insertAdjacentHTML("afterend", `<div class="clip-box"><video src="${esc(btn.dataset.clip)}" poster="${esc(btn.dataset.poster)}" controls playsinline preload="metadata"></video><div class="clip-src">Источник: РХЛ${full}</div></div>`);
+  btn.setAttribute("aria-expanded", "true");
+  const v = row.nextElementSibling.querySelector("video");
+  const p = v.play();
+  if (p && p.catch) p.catch(() => {});   // без жеста пользователя браузер может не дать играть — есть кнопки плеера
 }
 
 function goalsTab(g, d) {
@@ -4734,7 +4761,7 @@ function goalLineHTML(e, mode) {
   return `<div class="row hl-row" data-game="${esc(e.game)}" role="button" tabindex="0" aria-label="${esc(`${e.score}, ${team(e.opp).name}, ${shortDate(e.date)}`)}">
     <span class="hl-when"><b>${esc(shortDate(e.date).replace(/ \d{4}$/, ""))}</b><small>${esc(per)} · ${esc(e.time)}</small></span>
     ${emblem(e.opp)}
-    <span class="hl-what"><span class="hl-top"><b class="num">${esc(e.score)}</b>${what}${st}</span>${replayBtn({ replay: e.replay, score: e.score, author: e.author })}</span>
+    <span class="hl-what"><span class="hl-top"><b class="num">${esc(e.score)}</b>${what}${st}</span>${replayBtn({ replay: e.replay, clip: e.clip, score: e.score, author: e.author })}</span>
   </div>`;
 }
 
@@ -5099,7 +5126,7 @@ function confirmTeam(id = state.draft || state.fav) {
 }
 
 document.addEventListener("click", (e) => {
-  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-home-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],[data-pack],[data-pack-nav],[data-out],[data-vote],[data-md-all],[data-md-cal],[data-ev-all],[data-pred-open],[data-pred-forget],[data-pred-keep],[data-pred-erase],[data-about],[data-player],[data-club],[data-club-cal],[data-club-who],#sheet-backdrop");
+  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-home-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],[data-pack],[data-pack-nav],[data-out],[data-vote],[data-md-all],[data-md-cal],[data-ev-all],[data-pred-open],[data-pred-forget],[data-pred-keep],[data-pred-erase],[data-about],[data-player],[data-club],[data-club-cal],[data-club-who],[data-clip],#sheet-backdrop");
   if (!el || el.disabled) return;
   if (el.dataset.guide) return guideHop(el);
   if (el.hasAttribute("data-meet-close") || (el.hasAttribute("data-coach-back") && state.meet)) return closeCoach();
@@ -5329,6 +5356,7 @@ document.addEventListener("click", (e) => {
       fadeIn(box);
     });
   }
+  if (el.dataset.clip) return toggleClip(el);
   if (el.dataset.player) return openPlayer(el.dataset.player, el.closest("#sheet") ? sheetCur : null);
   if (el.dataset.club) return openClub(el.dataset.club, el.closest("#sheet") ? sheetCur : null);
   if (el.dataset.clubWho) {

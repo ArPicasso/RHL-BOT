@@ -1489,3 +1489,33 @@ h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) *
 }
 /* лист дня начинается с воздуха: раньше его давали цифры сезона, теперь они на паспорте (ADR-017, 03.10) */
 #home-body > .part.deck { margin-top: 24px; }
+
+/* Страницы игрока и клуба (ADR-030, DESIGN.md): шапка — стикер или эмблема и имя, дальше лента голов */
+.side-top { display: flex; align-items: center; gap: 16px; margin: 4px 2px 18px; }
+.side-name { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.side-name h2 { margin: 0; font: 800 26px/0.98 var(--display); overflow-wrap: anywhere; }
+.side-name .first { font: 500 15px/1.2 var(--ui); }
+.side-name .meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; font: 500 13px/1.3 var(--ui); color: var(--muted); }
+.side-name .form { display: flex; gap: 4px; margin-top: 4px; }
+.ps.xl { width: 72px; height: 72px; transform: rotate(-6deg); }
+.club-link { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0; border: 0;
+  background: none; color: inherit; font: inherit; cursor: pointer; }
+.club-link .em { width: 22px; height: 22px; }
+.who-link { display: inline; padding: 6px 0; margin: -6px 0; border: 0; background: none; color: inherit;
+  font: inherit; text-align: left; cursor: pointer; }
+.who-link span { margin-left: 3px; color: var(--muted); font-weight: 500; }
+.pl.tap, .lead-row.tap { cursor: pointer; }
+.lead-row.tap:active, .pl.tap:active { background: var(--sel); }
+.hl-row { grid-template-columns: 64px 24px 1fr; min-height: 56px; align-items: center; }
+.hl-when { display: flex; flex-direction: column; gap: 2px; }
+.hl-when b { font: 700 13px/1.2 var(--ui); }
+.hl-when small { font: 500 12px/1.2 var(--ui); color: var(--muted); white-space: nowrap; }
+.hl-what { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.hl-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.hl-top .num { font-weight: 700; }
+.hl-top .tag { height: 20px; padding: 0 7px; font-size: 10px; }
+.hl-who { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hl-what .go.replay { flex: none; margin-top: 0; }
+.chips.scroll { overflow-x: auto; scrollbar-width: none; margin-bottom: 10px; }
+.chips.scroll::-webkit-scrollbar { display: none; }
+.chips.scroll button { flex: none; white-space: nowrap; }

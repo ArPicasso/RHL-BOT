@@ -2572,7 +2572,10 @@ function figure(r) {
 
 // Топ-10 показателя — в листе снизу, как карточка матча: одно число в строке, остальное — подписью
 function leaderRow(cat, r) {
-  return `<div class="row lead-row${r.team && r.team === state.fav ? " me" : ""}">
+  // страницы игроков — только текущего сезона: у прошлого их нет (ADR-030)
+  const link = PK.test(r.pk || "") && state.leaders && state.leaders.season === state.data.season
+    ? ` data-player="${esc(r.pk)}" role="button" tabindex="0"` : "";
+  return `<div class="row lead-row${r.team && r.team === state.fav ? " me" : ""}${link ? " tap" : ""}"${link}>
     <span class="lr-rank num">${r.rank}</span>
     ${playerSticker(r)}
     <span class="lr-who"><b>${esc(r.name)}</b><small>${esc(clubOf(r))} · ${esc(LEAD_CATS[cat].sub(r))}</small></span>
@@ -2998,7 +3001,7 @@ const STEP = {
       }
     },
     aim: onScreen(".st-row.me"),
-    text: () => "Твоё место в конференции. Нажми на любой клуб — откроется его календарь.",
+    text: () => "Твоё место в конференции. Нажми на любой клуб — откроется его страница: голы и календарь.",
   },
   // своя карточка лидера — кроме «Штрафа»: «лучший по штрафу» не хвалят
   leaders: {
@@ -4335,7 +4338,8 @@ function siteResultHTML(g) {
 
 // Матч этого сезона — из league.json, прошлого — целиком из своего файла разбора
 const findGame = (id) => games().find((x) => x.id === id) || (recaps[id] && recaps[id].game) || null;
-const sheetStack = [];   // из прошлой встречи «Назад» ведёт в матч, откуда её открыли
+const sheetStack = [];   // откуда открыт лист: id матча, «p:<ключ игрока>», «c:<клуб>» — туда ведёт «Назад»
+let sheetCur = null;     // что открыто в листе сейчас, в том же виде
 const STAGE = { regular: "регулярный чемпионат", playoff: "плей-офф" };
 
 const secs = (t) => { const [m, s] = String(t).split(":").map(Number); return m * 60 + (s || 0); };
@@ -4481,7 +4485,7 @@ function goalsTab(g, d) {
       html += `<div class="goal${it.i === recapView.pick ? " hl" : ""}">
         <div class="tm">${esc(x.period === "РБ" ? "Б" : x.time)}</div>
         ${matchSticker(g, x.team, x.no, x.gk)}
-        <div class="who">${esc(x.author)}${strengthTag(x, it.i, d)}${x.assists.length ? `<div class="as">${x.assists.map(esc).join(", ")}</div>` : ""}${replayBtn(x)}</div>
+        <div class="who">${playerLink(x.author, x.pk)}${strengthTag(x, it.i, d)}${x.assists.length ? `<div class="as">${x.assists.map((a, k) => playerLink(a, (x.apk || [])[k])).join(", ")}</div>` : ""}${replayBtn(x)}</div>
         <div class="sc">${esc(x.score)}</div>
       </div>`;
     } else {
@@ -4546,7 +4550,8 @@ function rosterTab(g, d) {
       const scored = !p.dnp && p.g + p.a > 0;
       // стикер в форме команды с номером игрока на груди — как у лидеров (ADR-009)
       const sticker = figure({ kit: sideTeam(g, side), role: key === "G" ? "G" : "F", number: p.no });
-      html += `<div class="pl${scored ? " scored" : ""}${p.dnp ? " dnp" : ""}"><span class="ps">${sticker}</span>
+      const link = PK.test(p.pk || "") ? ` data-player="${esc(p.pk)}" role="button" tabindex="0"` : "";
+      html += `<div class="pl${scored ? " scored" : ""}${p.dnp ? " dnp" : ""}${link ? " tap" : ""}"${link}><span class="ps">${sticker}</span>
         <span class="nm">${esc(p.name)}${p.cap ? `<span class="tag soft">${esc(p.cap)}</span>` : ""}</span>
         <span class="pts num${scored ? "" : " z"}">${pts}</span></div>`;
     }
@@ -4630,13 +4635,14 @@ function openMatch(id, from = null, dir = 0) {
     sheetStack.push(from);
     dir = 1;
   }
+  sheetCur = id;
   if (recapView.id !== id) {
     const gw = recaps[id] ? recaps[id].gw : null;
     Object.assign(recapView, { id, tab: "goals", pens: false, side: g.home === state.fav || g.away !== state.fav ? "home" : "away",
       pick: gw != null ? gw : g.goals && g.goals.length ? g.goals.length - 1 : null });
   }
   const back = sheetStack.length
-    ? `<button class="btn-round" data-back aria-label="Назад к матчу">${ICON.back}</button>` : "";
+    ? `<button class="btn-round" data-back aria-label="Назад">${ICON.back}</button>` : "";
   const when = g.season
     ? `${esc(fmtLong(g.date))} ${parseISO(g.date).getUTCFullYear()} · НМХЛ ${esc(g.season)}${g.stage === "playoff" ? ", плей-офф" : ""}`
     : `${esc(fmtLong(g.date))} ${parseISO(g.date).getUTCFullYear()} · ${esc(until(g.date))}`;
@@ -4670,12 +4676,163 @@ function openMatch(id, from = null, dir = 0) {
   if (!state.h2h && !g.season) fillH2H(g);
 }
 
-// «Назад» в листе: из прошлой встречи — к матчу, откуда её открыли; иначе закрыть
+// «Назад» в листе: к листу, откуда открыли этот (матч, игрок, клуб); иначе закрыть
 function sheetBack() {
   const t = state.tour;
   if (t && !t.away && !t.greet && t.ci >= 0 && sheetOpen()) return tourSheetBack();
   if (!sheetStack.length) return closeMatch();
-  openMatch(sheetStack.pop(), null, -1);
+  const prev = sheetStack.pop();
+  if (prev.startsWith("p:")) return openPlayer(prev.slice(2), null, -1);
+  if (prev.startsWith("c:")) return openClub(prev.slice(2), null, -1);
+  openMatch(prev, null, -1);
+}
+
+// ---------- страницы игрока и клуба (ADR-030) ----------
+// Игрок — data/players/<ключ>.json: кто он и его голы и передачи сезона. Клуб — data/highlights/<клуб>.json: голы
+// клуба. Ключ игрока — не id лиги (ADR-008), а 10 знаков от сборки. Повтор у гола — «Повтор», как в разборе.
+
+const PK = /^[0-9a-f]{10}$/;
+const ROLE_NAMES = { G: "вратарь", D: "защитник", F: "нападающий" };
+const PERIOD_SHORT = { "1": "1-й", "2": "2-й", "3": "3-й", "ОТ": "ОТ" };
+const players = {};      // ключ → файл игрока
+const highlights = {};   // клуб → голы клуба
+const sideLoading = {};
+const clubView = { id: null, who: "all" };
+
+function loadSide(path, store, key) {
+  if (store[key]) return Promise.resolve(store[key]);
+  if (!sideLoading[path]) {
+    sideLoading[path] = fetch(path)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.status))))
+      .then((d) => (store[key] = d))
+      .catch(() => { delete sideLoading[path]; return null; });
+  }
+  return sideLoading[path];
+}
+
+// Имя в разборе: есть страница — кнопка с «›», нет (скрыт по просьбе, нет ключа) — просто текст
+function playerLink(name, pk) {
+  if (!PK.test(pk || "")) return esc(name);
+  return `<button type="button" class="who-link" data-player="${esc(pk)}">${esc(name)}<span aria-hidden="true">›</span></button>`;
+}
+
+function sideHead(label) {
+  const back = sheetStack.length ? `<button class="btn-round" data-back aria-label="Назад">${ICON.back}</button>` : "";
+  return `<div class="grab"></div><div class="sheet-head">${back}<span class="when">${esc(label)}</span>
+    <button class="btn-round" data-close aria-label="Закрыть">${ICON.close}</button></div>`;
+}
+
+function goalCount(n, one, few, many) { return `${n} ${plural(n, one, few, many)}`; }
+
+// Строка гола в ленте игрока и клуба: дата и время, соперник, счёт, «гол»/«передача» или автор, «Повтор»
+function goalLineHTML(e, mode) {
+  const per = PERIOD_SHORT[e.period] || e.period;
+  const what = mode === "player"
+    ? `<span class="tag soft">${e.as === "assist" ? "передача" : "гол"}</span>`
+    : `<span class="hl-who">${esc(splitName(e.author || "")[0])}</span>`;   // на странице клуба — фамилия: строка узкая
+  const st = e.strength && e.strength !== "рав." ? `<span class="tag">${esc(e.strength.replace(".", ""))}</span>` : "";
+  return `<div class="row hl-row" data-game="${esc(e.game)}" role="button" tabindex="0" aria-label="${esc(`${e.score}, ${team(e.opp).name}, ${shortDate(e.date)}`)}">
+    <span class="hl-when"><b>${esc(shortDate(e.date).replace(/ \d{4}$/, ""))}</b><small>${esc(per)} · ${esc(e.time)}</small></span>
+    ${emblem(e.opp)}
+    <span class="hl-what"><span class="hl-top"><b class="num">${esc(e.score)}</b>${what}${st}</span>${replayBtn({ replay: e.replay, score: e.score, author: e.author })}</span>
+  </div>`;
+}
+
+function sideFail(attr, key) {
+  return `<div class="empty">Не удалось загрузить. Проверьте интернет.<br><button type="button" class="retry" ${attr}="${esc(key)}">Повторить</button></div>`;
+}
+
+function openPlayer(pk, from = null, dir = 0) {
+  if (!PK.test(pk || "")) return;
+  if (from && from !== `p:${pk}`) {
+    sheetStack.push(from);
+    dir = 1;
+  }
+  sheetCur = `p:${pk}`;
+  const p = players[pk];
+  showSheet(sideHead(`Игрок · сезон ${state.data.season}`) + `<div id="pl-body">${p ? playerHTML(p) : `<div class="empty">Загружаем…</div>`}</div>`, dir);
+  if (!p) {
+    loadSide(`data/players/${pk}.json`, players, pk).then((d) => {
+      const box = $("#pl-body");
+      if (!box || sheetCur !== `p:${pk}`) return;
+      box.innerHTML = d ? playerHTML(d) : sideFail("data-player", pk);
+      fadeIn(box);
+    });
+  }
+}
+
+function playerHTML(p) {
+  const [last, first] = splitName(p.name || "");
+  const role = p.role === "G" ? "G" : "F";
+  const goals = (p.goals || []).filter((e) => e.as !== "assist").length;
+  const assists = (p.goals || []).length - goals;
+  const club = state.teams[p.club] ? p.club : null;
+  let html = `<div class="side-top">
+    <span class="ps xl">${figure({ kit: club, role, number: p.no })}</span>
+    <div class="side-name"><h2>${esc(last)}</h2>${first ? `<div class="first">${esc(first)}</div>` : ""}
+      <div class="meta">${club ? `<button type="button" class="club-link" data-club="${esc(club)}">${emblem(club)}${esc(team(club).name)}</button>` : ""}${ROLE_NAMES[p.role] ? ` · ${ROLE_NAMES[p.role]}` : ""}</div></div>
+  </div>`;
+  html += `<div class="label">Голы и передачи<span class="aside">${goalCount(goals, "гол", "гола", "голов")} · ${goalCount(assists, "передача", "передачи", "передач")}</span></div>`;
+  html += (p.goals || []).length
+    ? `<div class="list hl-list">${p.goals.map((e) => goalLineHTML(e, "player")).join("")}</div>`
+    : `<div class="empty">В протоколах сезона голов и передач пока нет</div>`;
+  return html + `<div class="foot">Голы и передачи — из протоколов лиги. Повтор — запись трансляции лиги с момента гола.</div>`;
+}
+
+function openClub(id, from = null, dir = 0) {
+  if (!state.teams[id]) return;
+  if (from && from !== `c:${id}`) {
+    sheetStack.push(from);
+    dir = 1;
+  }
+  sheetCur = `c:${id}`;
+  if (clubView.id !== id) Object.assign(clubView, { id, who: "all" });
+  const h = highlights[id];
+  showSheet(sideHead(`Клуб · сезон ${state.data.season}`) + clubTopHTML(id)
+    + `<div id="cl-goals">${h ? clubGoalsHTML(id) : `<div class="empty">Загружаем голы…</div>`}</div>`, dir);
+  if (!h) {
+    loadSide(`data/highlights/${id}.json`, highlights, id).then((d) => {
+      const box = $("#cl-goals");
+      if (!box || sheetCur !== `c:${id}`) return;
+      box.innerHTML = d ? clubGoalsHTML(id) : sideFail("data-club", id);
+      fadeIn(box);
+    });
+  }
+}
+
+function clubTopHTML(id) {
+  const t = team(id);
+  const st = standingOf(id);
+  const where = [t.city, st && st.row.gp ? `${st.place}-е место · ${CONF[st.conf] || ""}` : ""].filter(Boolean).join(" · ");
+  const last = gamesOf(id).filter((g) => g.score).slice(-5);
+  const pills = last.map((g) => {
+    const res = outcomeFor(g, id);
+    const sc = g.home === id ? `${g.score.home}:${g.score.away}` : `${g.score.away}:${g.score.home}`;
+    return res ? `<span class="res ${res}" title="${esc(`${sc}, ${team(g.home === id ? g.away : g.home).name}`)}">${res === "w" ? "В" : "П"}</span>` : "";
+  }).join("");
+  const next = nextGame(id);
+  let html = `<div class="side-top">${emblem(id, "xl")}<div class="side-name"><h2>${esc(t.name)}</h2>
+    <div class="meta">${esc(where)}</div>${pills ? `<div class="form" aria-label="Последние матчи">${pills}</div>` : ""}</div></div>`;
+  if (next) html += `<div class="label">Ближайший матч</div><div class="list">${gameRow(next, id, false)}</div>`;
+  return html + `<div class="go-row"><button type="button" class="go" data-club-cal="${esc(id)}">Календарь клуба</button></div>`;
+}
+
+function clubGoalsHTML(id) {
+  const rows = (highlights[id] && highlights[id].goals) || [];
+  const count = {};
+  for (const e of rows) if (PK.test(e.pk || "")) count[e.pk] = (count[e.pk] || 0) + 1;
+  // чипы — лучшие снайперы клуба, у кого хотя бы два гола: по одному голу фильтр ничего не даёт
+  const top = Object.entries(count).filter(([, n]) => n > 1).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const names = Object.fromEntries(rows.filter((e) => e.pk).map((e) => [e.pk, splitName(e.author)[0]]));
+  const who = top.some(([pk]) => pk === clubView.who) ? clubView.who : "all";
+  const shown = who === "all" ? rows : rows.filter((e) => e.pk === who);
+  let html = `<div class="label">Голы клуба<span class="aside">${goalCount(rows.length, "гол", "гола", "голов")}</span></div>`;
+  if (!rows.length) return html + `<div class="empty">В протоколах сезона голов пока нет</div>`;
+  if (top.length > 1) {
+    html += `<div class="chips scroll" role="group" aria-label="Чьи голы">${segBtn(who === "all", `data-club-who="all"`, "Все")}`
+      + top.map(([pk, n]) => segBtn(who === pk, `data-club-who="${esc(pk)}"`, `${esc(names[pk] || "")} · ${n}`)).join("") + `</div>`;
+  }
+  return html + `<div class="list hl-list">${shown.map((e) => goalLineHTML(e, "club")).join("")}</div>`;
 }
 
 let sheetClosing = null;   // анимации ухода листа, пока он уезжает вниз
@@ -4731,6 +4888,7 @@ function showSheet(html, dir = 0) {
 // Уход зеркален приходу: лист уезжает вниз с разгоном. fromY — откуда, если его уже тянут пальцем
 function closeMatch(fromY = 0) {
   sheetStack.length = 0;
+  sheetCur = null;
   const sheet = $("#sheet");
   const back = $("#sheet-backdrop");
   if (sheet.hidden || sheetClosing) return;
@@ -4941,7 +5099,7 @@ function confirmTeam(id = state.draft || state.fav) {
 }
 
 document.addEventListener("click", (e) => {
-  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-home-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],[data-pack],[data-pack-nav],[data-out],[data-vote],[data-md-all],[data-md-cal],[data-ev-all],[data-pred-open],[data-pred-forget],[data-pred-keep],[data-pred-erase],[data-about],#sheet-backdrop");
+  const el = e.target.closest("[data-tab],[data-game],[data-pick],[data-confirm],[data-cal-team],[data-cal-side],[data-cal-conf],[data-cal-other],[data-cal-pick],[data-conf],[data-team],[data-theme-pick],[data-theme-toggle],[data-close],[data-switch-open],[data-switch],[data-story],[data-invite],[data-remind],[data-recap-tab],[data-recap-goal],[data-recap-pens],[data-recap-side],[data-back],[data-retry],[data-table-view],[data-home-view],[data-lead-open],[data-tour],[data-tour-restart],[data-tour-all],[data-tour-ch],[data-guide],[data-meet-close],[data-coach-back],[data-post],[data-post-more],[data-feed-hide],[data-feed-unhide],[data-feed-rules],[data-feed-league],[data-feed-leaders],[data-stream-filter],[data-pack],[data-pack-nav],[data-out],[data-vote],[data-md-all],[data-md-cal],[data-ev-all],[data-pred-open],[data-pred-forget],[data-pred-keep],[data-pred-erase],[data-about],[data-player],[data-club],[data-club-cal],[data-club-who],#sheet-backdrop");
   if (!el || el.disabled) return;
   if (el.dataset.guide) return guideHop(el);
   if (el.hasAttribute("data-meet-close") || (el.hasAttribute("data-coach-back") && state.meet)) return closeCoach();
@@ -5093,7 +5251,7 @@ document.addEventListener("click", (e) => {
   if (el.dataset.tab) return go(el.dataset.tab);
   if (el.dataset.game) {
     const id = el.dataset.game;
-    const from = el.closest("#sheet") ? recapView.id : null;
+    const from = el.closest("#sheet") ? sheetCur : null;
     // прошлая встреча грузится из своего файла — строка пульсирует, пока он едет
     if (!findGame(id) && /^h\d+$/.test(id)) {
       el.classList.add("busy");
@@ -5171,10 +5329,21 @@ document.addEventListener("click", (e) => {
       fadeIn(box);
     });
   }
-  if (el.dataset.team) {
-    state.cal = calFor(el.dataset.team);
+  if (el.dataset.player) return openPlayer(el.dataset.player, el.closest("#sheet") ? sheetCur : null);
+  if (el.dataset.club) return openClub(el.dataset.club, el.closest("#sheet") ? sheetCur : null);
+  if (el.dataset.clubWho) {
+    clubView.who = el.dataset.clubWho;
+    haptic();
+    const box = $("#cl-goals");
+    if (box && highlights[clubView.id]) box.innerHTML = clubGoalsHTML(clubView.id);
+    return;
+  }
+  if (el.dataset.clubCal) {
+    closeMatch();
+    state.cal = calFor(el.dataset.clubCal);
     return go("calendar");
   }
+  if (el.dataset.team) return openClub(el.dataset.team);   // строка таблицы — страница клуба (ADR-030)
 });
 
 // iOS показывает :active, только если на странице слушают касания
@@ -5247,6 +5416,17 @@ function matchParam() {
   const q = new URLSearchParams(location.search);
   const sp = fromTg || q.get("tgWebAppStartParam") || q.get("startapp") || "";
   return q.get("match") || (/^m-/.test(sp) ? sp.slice(2) : null);
+}
+
+// Ссылка на страницу игрока или клуба из бота: startapp=p-<ключ> или c-<клуб>, ?player= и ?club= (ADR-030)
+function sideParam() {
+  const fromTg = inTelegram && tg.initDataUnsafe && tg.initDataUnsafe.start_param;
+  const q = new URLSearchParams(location.search);
+  const sp = fromTg || q.get("tgWebAppStartParam") || q.get("startapp") || "";
+  const pk = q.get("player") || (/^p-/.test(sp) ? sp.slice(2) : "");
+  if (PK.test(pk)) return { player: pk };
+  const club = q.get("club") || (/^c-/.test(sp) ? sp.slice(2) : "");
+  return state.teams[club] ? { club } : null;
 }
 
 // Ссылка на лидеров лиги из бота: ?view=leaders или startapp=leaders (ADR-009)
@@ -5414,6 +5594,12 @@ function boot(d, cached = false) {
   if (mid && !state.openedFromLink && (games().some((g) => g.id === mid) || /^h\d+$/.test(mid))) {
     state.openedFromLink = true;
     openMatch(mid);
+  }
+  const side = !state.openedFromLink && sideParam();
+  if (side) {
+    state.openedFromLink = true;
+    if (side.player) openPlayer(side.player);
+    else openClub(side.club);
   }
   if (!state.fav && state.draft && !state.openedFromLink) {
     setTimeout(() => { if (!state.fav && state.draft && $("#sheet").hidden) openMeet(state.draft); }, (cached ? SPLASH_REPEAT_MS : SPLASH_MIN_MS) + 300);

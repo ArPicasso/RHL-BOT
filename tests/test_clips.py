@@ -34,7 +34,11 @@ LEAGUE = {"games": [
 
 class Boards(unittest.TestCase):
     def test_markup_from_file(self):
-        self.assertEqual(set(sb.BOARDS), {"kaluga", "rostov", "ryazan-vdv", "tverichi"})
+        self.assertLessEqual({"kaluga", "rostov", "ryazan-vdv", "tverichi", "proton"}, set(sb.BOARDS))
+        for club, b in sb.BOARDS.items():                                  # клетки — внутри рамки 240×90
+            for cell in ("name", "home", "away", "clock"):
+                x0, y0, x1, y1 = b[cell]
+                self.assertTrue(0 <= x0 < x1 <= sb.W and 0 <= y0 < y1 <= sb.H, f"{club} {cell}")
         self.assertEqual(sb.CLUB_LAG, {"tverichi": 6})
         self.assertEqual(sb.BOXES["tverichi"], (0.05, 0.05, 0.15, 0.18))
         self.assertEqual(len(sb.BOARDS["rostov"]["home"]), 4)

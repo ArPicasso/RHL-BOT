@@ -693,6 +693,21 @@ def align_order(found: list[dict], goals: list[tuple[str, str, float]]) -> dict[
     return out
 
 
+def align_by_order(found: list[dict], order: list[tuple[str, str]]) -> dict[str, float]:
+    """Какая смена — какой гол, когда времени голов от сайта лиги нет (служба live пропустила матч, ADR-030): цифра
+    команды только растёт, поэтому k-я смена цифры хозяев — k-й гол хозяев по протоколу. Только если смен у команды
+    ровно столько, сколько голов: лишняя смена (оператор поправил счёт, табло после матча) сдвигает весь ряд, и
+    тогда не угадываем — голы этой команды остаются админу. order — [(счёт, «home»/«away»)] по порядку протокола.
+    (счёт → секунда смены)."""
+    out: dict[str, float] = {}
+    for team in ("home", "away"):
+        goals = [score for score, side in order if side == team]
+        cs = sorted(c["hi"] for c in found if c.get("zone") == team)
+        if goals and len(cs) == len(goals):
+            out.update(zip(goals, cs))
+    return out
+
+
 def against(found: list[float], truth: dict[str, int]) -> list[tuple[str, int, float | None]]:
     """Гол админа → первая смена табло в окне MATCH_WINDOW после него. (счёт, секунда гола, смена или None)."""
     out = []
@@ -883,7 +898,12 @@ def probe(name: str, src: str | None, headers: dict | None, truth: dict[str, int
     for k, c in enumerate(main_, 1):
         save_raw(c["before"] + c["after"], out / f"change_{k:02d}.png", W, 2 * H)
     cells = bool(main_) and all(c["zone"] in ("home", "away") for c in main_)
-    picked = align_order(main_, site) if cells else align_sides(main_, site)[0]
+    order = getattr(args, "order", None)
+    if cells and not site and order:   # служба live времени голов не записала — по порядку голов из протокола
+        picked = align_by_order(main_, order)
+        print(f"  времени голов от сайта лиги нет — по порядку протокола: {len(picked)} из {len(order)}")
+    else:
+        picked = align_order(main_, site) if cells else align_sides(main_, site)[0]
     by_t = {t: s for s, t in picked.items()}
     print(f"  смен табло: {len(main_)}, голов у админа: {len(truth)}, у сайта лиги: {len(site)}; "
           f"по сайту лиги нашлось {len(picked)} из {len(site)}")

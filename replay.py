@@ -206,3 +206,31 @@ def by_score(entry_: dict) -> dict[str, str]:
             if url:
                 out[score] = url
     return out
+
+
+def same_video(a: str | None, b: str | None) -> bool:
+    """Один ли это ролик VK: сравниваем номер ролика, а не адрес целиком (vk.com, vkvideo.ru, live-, video-)."""
+    ma, mb = _VIDEO_RE.search(a or ""), _VIDEO_RE.search(b or "")
+    return bool(ma and mb and ma.groups() == mb.groups())
+
+
+def with_board(entry: dict | None, board: dict | None) -> dict | None:
+    """Опоры админа и секунды голов по табло службы clips (ADR-030): у гола без отметки админа — точная секунда
+    табло (`src` — `clock` или `board`), расчётный (≈) ей уступает. Опора админа главнее всего. Табло считали по
+    своему ролику: админ прислал другой — секунды табло к нему не подходят, остаётся запись админа.
+    board — запись матча из live/clips.json: {"video", "goals": {счёт: {"t", "src", "team"}}}."""
+    goals = (board or {}).get("goals") or {}
+    video = (board or {}).get("video")
+    if not goals or not video or (entry and not same_video(entry.get("video"), video)):
+        return entry
+    admin = (entry or {}).get("anchors") or {}
+    out = {g["score"]: g for g in (entry or {}).get("goals") or [] if isinstance(g, dict) and g.get("score")}
+    for score, b in goals.items():
+        t = b.get("t") if isinstance(b, dict) else None
+        if (not isinstance(t, (int, float)) or isinstance(t, bool) or not 0 <= t <= MAX_T or score in admin
+                or (out.get(score) or {}).get("exact")):
+            continue
+        out[score] = {"score": score, "team": b.get("team"), "t": max(0, round(t - EXACT_LEAD)), "exact": True,
+                      "src": b.get("src") or "board"}
+    return {**(entry or {"anchors": {}}), "video": (entry or {}).get("video") or video,
+            "goals": sorted(out.values(), key=lambda g: g["t"])}

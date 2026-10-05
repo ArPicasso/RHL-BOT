@@ -147,6 +147,16 @@ jobs:
           mv replays.tmp replays.json
           python -c "import json; print('Матчей с повторами:', len(json.load(open('replays.json', encoding='utf-8'))['games']))"
 
+      # Голы по табло трансляции (ADR-030): служба clips на сервере сама находит секунду гола в записи
+      - name: Скачать голы по табло
+        continue-on-error: true
+        run: |
+          if [ -z "${LIVE_API:-}" ]; then echo "Адреса API нет — без голов по табло"; exit 0; fi
+          curl -sS --fail --max-time 20 -o clips.tmp "${LIVE_API%/}/live/clips.json" || { echo "Голов по табло пока нет"; exit 0; }
+          python -c "import json; d = json.load(open('clips.tmp', encoding='utf-8')); assert isinstance(d.get('games'), dict)"
+          mv clips.tmp clips.json
+          python -c "import json; print('Матчей с голами по табло:', len(json.load(open('clips.json', encoding='utf-8'))['games']))"
+
       # Ссылки на бота и мини-апп (ADR-004) заданы в build_data.py; Variables BOT_LINK, APP_LINK их заменяют
       - name: Собрать данные
         env:

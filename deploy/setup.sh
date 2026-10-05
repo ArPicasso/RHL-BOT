@@ -21,7 +21,7 @@ step() { printf '\n== %s\n' "$*"; }
 step "Пакеты и время"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
-apt-get install -y -q git python3-venv python3-pip ufw curl
+apt-get install -y -q git python3-venv python3-pip ufw curl ffmpeg
 timedatectl set-timezone Europe/Moscow
 
 step "Файрвол: наружу открыт только SSH"

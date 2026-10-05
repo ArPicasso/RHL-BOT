@@ -1,0 +1,36 @@
+# Служба clips (clips.py, ADR-030): после матча находит голы по табло трансляции → /opt/rhl/live/clips.json.
+# Качает запись (ffmpeg, yt-dlp), поэтому с низким приоритетом: бот, live и api не должны тормозить.
+# Ставит и перезапускает rhl-update (deploy/update.sh).
+[Unit]
+Description=RHL U21 goal seconds from broadcast scoreboard (clips.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rhl
+Group=rhl
+WorkingDirectory=/opt/rhl
+EnvironmentFile=/etc/rhl/bot.env
+ExecStart=/opt/rhl/venv/bin/python clips.py
+Restart=always
+RestartSec=60
+UMask=0027
+Nice=15
+CPUQuota=100%
+IOSchedulingClass=idle
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/rhl
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

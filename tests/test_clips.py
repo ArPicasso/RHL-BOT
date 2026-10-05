@@ -66,6 +66,10 @@ class Pending(unittest.TestCase):
         self.assertEqual(len(clips.pending(LEAGUE, {}, failed, self.today)), 1)
         failed[KEY]["tries"] = clips.TRIES
         self.assertEqual(clips.pending(LEAGUE, {}, failed, self.today), [])
+        unmarked = {KEY: {"video": VIDEO, "status": "no_board"}}            # табло «Тверичей» уже размечено — заново
+        self.assertEqual(len(clips.pending(LEAGUE, {}, unmarked, self.today)), 1)
+        with mock.patch.dict(clips.sb.BOARDS, {}, clear=True):                # не размечено — ждём разметки
+            self.assertEqual(clips.pending(LEAGUE, {}, unmarked, self.today), [])
         other = {KEY: {"video": "https://vk.com/video-1_1", "status": "ok"}}   # лига сменила ролик — заново
         self.assertEqual(len(clips.pending(LEAGUE, {}, other, self.today)), 1)
 

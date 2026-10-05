@@ -4,8 +4,10 @@
 Раз в EVERY секунд берёт сыгранные матчи последних DAYS дней, у которых есть запись: запись лиги из опубликованного
 league.json («Смотреть» от rhl.fhr.ru) или ссылка админа из live/replays.json. Каждый матч — один раз на ролик:
 проход по записи пробником табло (tools/probe_scoreboard.py, разметка табло клубов — boards.json), точные голы —
-встали часы игры (`clock`) или проверенная задержка табло клуба (`board`). Остальные голы ждут превью админу
-(шаг 3). Табло клуба-хозяина не размечено — кадр с сеткой grid.png для разметки, голов нет.
+встали часы игры (`clock`) или проверенная задержка табло клуба (`board`). У остальных голов табло знает, какой это
+гол, но не секунду: служба режет превью — PREVIEW_BEFORE секунд записи до смены счёта, 360p — и ищет в нём моменты,
+когда вставали часы игры. Бот присылает превью админам и помощникам с кнопками на эти моменты (шаг 3). Табло
+клуба-хозяина не размечено — кадр с сеткой grid.png для разметки, голов нет.
 
 По одному писателю на файл: live/replays.json пишет только бот, live/clips.json — только эта служба. Качаем как
 плеер (yt-dlp), без обхода защиты (ADR-012): VK отказал — пишем ошибку и пробуем позже, не больше TRIES раз.
@@ -20,6 +22,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 from datetime import date, datetime, timedelta
@@ -40,6 +43,10 @@ DAYS = 3            # матчи за столько дней, включая с
 EVERY = 600         # с между проходами
 TRIES = 3           # столько раз пробуем матч, который не скачался или упал
 KEEP_DAYS = 3       # кадры прохода держим столько дней
+PREVIEW_BEFORE = 120   # с записи до смены счёта на табло в превью: оператор меняет счёт через 0–90 с после гола
+PREVIEW_AFTER = 5      # и после смены
+PREVIEW_FORMAT = "b[height<=360][height>=240]/b[height<=480]/w"   # превью лёгкое: смотрят в Telegram
+CANDIDATES = 3         # кнопок «Гол на …» под превью — последние остановки часов перед сменой счёта
 
 log = logging.getLogger("clips")
 
@@ -111,6 +118,66 @@ def found_goals(board: list[dict], live: dict[str, dict]) -> dict[str, dict]:
     return out
 
 
+def clock_stops(vis: list[tuple[float, bytes]], clock: list[int], gap: float = 2) -> list[float]:
+    """Когда вставали часы игры: последняя секунда, когда часы шли, перед секундой, когда они уже стоят (как
+    clock_stop пробника, ADR-029). vis — кадры с табло подряд, кадр в секунду; разрыв больше gap — не смотрим."""
+    out = []
+    for (ta, fa), (tb, fb), (tc, fc) in zip(vis, vis[1:], vis[2:]):
+        if (tb - ta <= gap and tc - tb <= gap and len(sb.moved(fa, fb, clock)) >= sb.CLOCK_MOVED
+                and len(sb.moved(fb, fc, clock)) < sb.CLOCK_MOVED):
+            out.append(ta)
+    return out
+
+
+def preview_window(change: float, length: float | None = None) -> tuple[int, int]:
+    """Окно превью: (начало, длина) в секундах записи — до смены счёта на табло и чуть после."""
+    start = max(0, int(change) - PREVIEW_BEFORE)
+    end = int(change) + PREVIEW_AFTER
+    if length:
+        end = min(end, int(length))
+    return start, max(1, end - start)
+
+
+def preview_cmd(src: str, headers: dict | None, start: int, length: int, path: Path) -> list[str]:
+    """ffmpeg: превью гола — перекодировано, чтобы нулевая секунда превью была ровно start: кнопки «Гол на 0:47»
+    считают от неё."""
+    return [sb.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", *sb.header_args(headers), "-ss", str(start),
+            "-i", src, "-t", str(length), "-vf", "scale=-2:360", "-c:v", "libx264", "-preset", "veryfast",
+            "-crf", "30", "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart", str(path)]
+
+
+def add_previews(key: str, video: str, goals: dict[str, dict], length: float | None, out: Path) -> None:
+    """Превью голам, у которых табло знает смену счёта, но не секунду: файл и моменты остановки часов (`ask`)."""
+    need = {s: g for s, g in goals.items() if g.get("t") is None and g.get("change") is not None}
+    if not need:
+        return
+    club = key.split("|")[1]
+    board = sb.BOARDS.get(club) or {}
+    src480, h480, _ = sb.stream_of(video)
+    src360, h360, _ = sb.stream_of(video, PREVIEW_FORMAT)
+    for score, g in need.items():
+        start, span = preview_window(g["change"], length)
+        path = out / f"preview_{score.replace(':', '-')}.mp4"
+        cand: list[int] = []
+        if board.get("clock"):
+            dense = sb.safe_scan(src480, h480, sb.BOXES[club], start, start + span)
+            model = sb.name_model([f for _, f in dense], board["name"]) if dense else None
+            vis = [(t, f) for t, f in dense if not model or sb.on_screen(f, model)]
+            stops = [t for t in clock_stops(vis, sb.cell_pixels(board["clock"])) if t <= g["change"]]
+            cand = [round(t - start) for t in stops[-CANDIDATES:]]
+        try:
+            run = subprocess.run(preview_cmd(src360, h360, start, span, path), capture_output=True, text=True,
+                                 timeout=600)
+            ok = run.returncode == 0 and path.exists() and path.stat().st_size > 0
+        except subprocess.TimeoutExpired:
+            ok = False
+        if not ok:
+            log.warning("%s %s: превью не вырезалось", key, score)
+            continue
+        g["ask"] = {"from": start, "len": span, "file": str(path.relative_to(ROOT)), "cand": cand}
+        log.info("%s %s: превью %s, моментов часов %d", key, score, replay.fmt_t(start), len(cand))
+
+
 def scan_match(key: str, video: str, anchors: dict) -> dict:
     """Один матч: проход по записи и голы по табло. Исключения (VK не отдал, ffmpeg упал) — наверх."""
     club = key.split("|")[1]
@@ -125,7 +192,12 @@ def scan_match(key: str, video: str, anchors: dict) -> dict:
     truth = {s: t for s, t in (anchors or {}).items() if isinstance(t, int)}
     sb.probe(key, src, headers, truth, sb.site_goals(LIVE_DIR, key), sb.BOXES[club], args)
     board = read_json(out / "goals.json").get("goals") or []
-    return {"status": "ok", "goals": found_goals(board, live_goals(key))}
+    goals = found_goals(board, live_goals(key))
+    try:
+        add_previews(key, video, goals, length, out)
+    except Exception as err:   # без превью голы всё равно записываем: секунды табло уже есть
+        log.warning("%s: превью не сделали — %s: %s", key, type(err).__name__, err)
+    return {"status": "ok", "goals": goals}
 
 
 def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan=scan_match) -> int:

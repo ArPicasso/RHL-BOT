@@ -396,3 +396,83 @@ class Nag(unittest.TestCase):
         text, kb = self.bot.replay_nag(todo)
         self.assertEqual(len(kb.inline_keyboard), self.bot.REPLAY_NAG_MAX + 1)
         self.assertEqual(kb.inline_keyboard[-1][0].callback_data, "rp:list")
+
+
+class Previews(unittest.TestCase):
+    """ADR-030, шаг 3: превью гола от службы clips — админам и помощникам, ответ — опора в replays.json."""
+
+    def setUp(self):
+        import admin
+        import bot
+        self.bot = bot
+        self.dir = Path(tempfile.mkdtemp())
+        (self.dir / "2026-10-03.json").write_text(json.dumps({"date": "2026-10-03", "games": [GAME]}), encoding="utf-8")
+        (self.dir / "p.mp4").write_bytes(b"video")
+        self.ask = {"from": 1500, "len": 125, "file": "p.mp4", "cand": [47, 72]}
+        self.clips = {"games": {GAME["key"]: {"video": VIDEO, "status": "ok", "goals": {
+            "1:0": {"team": "home", "change": 1620, "t": None, "src": None, "ask": self.ask},
+            "1:1": {"team": "away", "change": 3000, "t": 2990, "src": "clock"}}}}}
+        (self.dir / "clips.json").write_text(json.dumps(self.clips), encoding="utf-8")
+        self.now = msk("2026-10-04T12:00:00")
+        self.track = admin.Tracker("bot", path=self.dir / "bot.json", clock=lambda: self.now)
+        for name, value in (("LIVE_DIR", self.dir), ("REPLAYS_FILE", self.dir / "replays.json"),
+                            ("PREVIEWS_FILE", self.dir / "previews.json"), ("BASE", self.dir),
+                            ("ADMIN_IDS", frozenset({1001})), ("PREVIEW_IDS", frozenset({761})), ("TRACK", self.track)):
+            p = mock.patch.object(bot, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_todo_skips_timed_marked_and_sent(self):
+        todo = self.bot.preview_todo(self.clips, {}, {})
+        self.assertEqual([(k, s) for k, s, _, _ in todo], [(GAME["key"], "1:0")])
+        self.assertEqual(self.bot.preview_todo(self.clips, {GAME["key"]: {"anchors": {"1:0": 1600}}}, {}), [])
+        self.assertEqual(self.bot.preview_todo(self.clips, {}, {f"{GAME['key']}|1:0": {}}), [])
+
+    def test_caption_buttons(self):
+        text, kb = self.bot.preview_caption(GAME["key"], "1:0", self.ask)
+        self.assertIn("1:0", text)
+        labels = [b.text for row in kb.inline_keyboard for b in row]
+        self.assertEqual(labels, ["Гол на 0:47", "Гол на 1:12", "Другое время"])
+        tok = self.bot.preview_token(GAME["key"], "1:0")
+        self.assertEqual(kb.inline_keyboard[0][0].callback_data, f"pv:{tok}:0")
+        self.assertEqual(self.bot.preview_find(tok)[1], "1:0")
+
+    def test_step_sends_once_to_admins_and_helpers(self):
+        import asyncio
+        bot = mock.Mock()
+        msg = mock.Mock(message_id=5, video=mock.Mock(file_id="F"))
+        bot.send_video = mock.AsyncMock(return_value=msg)
+        with mock.patch.object(self.bot.asyncio, "sleep", mock.AsyncMock()):
+            self.assertEqual(asyncio.run(self.bot.preview_step(bot, self.now)), 1)
+            self.assertEqual(asyncio.run(self.bot.preview_step(bot, self.now)), 0)   # второй раз не шлём
+            self.assertEqual(asyncio.run(self.bot.preview_step(bot, msk("2026-10-04T23:30:00"))), 0)
+        self.assertEqual(sorted(c.args[0] for c in bot.send_video.call_args_list), [761, 1001])
+        self.assertEqual(bot.send_video.call_args_list[1].args[1], "F")                # файл грузим один раз
+        sent = json.loads((self.dir / "previews.json").read_text(encoding="utf-8"))
+        self.assertEqual(sent[f"{GAME['key']}|1:0"]["msgs"], {"761": 5, "1001": 5})
+
+    def test_answer_becomes_admin_anchor(self):
+        import asyncio
+        bot = mock.Mock()
+        bot.edit_message_caption = mock.AsyncMock()
+        with mock.patch.object(self.bot, "published_league", mock.AsyncMock(return_value=None)):
+            asyncio.run(self.bot.preview_answer(bot, 1001, GAME["key"], "1:0", self.ask, VIDEO, 47))
+        saved = json.loads((self.dir / "replays.json").read_text(encoding="utf-8"))["games"][GAME["key"]]
+        self.assertEqual((saved["video"], saved["anchors"]), (VIDEO, {"1:0": 1547}))
+        self.assertEqual(self.bot.preview_todo(self.clips, {GAME["key"]: saved}, {}), [])
+
+    def test_helper_may_press_but_not_replay(self):
+        self.assertIn(761, self.bot.preview_people())
+        self.assertNotIn(761, self.bot.ADMIN_IDS)
+
+    def test_nag_skips_matches_covered_by_board(self):
+        g = {**GAME, "events": [e for e in GAME["events"] if e.get("score") in ("1:0", "1:1")]}
+        found = self.clips["games"][GAME["key"]]
+        self.assertTrue(self.bot.board_covers(g, found))
+        self.assertFalse(self.bot.board_covers(GAME, found))          # 2:1 табло не нашло, превью нет
+        self.assertFalse(self.bot.board_covers(g, {**found, "status": "no_board"}))
+
+
+class ClockFormat(unittest.TestCase):
+    def test_fmt_clock(self):
+        self.assertEqual([replay.fmt_clock(x) for x in (0, 65, 723, 3723)], ["0:00", "1:05", "12:03", "1:02:03"])

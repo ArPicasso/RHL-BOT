@@ -7,6 +7,7 @@
 `/replay` — опоры для повторов голов (ADR-027).
 """
 import asyncio
+import hashlib
 import html
 import json
 import logging
@@ -85,6 +86,12 @@ REPLAY_DAYS = 3                    # матчи за столько дней, в
 REPLAY_WAIT = timedelta(minutes=30)   # столько ждём ссылку после нажатия на гол
 REPLAY_NAG_AT = time(21, 0)        # раз в день после этого админам — матчи с записью лиги без разметки (ADR-028)
 REPLAY_NAG_MAX = 8                 # кнопок на матчи в напоминании, дальше — «Все матчи»
+# Превью голов (ADR-030, шаг 3): служба clips режет минуту-две записи до смены счёта на табло, бот присылает их
+# админам и помощникам (PREVIEW_IDS — только превью, без тревог и /replay). Кто первым ответил, того и секунда
+PREVIEW_IDS = frozenset(int(x) for x in re.split(r"[,\s]+", os.environ.get("PREVIEW_IDS", "")) if x.isdigit())
+PREVIEWS_FILE = BASE / "previews.json"   # какие превью ушли и кому: «ключ|счёт» → сообщения, ответ. Не в git
+PREVIEW_MAX = 4                    # превью за один проход пульса (раз в минуту): не заваливаем чат
+PREVIEW_KEEP = timedelta(days=4)   # записи о превью держим столько
 
 DOW = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
@@ -1673,8 +1680,20 @@ def replay_todo(now: datetime, league: dict | None) -> list[tuple[str, int, dict
     """Матчи, которые ждут разметки повторов (ADR-028): в окне /replay, окончены, служба live видела голы,
     у матча есть запись лиги, а в replays.json его нет."""
     marked = load_replays()["games"]
+    found = (read_live("clips.json") or {}).get("games") or {}
     return [(day, i, g) for day, i, g in replay_matches(now)
-            if g.get("status") in ("ended", "final") and match_key(g) not in marked and league_video(league, g)]
+            if g.get("status") in ("ended", "final") and match_key(g) not in marked and league_video(league, g)
+            and not board_covers(g, found.get(match_key(g)))]
+
+
+def board_covers(g: dict, found: dict | None) -> bool:
+    """Служба clips разобрала матч и у каждого гола есть секунда по табло или превью (ADR-030): тогда напоминать о
+    разметке незачем — превью придут сами."""
+    goals = (found or {}).get("goals") or {}
+    if (found or {}).get("status") != "ok":
+        return False
+    return all((goals.get(x["score"]) or {}).get("t") is not None or (goals.get(x["score"]) or {}).get("ask")
+               for x in replay.goals_of(g))
 
 
 def replay_nag(todo: list[tuple[str, int, dict]]) -> tuple[str, InlineKeyboardMarkup]:
@@ -1712,6 +1731,202 @@ async def replay_nag_step(bot: Bot, now: datetime) -> int:
         TRACK.add("replay_nag", sent)
         TRACK.flush()
     return sent
+
+
+# ---------- превью голов (ADR-030, шаг 3) ----------
+# Служба clips нашла гол по табло, но не секунду: в live/clips.json у гола `ask` — откуда превью в записи, файл и
+# моменты, когда вставали часы игры. Бот присылает превью с кнопками «Гол на 0:47»; ответ — опора в replays.json,
+# как время из /replay: повтор точный, у остальных голов периода — расчёт от неё.
+
+PREVIEW_ASK: dict[int, tuple[str, datetime]] = {}   # чат → (жетон превью, когда нажал «Другое время»)
+
+
+def preview_people() -> frozenset[int]:
+    return ADMIN_IDS | PREVIEW_IDS
+
+
+def preview_token(key: str, score: str) -> str:
+    """Короткий жетон превью для callback_data (до 64 байт): по нему находим матч и гол."""
+    return hashlib.sha1(f"{key}|{score}".encode()).hexdigest()[:10]
+
+
+def load_previews() -> dict:
+    try:
+        data = json.loads(PREVIEWS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def preview_todo(clips: dict | None, marked: dict, sent: dict) -> list[tuple[str, str, dict, str]]:
+    """Превью, которые пора прислать: у гола есть `ask` с файлом, секунды нет ни у табло, ни у админа, и превью
+    ещё не уходило. (ключ матча, счёт, ask, ролик) — по порядку матчей и голов."""
+    out = []
+    for key, game in sorted(((clips or {}).get("games") or {}).items()):
+        if not isinstance(game, dict):
+            continue
+        anchors = ((marked or {}).get(key) or {}).get("anchors") or {}
+        for score, g in sorted((game.get("goals") or {}).items(), key=lambda x: (x[1] or {}).get("change") or 0):
+            ask = (g or {}).get("ask")
+            if (isinstance(ask, dict) and ask.get("file") and g.get("t") is None and score not in anchors
+                    and f"{key}|{score}" not in sent):
+                out.append((key, score, ask, game.get("video")))
+    return out
+
+
+def preview_caption(key: str, score: str, ask: dict) -> tuple[str, InlineKeyboardMarkup]:
+    day, home, away = key.split("|")
+    text = (f"🎬 <b>{day[8:10]}.{day[5:7]} {html.escape(tname(home))} — {html.escape(tname(away))}</b>, гол "
+            f"<b>{html.escape(score)}</b>\nГде в этом видео гол? Нажми момент или пришли время в видео, "
+            "например 1:05.")
+    tok = preview_token(key, score)
+    rows = [[InlineKeyboardButton(text=f"Гол на {replay.fmt_clock(t)}", callback_data=f"pv:{tok}:{k}")]
+            for k, t in enumerate(ask.get("cand") or [])]
+    rows.append([InlineKeyboardButton(text="Другое время", callback_data=f"pv:{tok}:x")])
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def preview_find(tok: str) -> tuple[str, str, dict, str] | None:
+    """Жетон → (ключ, счёт, ask, ролик) из live/clips.json."""
+    for key, game in ((read_live("clips.json") or {}).get("games") or {}).items():
+        for score, g in ((game or {}).get("goals") or {}).items():
+            if preview_token(key, score) == tok and isinstance((g or {}).get("ask"), dict):
+                return key, score, g["ask"], game.get("video")
+    return None
+
+
+def live_by_key(key: str) -> dict | None:
+    """Матч службы live по ключу: из файла его дня."""
+    games = (read_live(f"{key[:10]}.json") or {}).get("games") or []
+    return next((g for g in games if isinstance(g, dict) and match_key(g) == key), None)
+
+
+def preview_save(key: str, score: str, sec: int, video: str, now: datetime, protocol: list[dict] | None) -> str:
+    """Секунда гола из превью → опора админа в replays.json и пересчёт повторов матча. Ошибка или пусто."""
+    g = live_by_key(key)
+    if not g:
+        return "Матч пропал из файла службы live — секунду не записал."
+    data = load_replays()
+    old = data["games"].get(key) or {}
+    same = replay.same_video(old.get("video"), video)
+    anchors = dict(old.get("anchors") or {}) if same else {}
+    anchors[score] = sec
+    data["games"][key] = replay.entry(g, old["video"] if same else video, anchors, now, protocol)
+    data["updated"] = admin.iso(now)
+    write_atomic(REPLAYS_FILE, data)
+    return ""
+
+
+async def preview_step(bot: Bot, now: datetime) -> int:
+    """Раз в минуту: новые превью — админам и помощникам, не больше PREVIEW_MAX за проход. Ночью молчим, как
+    тревоги (ADR-022). Файл грузим в Telegram один раз, остальным — тот же file_id."""
+    people = sorted(preview_people())
+    if not people or quiet(now):
+        return 0
+    sent = load_previews()
+    edge = admin.iso(now - PREVIEW_KEEP)
+    sent = {k: v for k, v in sent.items() if isinstance(v, dict) and (v.get("at") or "") >= edge}
+    n = 0
+    for key, score, ask, video in preview_todo(read_live("clips.json"), load_replays()["games"], sent)[:PREVIEW_MAX]:
+        path = BASE / ask["file"]
+        if not path.is_file():
+            continue
+        text, kb = preview_caption(key, score, ask)
+        msgs, file_id = {}, None
+        for cid in people:
+            try:
+                msg = await sending(lambda: bot.send_video(cid, file_id or FSInputFile(path), caption=text,
+                                                           reply_markup=kb, supports_streaming=True))
+                msgs[str(cid)] = msg.message_id
+                file_id = file_id or (msg.video.file_id if msg.video else None)
+            except Exception:
+                logging.exception("preview to %s failed", cid)
+            await asyncio.sleep(0.05)
+        if msgs:   # не дошло ни до кого — попробуем в следующую минуту
+            sent[f"{key}|{score}"] = {"at": admin.iso(now), "msgs": msgs}
+            n += 1
+    write_atomic(PREVIEWS_FILE, sent)
+    if n:
+        TRACK.add("previews", n)
+    return n
+
+
+async def preview_done(bot: Bot, key: str, score: str, sec: int, video: str) -> None:
+    """Ответ получен: у всех, кому ушло превью, подпись — «готово», кнопки убираем."""
+    sent = load_previews()
+    rec = sent.get(f"{key}|{score}") or {}
+    rec["done"] = sec
+    sent[f"{key}|{score}"] = rec
+    write_atomic(PREVIEWS_FILE, sent)
+    url = replay.at_link(video, max(0, sec - replay.EXACT_LEAD))
+    text = (f"✅ Гол <b>{html.escape(score)}</b> — {replay.fmt_t(sec)} в записи"
+            + (f', <a href="{html.escape(url)}">повтор</a>' if url else "") + ". Спасибо!")
+    for cid, mid in (rec.get("msgs") or {}).items():
+        try:
+            await bot.edit_message_caption(chat_id=int(cid), message_id=mid, caption=text, reply_markup=None)
+        except TelegramBadRequest:
+            pass
+
+
+@dp.callback_query(F.data.startswith("pv:"))
+async def cb_preview(c: CallbackQuery):
+    if not c.from_user or c.from_user.id not in preview_people() or not c.message:
+        await c.answer()
+        return
+    _, tok, pick = (c.data.split(":") + ["", ""])[:3]
+    got = preview_find(tok)
+    if not got:
+        await c.answer("Этого превью уже нет — матч старше трёх дней", show_alert=True)
+        return
+    key, score, ask, video = got
+    if pick == "x":
+        REPLAY_ASK.pop(c.message.chat.id, None)   # ждём время этого превью, а не разметку из /replay
+        PREVIEW_ASK[c.message.chat.id] = (tok, datetime.now(TZ))
+        await c.answer()
+        await c.message.answer(f"Гол <b>{html.escape(score)}</b>: пришли время гола в этом видео — например 1:05.")
+        return
+    cand = ask.get("cand") or []
+    if not pick.isdigit() or int(pick) >= len(cand):
+        await c.answer()
+        return
+    await preview_answer(c.bot, c.message.chat.id, key, score, ask, video, int(cand[int(pick)]))
+    await c.answer("Записал")
+
+
+async def preview_answer(bot: Bot, cid: int, key: str, score: str, ask: dict, video: str, t: int) -> None:
+    sec = int(ask.get("from") or 0) + t
+    league = await published_league()
+    g = live_by_key(key)
+    err = preview_save(key, score, sec, video, datetime.now(TZ), protocol_of(league, g) if g else None)
+    if err:
+        await bot.send_message(cid, err)
+        return
+    TRACK.add("preview_answers")
+    await preview_done(bot, key, score, sec, video)
+
+
+def preview_waiting(m: Message) -> bool:
+    ask = PREVIEW_ASK.get(m.chat.id)
+    return bool(ask and m.text and m.from_user and m.from_user.id in preview_people()
+                and datetime.now(TZ) - ask[1] <= REPLAY_WAIT)
+
+
+@dp.message(preview_waiting)   # раньше h_lost: время гола в превью — не «непонятое сообщение»
+async def h_preview_time(m: Message):
+    tok, _ = PREVIEW_ASK[m.chat.id]
+    got = preview_find(tok)
+    t = replay.parse_clock(m.text.strip())
+    if not got:
+        PREVIEW_ASK.pop(m.chat.id, None)
+        await m.answer("Этого превью уже нет — матч старше трёх дней.")
+        return
+    key, score, ask, video = got
+    if t is None or t > int(ask.get("len") or 0) + 5:
+        await m.answer(f"Не понял время. Пришли, на какой секунде видео гол: например 1:05 (видео — "
+                       f"{replay.fmt_clock(int(ask.get('len') or 0))}).")
+        return
+    PREVIEW_ASK.pop(m.chat.id, None)
+    await preview_answer(m.bot, m.chat.id, key, score, ask, video, t)
 
 
 # ---------- болельщик пишет живому человеку (ADR-025) ----------
@@ -2452,6 +2667,10 @@ async def status_loop(bot: Bot):
             await replay_nag_step(bot, now)
         except Exception:
             logging.exception("replay nag step failed")
+        try:
+            await preview_step(bot, now)
+        except Exception:
+            logging.exception("preview step failed")
         await asyncio.sleep(STATUS_EVERY)
 
 

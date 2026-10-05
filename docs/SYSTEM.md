@@ -141,6 +141,12 @@
   не размечено — `probe/scoreboard/<матч>/grid.png`: прислать в сессию Claude, разметка — в `boards.json`.
 - Низкий приоритет (`Nice`, `CPUQuota`, idle-диск). Кадры прохода — `probe/scoreboard/`, держатся три дня.
 - Нужен ffmpeg (`rhl-update` ставит сам) и yt-dlp (`requirements.txt`). VK сменил плеер — `venv/bin/pip install -U yt-dlp`.
+- **Превью голов (шаг 3).** Гол, который табло узнало, но без секунды, — служба режет превью (две минуты записи до
+  смены счёта, 360p) и моменты, когда вставали часы. Бот раз в минуту (9:00–23:00, до четырёх за раз) присылает
+  превью `ADMIN_IDS` и `PREVIEW_IDS` (помощники: только превью, без тревог и `/replay`) с кнопками «Гол на 0:47» и
+  «Другое время». Ответ — опора в `live/replays.json`, как время из `/replay`; у всех, кому ушло превью, подпись
+  меняется на «✅». Что ушло — `previews.json` бота (четыре дня). Матч, где у каждого гола есть секунда или превью,
+  в напоминание «Не размечены повторы» не попадает.
 
 ### Пульт админа (ADR-021)
 
@@ -200,7 +206,7 @@
 | `/opt/rhl/state.db` | Зачёт «Раската» и прогнозы (SQLite, рядом `state.db-wal`, `-shm`) |
 | `/opt/rhl/live/` | Живые файлы матч-центра: пишет `live`, отдаёт `api`, читает бот |
 | `/opt/rhl/status/` | Пульс и счётчики для пульта: `bot.json` пишет бот, `pages.json` — служба `pages`, `alerts.json` — список проблем от `api` для тревог (ADR-022). Создаёт `rhl-update` |
-| `/etc/rhl/bot.env` | Общий для служб `bot`, `live`, `api`, `pages`: `BOT_TOKEN`, `WEBAPP_URL`, `TELEGRAM_PROXY`, `RASKAT_SALT`, `RASKAT_API`, `PAGES_ORIGIN`, `PAGES_TOKEN`, `ADMIN_IDS`. Права 640 |
+| `/etc/rhl/bot.env` | Общий для служб `bot`, `live`, `api`, `pages`: `BOT_TOKEN`, `WEBAPP_URL`, `TELEGRAM_PROXY`, `RASKAT_SALT`, `RASKAT_API`, `PAGES_ORIGIN`, `PAGES_TOKEN`, `ADMIN_IDS`, `PREVIEW_IDS`. Права 640 |
 | `/etc/rhl/tunnel.env` | Куда идёт туннель |
 | `/etc/caddy/Caddyfile` | HTTPS: `/api/*` → `127.0.0.1:8080`, остальное 404. Пишет `https.sh` |
 | `/usr/local/sbin/rhl-update` | Выкладка (копия `deploy/update.sh`) |

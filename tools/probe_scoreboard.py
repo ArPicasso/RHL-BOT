@@ -692,13 +692,14 @@ def lag_summary(rows: list[tuple[str, int, float | None]]) -> str:
 
 # ---------- источники ----------
 
-def stream_of(video: str) -> tuple[str, dict, int | None]:
-    """Ролик VK → адрес потока для ffmpeg, заголовки и длительность (yt-dlp, как плеер)."""
+def stream_of(video: str, fmt_: str = FORMAT) -> tuple[str, dict, int | None]:
+    """Ролик VK → адрес потока для ffmpeg, заголовки и длительность (yt-dlp, как плеер). fmt_ — какой поток
+    брать: для табло хватает 480p, для клипов (probe_cuts.py) — 720p."""
     try:
         import yt_dlp
     except ImportError:
         sys.exit("Нет yt-dlp: venv/bin/pip install yt-dlp")
-    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "format": FORMAT}) as ydl:
+    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "format": fmt_}) as ydl:
         info = ydl.extract_info(video, download=False)
     fmt = (info.get("requested_formats") or [info])[0]
     headers = dict(fmt.get("http_headers") or info.get("http_headers") or {})

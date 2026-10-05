@@ -151,6 +151,20 @@ def preview_cmd(src: str, headers: dict | None, start: int, length: int, path: P
             "-crf", "30", "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart", str(path)]
 
 
+def video_info(path: Path) -> dict:
+    """Ширина, высота и длина готового превью (ffprobe). Telegram сам их у видео от бота не читает: без них
+    превью в чате — «0:01» без перемотки (05.10)."""
+    try:
+        run = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                              "stream=width,height:format=duration", "-of", "json", str(path)],
+                             capture_output=True, text=True, timeout=60)
+        data = json.loads(run.stdout or "{}")
+        stream = (data.get("streams") or [{}])[0]
+        return {"w": int(stream["width"]), "h": int(stream["height"]), "dur": round(float(data["format"]["duration"]))}
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+        return {}
+
+
 def add_previews(key: str, video: str, goals: dict[str, dict], length: float | None, out: Path) -> None:
     """Превью голам, у которых табло знает смену счёта, но не секунду: файл и моменты остановки часов (`ask`)."""
     need = {s: g for s, g in goals.items() if g.get("t") is None and g.get("change") is not None}
@@ -179,7 +193,11 @@ def add_previews(key: str, video: str, goals: dict[str, dict], length: float | N
         if not ok:
             log.warning("%s %s: превью не вырезалось", key, score)
             continue
-        g["ask"] = {"from": start, "len": span, "file": str(path.relative_to(ROOT)), "cand": cand}
+        info = video_info(path)
+        if info.get("dur", span) < min(span, PREVIEW_AFTER + 10):
+            log.warning("%s %s: превью вышло %s с вместо %d — не шлём", key, score, info.get("dur"), span)
+            continue
+        g["ask"] = {"from": start, "len": span, "file": str(path.relative_to(ROOT)), "cand": cand, **info}
         log.info("%s %s: превью %s, моментов часов %d", key, score, replay.fmt_t(start), len(cand))
 
 

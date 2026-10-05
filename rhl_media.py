@@ -21,8 +21,9 @@ from zoneinfo import ZoneInfo
 TZ = ZoneInfo("Europe/Moscow")
 SITE = "https://rhl.fhr.ru"
 SRC = "rhl.fhr.ru"
-VIDEO_DAYS = 2      # вкладку «Видео» сыгранного матча спрашиваем не дольше двух дней после него
-VIDEO_TRIES = 3     # и не больше трёх раз после финала: видео нет — значит, его и не будет
+VIDEO_DAYS = 3      # вкладку «Видео» сыгранного матча спрашиваем не дольше трёх дней после него
+VIDEO_EVERY = timedelta(hours=2)   # и не чаще раза в два часа: запись лига выкладывает и через часы после матча
+                    # (06.10: из ~40 матчей 03–05.10 запись нашлась у 12 — спрашивали три раза за 45 минут)
 VK_HOSTS = ("vk.com", "vk.ru", "m.vk.com", "m.vk.ru", "vkvideo.ru")
 
 VIDEO_RE = re.compile(r'class="matchcenter-video__video">(.*?)</div>', re.S)
@@ -102,7 +103,7 @@ def parse_translations(page: str) -> list[dict]:
 
 def need_video(g: dict, now: datetime) -> bool:
     """Спрашивать ли вкладку «Видео» матча хранилища rhl_site.json: ссылки ещё нет, матч сегодня или завтра,
-    а сыгранный — первые два дня и не больше трёх раз после финала. Нашлась — больше не спрашиваем."""
+    а сыгранный — VIDEO_DAYS дней, не чаще раза в VIDEO_EVERY (`video_asked`). Нашлась — больше не спрашиваем."""
     if g.get("video") or not g.get("t") or not g.get("id") or not g.get("start"):
         return False
     try:
@@ -113,7 +114,10 @@ def need_video(g: dict, now: datetime) -> bool:
     if day > today + timedelta(days=1) or day < today - timedelta(days=VIDEO_DAYS):
         return False
     if g.get("status") == "final":
-        return g.get("video_tries", 0) < VIDEO_TRIES
+        try:
+            return now - datetime.fromisoformat(g["video_asked"]) >= VIDEO_EVERY
+        except (KeyError, TypeError, ValueError):
+            return True
     return True
 
 

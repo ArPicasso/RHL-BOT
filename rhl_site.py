@@ -399,10 +399,14 @@ async def update_media(s: aiohttp.ClientSession, store: dict, site: str, now: da
         if str(c["id"]) in games:
             games[str(c["id"])]["translation"] = True
     todo = [g for g in games.values() if rhl_media.need_video(g, now)]
-    for g in sorted(todo, key=lambda g: g.get("start") or "")[:MAX_VIDEO]:
+    # сначала сегодняшние и завтрашние (нужна ссылка на эфир), потом сыгранные — кого дольше не спрашивали
+    first = sorted((g for g in todo if g.get("status") != "final"), key=lambda g: g.get("start") or "")
+    later = sorted((g for g in todo if g.get("status") == "final"), key=lambda g: g.get("video_asked") or "")
+    for g in (first + later)[:MAX_VIDEO]:
         await asyncio.sleep(PAUSE)
         if g.get("status") == "final":
-            g["video_tries"] = g.get("video_tries", 0) + 1
+            g["video_asked"] = now.isoformat(timespec="seconds")
+            g.pop("video_tries", None)
         try:
             v = rhl_media.parse_video(await _get(s, f"{site}/matchcenter/{g['t']}/{g['id']}/video/"))
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:

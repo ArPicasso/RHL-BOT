@@ -158,6 +158,31 @@ class Previews(unittest.TestCase):
         self.assertNotIn("ask", goals["0:2"])
 
 
+    def test_preview_keeps_size_and_skips_short(self):
+        """05.10: превью без длины Telegram показывал «0:01» — длину и размер кладём в ask, короткое не шлём."""
+        def run(cmd, **kw):
+            Path(cmd[-1]).write_bytes(b"v")
+            return mock.Mock(returncode=0)
+        for info, has_ask in (({"w": 640, "h": 360, "dur": 125}, True), ({"w": 640, "h": 360, "dur": 1}, False)):
+            goals = {"0:1": {"t": None, "change": 6869}}
+            with tempfile.TemporaryDirectory(dir=clips.ROOT) as tmp, \
+                    mock.patch.object(clips.sb, "stream_of", return_value=("http://x", {}, 9123)), \
+                    mock.patch.object(clips.sb, "BOARDS", {}), mock.patch.object(clips.sb, "ffmpeg", return_value="f"), \
+                    mock.patch.object(clips.subprocess, "run", side_effect=run), \
+                    mock.patch.object(clips, "video_info", return_value=info):
+                clips.add_previews(KEY, VIDEO, goals, 9123, Path(tmp))
+            self.assertEqual("ask" in goals["0:1"], has_ask)
+            if has_ask:
+                self.assertEqual({k: goals["0:1"]["ask"][k] for k in ("w", "h", "dur")}, info)
+
+    def test_video_info_from_ffprobe(self):
+        out = json.dumps({"streams": [{"width": 640, "height": 360}], "format": {"duration": "125.000000"}})
+        with mock.patch.object(clips.subprocess, "run", return_value=mock.Mock(stdout=out)):
+            self.assertEqual(clips.video_info(Path("p.mp4")), {"w": 640, "h": 360, "dur": 125})
+        with mock.patch.object(clips.subprocess, "run", side_effect=OSError):
+            self.assertEqual(clips.video_info(Path("p.mp4")), {})
+
+
 class ByOrder(unittest.TestCase):
     """03.10 служба live не записала времени голов: смены табло — голам по порядку протокола."""
 

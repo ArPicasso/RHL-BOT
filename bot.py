@@ -92,6 +92,7 @@ PREVIEW_IDS = frozenset(int(x) for x in re.split(r"[,\s]+", os.environ.get("PREV
 PREVIEWS_FILE = BASE / "previews.json"   # какие превью ушли и кому: «ключ|счёт» → сообщения, ответ. Не в git
 PREVIEW_MAX = 4                    # превью за один проход пульса (раз в минуту): не заваливаем чат
 PREVIEW_KEEP = timedelta(days=4)   # записи о превью держим столько
+PREVIEW_V = 2                      # 05.10: превью уходили без длины и размера — «0:01» в чате; старые шлём заново
 
 DOW = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
@@ -1768,8 +1769,9 @@ def preview_todo(clips: dict | None, marked: dict, sent: dict) -> list[tuple[str
         anchors = ((marked or {}).get(key) or {}).get("anchors") or {}
         for score, g in sorted((game.get("goals") or {}).items(), key=lambda x: (x[1] or {}).get("change") or 0):
             ask = (g or {}).get("ask")
+            was = sent.get(f"{key}|{score}")
             if (isinstance(ask, dict) and ask.get("file") and g.get("t") is None and score not in anchors
-                    and f"{key}|{score}" not in sent):
+                    and not (isinstance(was, dict) and (was.get("v", 1) >= PREVIEW_V or "done" in was))):
                 out.append((key, score, ask, game.get("video")))
     return out
 
@@ -1832,18 +1834,26 @@ async def preview_step(bot: Bot, now: datetime) -> int:
         if not path.is_file():
             continue
         text, kb = preview_caption(key, score, ask)
+        for cid, mid in ((sent.get(f"{key}|{score}") or {}).get("msgs") or {}).items():   # старое превью «0:01»
+            try:
+                await bot.delete_message(int(cid), mid)
+            except Exception:   # уже удалено или сеть: новое превью всё равно шлём
+                pass
+        # длина и размер — от службы clips; у превью до 05.10 их нет: 360p по ширине 16:9
+        size = {"duration": int(ask.get("dur") or ask.get("len") or 0) or None,
+                "width": int(ask.get("w") or 640), "height": int(ask.get("h") or 360)}
         msgs, file_id = {}, None
         for cid in people:
             try:
                 msg = await sending(lambda: bot.send_video(cid, file_id or FSInputFile(path), caption=text,
-                                                           reply_markup=kb, supports_streaming=True))
+                                                           reply_markup=kb, supports_streaming=True, **size))
                 msgs[str(cid)] = msg.message_id
                 file_id = file_id or (msg.video.file_id if msg.video else None)
             except Exception:
                 logging.exception("preview to %s failed", cid)
             await asyncio.sleep(0.05)
         if msgs:   # не дошло ни до кого — попробуем в следующую минуту
-            sent[f"{key}|{score}"] = {"at": admin.iso(now), "msgs": msgs}
+            sent[f"{key}|{score}"] = {"at": admin.iso(now), "msgs": msgs, "v": PREVIEW_V}
             n += 1
     write_atomic(PREVIEWS_FILE, sent)
     if n:

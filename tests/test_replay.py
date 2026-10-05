@@ -426,7 +426,10 @@ class Previews(unittest.TestCase):
         todo = self.bot.preview_todo(self.clips, {}, {})
         self.assertEqual([(k, s) for k, s, _, _ in todo], [(GAME["key"], "1:0")])
         self.assertEqual(self.bot.preview_todo(self.clips, {GAME["key"]: {"anchors": {"1:0": 1600}}}, {}), [])
-        self.assertEqual(self.bot.preview_todo(self.clips, {}, {f"{GAME['key']}|1:0": {}}), [])
+        self.assertEqual(self.bot.preview_todo(self.clips, {}, {f"{GAME['key']}|1:0": {"v": 2}}), [])
+        self.assertEqual(self.bot.preview_todo(self.clips, {}, {f"{GAME['key']}|1:0": {"done": 47}}), [])
+        old = self.bot.preview_todo(self.clips, {}, {f"{GAME['key']}|1:0": {"msgs": {"761": 3}}})   # до 05.10: «0:01»
+        self.assertEqual([s for _, s, _, _ in old], ["1:0"])
 
     def test_caption_buttons(self):
         text, kb = self.bot.preview_caption(GAME["key"], "1:0", self.ask)
@@ -450,6 +453,25 @@ class Previews(unittest.TestCase):
         self.assertEqual(bot.send_video.call_args_list[1].args[1], "F")                # файл грузим один раз
         sent = json.loads((self.dir / "previews.json").read_text(encoding="utf-8"))
         self.assertEqual(sent[f"{GAME['key']}|1:0"]["msgs"], {"761": 5, "1001": 5})
+        kw = bot.send_video.call_args_list[0].kwargs
+        self.assertEqual((kw["duration"], kw["width"], kw["height"]), (125, 640, 360))   # без них в чате «0:01»
+
+    def test_old_preview_replaced(self):
+        import asyncio
+        (self.dir / "previews.json").write_text(json.dumps({f"{GAME['key']}|1:0": {
+            "at": "2026-10-04T11:00:00+03:00", "msgs": {"761": 3}}}), encoding="utf-8")
+        self.ask.update(w=480, h=360, dur=124)
+        bot = mock.Mock()
+        bot.send_video = mock.AsyncMock(return_value=mock.Mock(message_id=9, video=mock.Mock(file_id="F")))
+        bot.delete_message = mock.AsyncMock()
+        with mock.patch.object(self.bot.asyncio, "sleep", mock.AsyncMock()), \
+                mock.patch.object(self.bot, "read_live", return_value=self.clips):
+            self.assertEqual(asyncio.run(self.bot.preview_step(bot, self.now)), 1)
+        bot.delete_message.assert_awaited_once_with(761, 3)
+        kw = bot.send_video.call_args_list[0].kwargs
+        self.assertEqual((kw["duration"], kw["width"], kw["height"]), (124, 480, 360))
+        sent = json.loads((self.dir / "previews.json").read_text(encoding="utf-8"))
+        self.assertEqual(sent[f"{GAME['key']}|1:0"]["v"], 2)
 
     def test_answer_becomes_admin_anchor(self):
         import asyncio

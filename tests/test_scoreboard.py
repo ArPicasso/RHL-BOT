@@ -343,9 +343,61 @@ class Digits(unittest.TestCase):
         self.assertEqual(set(kept), {"0:1"})
         self.assertIn("не та цифра", bad["1:1"])
 
+    def test_one_change_for_two_goals(self):
+        # «Ростов — Краснодар» 03.10: табло убрали на повтор после 1:0 и вернули уже с «2» — одна смена на два гола
+        goals = [(206, "home"), (236, "home"), (476, "away")]
+        s = [(t, scoreboard(t, goals, [(212, 300)])) for t in range(0, 1200, 10)]
+        visible, found = sb.analyse(s, CELL_BOARD)
+        home = [c["hi"] for c in found if c["zone"] == "home"]
+        away = next(c["hi"] for c in found if c["zone"] == "away")
+        self.assertEqual(len(home), 1)
+        picked = {"1:0": home[0], "2:0": home[0], "2:1": away}
+        kept, bad = sb.verify_digits(picked, found, CELL_BOARD, s, visible, (2, 1))
+        self.assertEqual((kept, bad), (picked, {}))
+
     def test_cells_of_other_size_not_compared(self):
         self.assertIsNone(sb.cell_same(bytes(W * H), bytes(W * H), (0, 0, 10, 10), (20, 0, 31, 10)))
         self.assertTrue(sb.cell_same(bytes(W * H), bytes(W * H), (0, 0, 10, 10), (20, 0, 30, 10)))
+
+
+class Merged(unittest.TestCase):
+    """Смен у команды меньше, чем голов: какая смена накрыла голы подряд (align_by_order, merged)."""
+
+    # «Ростов — Краснодар» 03.10: смены гостей на табло (секунды записи, сколько табло не было) и голы протокола
+    CHANGES = [(6330, 60), (9830, 60), (11930, 130), (12680, 60), (13200, 30)]
+    GOALS = [("0:1", "away", "1", 190), ("0:2", "away", "2", 2092), ("0:3", "away", "3", 2808),
+             ("0:4", "away", "3", 2845), ("0:5", "away", "3", 3257), ("0:6", "away", "3", 3564)]
+
+    def found(self, changes):
+        return [{"hi": hi, "lo": hi - gap, "zone": "away"} for hi, gap in changes]
+
+    def test_rostov_0_3_and_0_4_under_one_change(self):
+        got = sb.align_by_order(self.found(self.CHANGES), self.GOALS)
+        self.assertEqual(got, {"0:1": 6330, "0:2": 9830, "0:3": 11930, "0:4": 11930, "0:5": 12680, "0:6": 13200})
+        self.assertEqual(list(sb.in_order(got)), ["0:1", "0:2", "0:3", "0:4", "0:5", "0:6"])
+
+    def test_two_ways_left_to_admin(self):
+        # между 0:5 и 0:6 тоже 37 с — под третью или пятую смену, не знаем: голы гостей админу
+        goals = self.GOALS[:5] + [("0:6", "away", "3", 3294)]
+        changes = self.CHANGES[:4] + [(13200, 130)]
+        self.assertEqual(sb.align_by_order(self.found(changes), goals), {})
+
+    def test_other_period_not_merged(self):
+        # 19:50 и 20:20 по часам — рядом, но между ними перерыв: одной сменой не бывают
+        goals = [("0:1", "away", "1", 1190), ("0:2", "away", "2", 1220), ("0:3", "away", "2", 2000)]
+        self.assertEqual(sb.align_by_order(self.found([(3000, 130), (5000, 60)]), goals), {})
+
+    def test_no_game_time_no_guess(self):
+        goals = [(s, team) for s, team, _, _ in self.GOALS]
+        self.assertEqual(sb.align_by_order(self.found(self.CHANGES), goals), {})
+
+    def test_protocol_order_has_game_seconds(self):
+        league = {"games": [{"date": "2026-10-03", "home": "rostov", "away": "krasnodar", "goals": [
+            {"score": "0:1", "team": "away", "period": "1", "time": "03:10"},
+            {"score": "0:2", "team": "away", "period": "2", "time": "34:52"},
+            {"score": "0:3", "team": "away", "period": "РБ", "time": "65:00"}]}]}
+        self.assertEqual(sb.protocol_order(league, "2026-10-03|rostov|krasnodar"),
+                         [("0:1", "away", "1", 190), ("0:2", "away", "2", 2092)])
 
 
 class Align(unittest.TestCase):

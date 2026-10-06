@@ -10,9 +10,12 @@ ADR-019 (раздел 3), ADR-020 (раздел 3), docs/raskat/contract.md (р�
     /api/seen                мини-апп открыли: счётчик людей за день для пульта (ADR-021)
     /api/me/player           «Мой игрок» (ADR-030, раздел 6): чьи голы бот присылает после матча
     /api/admin/status        пульт админа: здоровье, аудитория, рассылки, игры — только ADMIN_IDS
+    /api/agent/status        то же для агента разбора (Claude Code): пульт и status/*.json, только чтение,
+                             по токену AGENT_TOKEN (ADR-030, дополнение 06.10, ночь)
 
 Авторизация — `Authorization: tma <initData>`: подпись Telegram WebApp, свежесть 24 часа,
-пользователь только из проверенного initData. CORS — только адрес Pages (`PAGES_ORIGIN`).
+пользователь только из проверенного initData. У агента — `Authorization: Bearer <AGENT_TOKEN>`.
+CORS — только адрес Pages (`PAGES_ORIGIN`).
 Состояние — SQLite `state.db` (`STATE_DB`): `raskat_store.py`, `predict.py` и `myplayer.py`.
 """
 import asyncio
@@ -60,6 +63,8 @@ LEAGUE_TTL = 600                # league.json с Pages — раз в 10 мину
 INDEX_TTL = 300                 # index.json «Раската» — есть ли уже файл нового дня
 SALT_EVERY = 3600               # сверка соли повторяется раз в час: вдруг секрет поменяли
 ALERTS_EVERY = 120              # тревоги (ADR-022): раз в две минуты пишем список проблем для бота
+AGENT_TOKEN_MIN = 32            # токен агента короче — адрес /api/agent/* выключен: угадывать нечего
+AGENT_FILES = ("bot", "pages", "clips", "alerts")   # status/<файл>.json — только числа, без id (ADR-021)
 
 LIVE_NAME = r"today|schedule|sources|replays|clips|\d{4}-\d{2}-\d{2}"   # повторы голов (ADR-027), голы по табло (ADR-030)
 
@@ -178,8 +183,9 @@ class Config:
                  webapp_url: str = "https://arpicasso.github.io/RHL-BOT/",
                  origins=("https://arpicasso.github.io",), teams_file: Path | str = BASE / "teams.json",
                  admins=(), status_dir: Path | str = admin.STATUS_DIR,
-                 subs_file: Path | str = BASE / "subscribers.json"):
+                 subs_file: Path | str = BASE / "subscribers.json", agent_token: str = ""):
         self.token = token
+        self.agent_token = agent_token if len(agent_token) >= AGENT_TOKEN_MIN else ""
         self.live_dir = Path(live_dir)
         self.db_path = str(db_path)
         self.pages = pages_base(webapp_url)
@@ -209,7 +215,8 @@ class Config:
                    webapp_url=env("WEBAPP_URL") or "https://arpicasso.github.io/RHL-BOT/",
                    origins=(env("PAGES_ORIGIN") or "https://arpicasso.github.io").split(","),
                    admins=cls.parse_admins(env("ADMIN_IDS") or ""),
-                   status_dir=env("STATUS_DIR") or admin.STATUS_DIR)
+                   status_dir=env("STATUS_DIR") or admin.STATUS_DIR,
+                   agent_token=(env("AGENT_TOKEN") or "").strip())
 
 
 def open_db(path: str) -> sqlite3.Connection:
@@ -864,6 +871,18 @@ class Api:
         self.admin_user(request)
         return reply(await self.status(self.now()))
 
+    async def agent_status(self, request):
+        """Пульт и файлы status/ для агента разбора (Claude Code в облаке): только чтение, по токену. Живые файлы
+        (clips, replays, дни) агент берёт из /api/live/ — они и так открыты. Токена на сервере нет — адреса нет."""
+        if not self.cfg.agent_token:
+            raise web.HTTPNotFound()
+        got = request.headers.get("Authorization", "")
+        if not (got.startswith("Bearer ") and hmac.compare_digest(got[7:].strip().encode(),
+                                                                  self.cfg.agent_token.encode())):
+            raise Fail(401, "Нужен токен агента.")
+        return reply({"pult": await self.status(self.now()),
+                      "files": {name: admin.read_json(self.cfg.status_dir / f"{name}.json") for name in AGENT_FILES}})
+
     async def status(self, now: datetime) -> dict:
         """Весь статус: его отдаёт пульт (ADR-021) и по нему считаются тревоги (ADR-022)."""
         await self.league()   # заодно время сборки league.json
@@ -930,6 +949,7 @@ def make_app(config: Config | None = None, fetch=None, now=None) -> web.Applicat
     r.add_get("/api/health", api.health)
     r.add_post("/api/seen", api.seen)
     r.add_get("/api/admin/status", api.admin_status)
+    r.add_get("/api/agent/status", api.agent_status)
     r.add_get("/api/live/{name:" + LIVE_NAME + "}.json", api.live)
     r.add_get("/api/me/player", api.mp_get)
     r.add_put("/api/me/player", api.mp_put)

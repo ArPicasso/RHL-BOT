@@ -169,6 +169,10 @@
   `clip` у гола, мини-апп играет его под строкой гола. Скрыт по просьбе автор или ассистент, гол отменён в
   протоколе — клип удаляется из бакета на следующем проходе. Без ключей клипы не режутся. `live/clips.json` — в бэкапе:
   по нему служба знает, какие файлы лежат в бакете.
+- **Клипы стёрты 06.10, нарезка на паузе** (ADR-030, дополнение 06.10, ночь): служба один раз стёрла все клипы из
+  бакета и `live/clips.json` (копия — `live/clips.before-wipe-2026-10-06.json`) и не режет новые, пока в
+  `/etc/rhl/bot.env` нет `CLIPS_CUT=on`. Разбор табло, превью и «Повтор» ссылкой VK работают; в
+  `status/clips.json` — `info.cut`. Пауза держится, пока не выбрана новая схема секунды гола.
 - **Превью голов (шаг 3).** Гол, который табло узнало, но без секунды, — служба режет превью (две минуты записи до
   смены счёта, 360p) и моменты, когда вставали часы. Бот раз в минуту (9:00–23:00, до четырёх за раз) присылает
   превью `ADMIN_IDS` и `PREVIEW_IDS` (помощники: только превью, без тревог и `/replay`) с кнопками «Гол на 0:47» и
@@ -257,7 +261,7 @@
 | `/opt/rhl/state.db` | Зачёт «Раската» и прогнозы (SQLite, рядом `state.db-wal`, `-shm`) |
 | `/opt/rhl/live/` | Живые файлы матч-центра: пишет `live`, отдаёт `api`, читает бот |
 | `/opt/rhl/status/` | Пульс и счётчики для пульта: `bot.json` пишет бот, `pages.json` — служба `pages`, `clips.json` — служба `clips` (ADR-030), `alerts.json` — список проблем от `api` для тревог (ADR-022). Создаёт `rhl-update` |
-| `/etc/rhl/bot.env` | Общий для служб `bot`, `live`, `api`, `pages`: `BOT_TOKEN`, `WEBAPP_URL`, `TELEGRAM_PROXY`, `RASKAT_SALT`, `RASKAT_API`, `PAGES_ORIGIN`, `PAGES_TOKEN`, `ADMIN_IDS`, `PREVIEW_IDS`. Права 640 |
+| `/etc/rhl/bot.env` | Общий для служб `bot`, `live`, `api`, `pages`: `BOT_TOKEN`, `WEBAPP_URL`, `TELEGRAM_PROXY`, `RASKAT_SALT`, `RASKAT_API`, `PAGES_ORIGIN`, `PAGES_TOKEN`, `ADMIN_IDS`, `PREVIEW_IDS`; `AGENT_TOKEN` — вход агента разбора в `/api/agent/status`, `CLIPS_CUT=on` — снять нарезку клипов с паузы (ADR-030, дополнение 06.10, ночь). Права 640 |
 | `/etc/rhl/tunnel.env` | Куда идёт туннель |
 | `/etc/caddy/Caddyfile` | HTTPS: `/api/*` → `127.0.0.1:8080`, остальное 404. Пишет `https.sh` |
 | `/usr/local/sbin/rhl-update` | Выкладка (копия `deploy/update.sh`) |

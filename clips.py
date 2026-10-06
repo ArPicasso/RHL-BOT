@@ -28,6 +28,10 @@ league.json («Смотреть» от rhl.fhr.ru) или ссылка адми�
 Кадры прохода и картинки — в probe/scoreboard/<матч>/ (там же, где у пробника), держатся KEEP_DAYS дней с разбора.
 Матчи сезона в clips.json не забываем: по ним сборка ставит «Повтор» и клип у гола.
 
+Клипы стёрты 06.10, нарезка на паузе до новой схемы (ADR-030, дополнение 06.10, ночь): при запуске служба один раз
+стирает все клипы из бакета и clips.json (`wipe`, метка WIPE), а `cut_pass` не режет, пока в окружении нет
+CLIPS_CUT=on. Разбор табло, превью, счёт хода и «Повтор» ссылкой VK работают как прежде.
+
 Пульт (ADR-030, раздел 7): после каждого матча и прохода — пульс и счётчики дня в status/clips.json (`admin.Tracker`):
 отдал ли VK запись (`vk_ok`, `vk_fail`) и снимок каталога голов сезона (`catalog`). Молчит дольше часа или VK за
 день не отдал ни одной записи — тревога админам.
@@ -78,6 +82,11 @@ PREVIEW_BEFORE = 120   # с записи до смены счёта на таб�
 PREVIEW_AFTER = 5      # и после смены
 PREVIEW_FORMAT = "b[height<=360][height>=240]/b[height<=480]/w"   # превью лёгкое: смотрят в Telegram
 CANDIDATES = 3         # кнопок «Гол на …» под превью — последние остановки часов перед сменой счёта
+# Клипы стёрты 06.10 и нарезка на паузе, пока не выбрана новая схема секунды гола (ADR-030, дополнение 06.10, ночь):
+# служба дорезала бы те же клипы, в том числе по ошибочным временам людей. Разбор табло, превью и счёт хода идут.
+# Другая метка WIPE — служба стирает все клипы ещё раз; CLIPS_CUT=on в /etc/rhl/bot.env — снова режет.
+WIPE = "2026-10-06"
+CUT = os.environ.get("CLIPS_CUT", "").strip().lower() == "on"
 
 log = logging.getLogger("clips")
 
@@ -700,8 +709,9 @@ def cut_goal(src: str, headers: dict | None, t: int, out: Path, score: str, mark
 def cut_pass(store: dict, league: dict | None, marked: dict, bucket: s3.Store, cut=cut_goal, stream=stream,
              track: "admin.Tracker | None" = None) -> int:
     """Нарезка: у каждого разобранного матча — клипы голов с секундой и протоколом, выкладка в бакет, удаление
-    клипов скрытых и отменённых голов. После каждого матча — запись clips.json. Возвращает число новых клипов."""
-    if not bucket.ok:
+    клипов скрытых и отменённых голов. После каждого матча — запись clips.json. Возвращает число новых клипов.
+    Нарезка на паузе (CUT) — ничего: клипов после стирания нет, убирать нечего."""
+    if not bucket.ok or not CUT:
         return 0
     n = 0
     for key, game in sorted((store.get("games") or {}).items()):
@@ -759,6 +769,44 @@ def cut_pass(store: dict, league: dict | None, marked: dict, bucket: s3.Store, c
         if track is not None:
             track.flush()
     return n
+
+
+def wipe(store: dict, bucket: s3.Store, mark: str = WIPE, live_dir: Path | None = None) -> int | None:
+    """Стереть все клипы (ADR-030, дополнение 06.10, ночь), один раз на метку WIPE. Сначала копия clips.json рядом
+    (`clips.before-wipe-<метка>.json`), потом из бакета — файлы по списку матчей и всё, что лежит под `clips/` (так
+    уходит и то, что выпало из clips.json), у матчей — пустые клипы. Что бакет не удалил, — в `wipe_left`, следующий
+    проход пробует снова; метка `wiped` ставится, когда не осталось ничего. Возвращает, сколько файлов убрано, или
+    None — стирать нечего или нечем (метка уже стоит, ключей хранилища нет)."""
+    if store.get("wiped") == mark or not bucket.ok:
+        return None
+    live_dir = live_dir or LIVE_DIR
+    backup = live_dir / f"clips.before-wipe-{mark}.json"
+    if not backup.exists():
+        write_atomic(backup, store)
+    names = set(store.get("wipe_left") or [])
+    for game in (store.get("games") or {}).values():
+        for c in ((game.pop("clips", None) or {}) if isinstance(game, dict) else {}).values():
+            names.update(n for n in (c or {}).get("files") or [] if isinstance(n, str))
+    try:
+        names.update(bucket.list("clips/"))
+    except Exception as err:   # не перечислил — убираем хотя бы то, что знаем по clips.json
+        log.warning("стирание клипов: бакет не перечислил файлы — %s: %s", type(err).__name__, err)
+    left = []
+    for name in sorted(names):
+        try:
+            bucket.delete(name)
+        except Exception as err:
+            log.warning("стирание клипов: не удалили %s — %s", name, err)
+            left.append(name)
+    store.pop("wipe_left", None)
+    if left:
+        store["wipe_left"] = left
+    else:
+        store["wiped"] = mark
+    store["updated"] = now_msk().isoformat(timespec="seconds")
+    write_atomic(live_dir / "clips.json", store)
+    log.info("стирание клипов %s: убрано файлов %d, не вышло %d", mark, len(names) - len(left), len(left))
+    return len(names) - len(left)
 
 
 # ---------- пульт (ADR-030, раздел 7) ----------
@@ -925,12 +973,18 @@ def main() -> None:
     bucket = s3.Store()
     if not bucket.ok:
         log.info("ключей хранилища нет (CLIPS_S3_KEY, CLIPS_S3_SECRET в /etc/rhl/bot.env) — клипы не режем")
+    elif not CUT:
+        log.info("нарезка клипов на паузе (ADR-030, дополнение 06.10, ночь): CLIPS_CUT=on в /etc/rhl/bot.env — режем")
     while True:
         now = now_msk()
         store = read_json(LIVE_DIR / "clips.json")
         marked = read_json(LIVE_DIR / "replays.json").get("games") or {}
         league = sb.league_json(None)
+        track.info(cut="on" if CUT else "off")   # нарезка на паузе — видно в status/clips.json
         try:
+            gone = wipe(store, bucket)
+            if gone is not None:
+                track.note({"kind": "clips_wipe", "files": gone, "left": len(store.get("wipe_left") or [])})
             # сначала клипы того, что уже разобрано: они быстрые, а проход по новой записи — минуты, и перезапуск
             # службы (выкладка) посреди него не должен задерживать клипы (05.10 так и не дошло до нарезки)
             cut = cut_pass(store, league, marked, bucket, track=track)

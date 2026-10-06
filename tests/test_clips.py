@@ -384,7 +384,7 @@ class ByOrder(unittest.TestCase):
         league = {"games": [{"date": "2026-10-04", "home": "tverichi", "away": "metallurg", "goals": [
             {"score": "0:1", "team": "away", "period": "1"}, {"score": "1:1", "team": "home", "period": 2},
             {"score": "2:1", "team": "home", "period": "РБ"}]}]}
-        self.assertEqual(clips.protocol_order(league, KEY), [("0:1", "away", "1"), ("1:1", "home", "2")])
+        self.assertEqual(clips.protocol_order(league, KEY), [("0:1", "away", "1", None), ("1:1", "home", "2", None)])
         self.assertEqual(clips.protocol_order(None, KEY), [])
 
 

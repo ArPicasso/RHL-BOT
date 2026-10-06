@@ -73,9 +73,10 @@ SCAN_MAX = 2        # записей за проход: разбор — мин�
 EVERY = 600         # с между проходами; пока есть неразобранные записи сезона — через минуту
 TRIES = 3           # столько раз пробуем матч, который не скачался или упал
 KEEP_DAYS = 3       # кадры прохода держим столько дней
-VERSION = 5         # разбор поменялся — матчи разбираем заново (05.10: голы по порядку протокола; 06.10: смены
+VERSION = 6         # разбор поменялся — матчи разбираем заново (05.10: голы по порядку протокола; 06.10: смены
                     # табло — в порядке счёта, у двух голов не бывает одной остановки часов; 06.10: кадр клуба без
-                    # разметки — в probe/grids/; 06.10, вечер: гол берём, только если цифры в клетке идут цепочкой)
+                    # разметки — в probe/grids/; 06.10, вечер: гол берём, только если цифры в клетке идут цепочкой;
+                    # 06.10, вечер: одна смена табло на голы подряд, когда табло убирали на повтор)
 CLOCK_MAX = 2       # матчей за проход со счётом хода часов (ADR-031): кадр в секунду — минуты записи на гол
 CLUB_MIN = 3000     # с: ролик клуба короче — не запись матча (пресс-конференция, обзор), берём следующий
 PREVIEW_BEFORE = 120   # с записи до смены счёта на табло в превью: оператор меняет счёт через 0–90 с после гола
@@ -298,17 +299,10 @@ def add_previews(key: str, video: str, goals: dict[str, dict], length: float | N
         log.info("%s %s: превью %s, моментов часов %d", key, score, replay.fmt_t(start), len(cand))
 
 
-def protocol_order(league: dict | None, key: str) -> list[tuple[str, str, str]]:
-    """Голы протокола матча из league.json по порядку, без буллитов: (счёт, команда, период). Нужны, когда служба
-    live не записала времени голов (03.10): тогда смены табло сопоставляем с голами по порядку."""
-    day, home, away = key.split("|")
-    g = next((g for g in (league or {}).get("games") or []
-              if isinstance(g, dict) and (g.get("date"), g.get("home"), g.get("away")) == (day, home, away)), None)
-    return [(x["score"], x.get("team"), str(x.get("period") or "")) for x in (g or {}).get("goals") or []
-            if isinstance(x, dict) and x.get("period") != "РБ" and isinstance(x.get("score"), str)]
+protocol_order = sb.protocol_order   # голы протокола по порядку: (счёт, команда, период, секунда игры)
 
 
-def scan_match(key: str, video: str, anchors: dict, order: list[tuple[str, str, str]] | None = None,
+def scan_match(key: str, video: str, anchors: dict, order: list[tuple] | None = None,
                kind: str = "league") -> dict:
     """Один матч: проход по записи и голы по табло. Исключения (VK не отдал, ffmpeg упал) — наверх. kind — чья запись
     (recordings): ролик клуба короче CLUB_MIN — не запись матча, его не разбираем и кадр табло с него не берём."""
@@ -325,12 +319,12 @@ def scan_match(key: str, video: str, anchors: dict, order: list[tuple[str, str, 
         log.info("%s: табло клуба %s не размечено — grid.png для разметки в boards.json", key, club)
         return {"status": "no_board", "goals": {}, **({"length": round(length)} if length else {})}
     args = SimpleNamespace(out=WORK, step=sb.STEP, start=0, end=None, rescan=False,
-                           order=[(score, team) for score, team, _ in order or []])
+                           order=list(order or []))
     truth = {s: t for s, t in (anchors or {}).items() if isinstance(t, int)}
     site = sb.site_goals(LIVE_DIR, key)
     sb.probe(key, src, headers, truth, site, sb.BOXES[club], args)
     board = read_json(out / "goals.json").get("goals") or []
-    live = live_goals(key) or {score: {"team": team, "period": per} for score, team, per in order or []}
+    live = live_goals(key) or {score: {"team": team, "period": per} for score, team, per, *_ in order or []}
     goals = found_goals(board, live)
     rejected = read_json(out / "goals.json").get("rejected") or {}
     try:

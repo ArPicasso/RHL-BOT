@@ -47,13 +47,14 @@ import sys
 import time
 import urllib.request
 from datetime import date, timedelta
-from itertools import takewhile
+from itertools import combinations, takewhile
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import clockrun  # noqa: E402
 import replay  # noqa: E402
 
 W, H = 240, 90          # рамка табло после масштаба, пикселей: хватает, чтобы цифра счёта была в 10–20 пикселей
@@ -82,6 +83,7 @@ EXACT = 15              # с: табло между старым и новым �
 ORDER_TOL = 300         # с: смена годится голу, если не дальше стольких секунд от ожидаемой по сайту лиги
 CLOCK_BACK = 120        # с: остановку часов перед сменой счёта ищем не раньше стольких секунд до неё
 CLOCK_MOVED = 8         # пикселей клетки часов: столько сменилось — часы идут (секунды меняются каждую секунду)
+MERGE_TOL = 120         # с: разброс запоздания табло между голами — для смены, под которой несколько голов (03.10)
 CLUB_LAG = {club: b["lag"] for club, b in BOARDS.items() if b.get("lag") is not None}   # задержка табло клуба, с
 SITE = "rhl.fhr.ru"     # запись лиги — «Смотреть» с этим источником в league.json (rhl_media.py)
 WEBAPP_URL = os.environ.get("WEBAPP_URL") or "https://arpicasso.github.io/RHL-BOT/"
@@ -508,13 +510,19 @@ def goal_rank(score: str) -> int:
     return h + a
 
 
-def in_order(picked: dict[str, float]) -> dict[str, float]:
+def in_order(picked: dict[str, float], joint: set[str] = frozenset()) -> dict[str, float]:
     """Смены табло идут в порядке голов: (k+1)-й гол сменил счёт позже k-го. Оставляем голы, которые стоят в любом
     самом длинном ряду, где это так (наибольшая возрастающая подпоследовательность); спорные и выпавшие — админу
     (превью): клип не того гола хуже, чем никакого. «Калуга — Динамо 576» 05.10: гол 4:0 сел на смену через 22 с
-    после 1:0, раньше 2:0 и 3:0; 5:1 — раньше 4:1."""
+    после 1:0, раньше 2:0 и 3:0; 5:1 — раньше 4:1. joint — голы под одной сменой своей команды (merged): у них одна
+    секунда, и порядку это не мешает; у остальных одна смена на два гола — спор."""
     items = sorted(picked.items(), key=lambda x: (goal_rank(x[0]), x[1]))
-    before = lambda i, j: items[i][1] < items[j][1] and goal_rank(items[i][0]) < goal_rank(items[j][0])  # noqa: E731
+
+    def before(i: int, j: int) -> bool:
+        ti, tj = items[i][1], items[j][1]
+        same = ti == tj and items[i][0] in joint and items[j][0] in joint
+        return (ti < tj or same) and goal_rank(items[i][0]) < goal_rank(items[j][0])
+
     n = len(items)
     left = [1] * n    # самый длинный ряд, кончающийся на голе
     for j in range(n):
@@ -721,19 +729,60 @@ def align_order(found: list[dict], goals: list[tuple[str, str, float]]) -> dict[
     return out
 
 
-def align_by_order(found: list[dict], order: list[tuple[str, str]]) -> dict[str, float]:
+def protocol_order(league: dict | None, key: str) -> list[tuple[str, str, str, int | None]]:
+    """Голы протокола матча из league.json по порядку, без буллитов: (счёт, команда, период, секунда игры). Нужны,
+    когда служба live не записала времени голов (03.10): тогда смены табло сопоставляем с голами по порядку."""
+    day, home, away = key.split("|")
+    g = next((g for g in (league or {}).get("games") or []
+              if isinstance(g, dict) and (g.get("date"), g.get("home"), g.get("away")) == (day, home, away)), None)
+    return [(x["score"], x.get("team"), str(x.get("period") or ""), clockrun.game_sec(x.get("time")))
+            for x in (g or {}).get("goals") or []
+            if isinstance(x, dict) and x.get("period") != "РБ" and isinstance(x.get("score"), str)]
+
+
+def align_by_order(found: list[dict], order: list[tuple]) -> dict[str, float]:
     """Какая смена — какой гол, когда времени голов от сайта лиги нет (служба live пропустила матч, ADR-030): цифра
-    команды только растёт, поэтому k-я смена цифры хозяев — k-й гол хозяев по протоколу. Только если смен у команды
-    ровно столько, сколько голов: лишняя смена (оператор поправил счёт, табло после матча) сдвигает весь ряд, и
-    тогда не угадываем — голы этой команды остаются админу. order — [(счёт, «home»/«away»)] по порядку протокола.
-    (счёт → секунда смены)."""
+    команды только растёт, поэтому k-я смена цифры хозяев — k-й гол хозяев по протоколу. Смен у команды столько же,
+    сколько голов, — по порядку. Меньше — табло убрали на повтор, а вернули уже после следующего гола, и одна смена
+    накрыла голы подряд (merged). Лишняя смена (оператор поправил счёт, табло после матча) сдвигает весь ряд, и
+    тогда не угадываем — голы этой команды остаются админу. order — [(счёт, «home»/«away», период, секунда игры)]
+    по порядку протокола; периода и секунды может не быть. (счёт → секунда смены)."""
     out: dict[str, float] = {}
     for team in ("home", "away"):
-        goals = [score for score, side in order if side == team]
-        cs = sorted(c["hi"] for c in found if c.get("zone") == team)
+        goals = [g for g in order if g[1] == team]
+        cs = sorted((c for c in found if c.get("zone") == team), key=lambda c: c["hi"])
         if goals and len(cs) == len(goals):
-            out.update(zip(goals, cs))
+            out.update(zip((g[0] for g in goals), (c["hi"] for c in cs)))
+        elif 0 < len(cs) < len(goals):
+            out.update(merged(cs, goals))
     return out
+
+
+def merged(cs: list[dict], goals: list[tuple]) -> dict[str, float]:
+    """Смен табло у команды меньше, чем голов: под какой сменой какие голы. «Ростов — Краснодар» 03.10: 0:3 на 46:48 и
+    0:4 на 47:25, табло убрали на повтор и вернули через 130 с уже с «4» — пять смен на шесть голов, и не нашёлся ни
+    один гол. Смена закрывает голы подряд, только если они одного периода и по протоколу между ними не больше, чем
+    табло не было, плюс MERGE_TOL (часы стоят, а запись идёт, поэтому по записи между голами не меньше, чем по
+    протоколу); от начала окна без табло у смены до конца окна у следующей — не меньше, чем голы между ними по
+    протоколу, минус MERGE_TOL (раньше начала окна гол табло ещё не показало, позже конца — уже). Берём, только если
+    разложить так можно одним способом, иначе — {} (голы админу). cs — смены по времени, goals — (счёт, команда,
+    период, секунда игры). (счёт → секунда смены)."""
+    if any(len(g) < 4 or not isinstance(g[3], (int, float)) for g in goals):
+        return {}
+    n, m = len(goals), len(cs)
+    ways = []
+    for cuts in combinations(range(1, n), m - 1):
+        groups = [goals[a:b] for a, b in zip((0, *cuts), (*cuts, n))]
+        ok = all(all(g[2] == grp[0][2] for g in grp)
+                 and grp[-1][3] - grp[0][3] <= c["hi"] - c.get("lo", c["hi"]) + MERGE_TOL
+                 for grp, c in zip(groups, cs))
+        ok = ok and all(nxt["hi"] - c.get("lo", c["hi"]) >= b[0][3] - a[-1][3] - MERGE_TOL
+                        for a, b, c, nxt in zip(groups, groups[1:], cs, cs[1:]))
+        if ok:
+            ways.append(groups)
+            if len(ways) > 1:
+                return {}
+    return {g[0]: c["hi"] for grp, c in zip(ways[0], cs) for g in grp} if ways else {}
 
 
 def cell_same(fa: bytes, fb: bytes, ca, cb=None) -> bool | None:
@@ -805,11 +854,15 @@ def verify_digits(picked: dict[str, float], found: list[dict], board: dict, samp
         c, mine, opp = seq[side][k], board[side], other[side]
         if not broken[side] and any(j not in seq[side] for j in range(1, k)):
             broken[side] = f"смену {min(j for j in range(1, k) if j not in seq[side])}-го гола табло не увидело"
+        joint_prev = k > 1 and seq[side][k - 1]["hi"] == c["hi"]   # одна смена с прошлым голом (merged)…
+        joint_next = (seq[side].get(k + 1) or {}).get("hi") == c["hi"]   # …или со следующим: после неё уже не «k»
         if not broken[side]:
             if k == 1 and side in zero_bad:
                 broken[side] = "до первого гола в клетке не «0»"
-            elif k > 1 and not cell_same(settled(side, seq[side][k - 1]), c["before"], mine):
+            elif k > 1 and not joint_prev and not cell_same(settled(side, seq[side][k - 1]), c["before"], mine):
                 broken[side] = f"между {k - 1}-м и {k}-м голом цифра сменилась ещё раз"
+            elif joint_next:
+                pass         # после смены уже следующий счёт: «после» проверит последний гол этой смены
             else:
                 post, nxt = None, seq[side].get(k + 1)
                 if nxt and not cell_same(settled(side, c), nxt["before"], mine):
@@ -819,6 +872,8 @@ def verify_digits(picked: dict[str, float], found: list[dict], board: dict, samp
                 elif not nxt and k == total[side] and last is not None:
                     post = cell_same(settled(side, c), last, mine)
                 twin = seq[opp].get(k)
+                if twin and (seq[opp].get(k + 1) or {}).get("hi") == twin["hi"]:
+                    twin = None   # после той смены у соперника уже не «k» (merged)
                 earlier = twin and twin["score"] in kept and goal_rank(twin["score"]) < goal_rank(c["score"])
                 if post is not False and earlier:
                     post = cell_same(settled(side, c), settled(opp, twin), mine, board[opp])
@@ -1027,28 +1082,45 @@ def probe(name: str, src: str | None, headers: dict | None, truth: dict[str, int
         print(f"  времени голов от сайта лиги нет — по порядку протокола: {len(picked)} из {len(order)}")
     else:
         picked = align_order(main_, site) if cells else align_sides(main_, site)[0]
-    picked = in_order(picked)
+    groups: dict[tuple, list[str]] = {}   # голы под одной сменой своей команды (merged) — только по порядку протокола
+    if cells and not site and order:
+        team = {g[0]: g[1] for g in order}
+        for score, t in sorted(picked.items(), key=lambda x: goal_rank(x[0])):
+            groups.setdefault((team.get(score), t), []).append(score)
+    shared = {s: ss for ss in groups.values() if len(ss) > 1 for s in ss}   # счёт → все голы его смены по порядку
+    picked = in_order(picked, set(shared))
     rejected: dict[str, str] = {}
     if board and cells and samples:
-        scores = [g[0] for g in site] if site else [s for s, _ in order or []]
+        scores = [g[0] for g in site] if site else [g[0] for g in order or []]
         totals = (max((int(x.split(":")[0]) for x in scores), default=0),
                   max((int(x.split(":")[1]) for x in scores), default=0))
         picked, rejected = verify_digits(picked, main_, board, samples, visible, totals)
+    for score, ss in shared.items():   # из голов одной смены выпал хоть один — не знаем, чья она, не берём никого
+        if score in picked and any(x not in picked for x in ss):
+            del picked[score]
+            rejected.setdefault(score, "под той же сменой табло гол " + ", ".join(x for x in ss if x not in picked
+                                                                                 and x != score) + " не взят")
+    if rejected:
         for score, why in sorted(rejected.items(), key=lambda x: goal_rank(x[0])):
             print(f"  гол {score} не беру: {why}")
-    by_t = {t: s for s, t in picked.items()}
+    by_t: dict[float, list[str]] = {}
+    for s, t in sorted(picked.items(), key=lambda x: goal_rank(x[0])):
+        by_t.setdefault(t, []).append(s)
+    by = "по сайту лиги" if site or not order else "по протоколу"
     print(f"  смен табло: {len(main_)}, голов у админа: {len(truth)}, у сайта лиги: {len(site)}; "
-          f"по сайту лиги нашлось {len(picked)} из {len(site)}")
+          f"{by} нашлось {len(picked)} из {len(site) or len(order or [])}")
     for k, c in enumerate(main_, 1):
         where = {"home": "хозяева", "away": "гости"}.get(c["zone"], f"зона {c['zone']}")
         gap = round(c["hi"] - c["lo"])
-        goal = by_t.get(c["hi"])
+        goal = ", ".join(by_t.get(c["hi"]) or [])
         print(f"    {k:2d}. {replay.fmt_t(int(c['hi']))}, {where}, " + ("точно" if gap <= EXACT else
-              f"табло не было {gap} с") + " · " + (f"по сайту лиги — гол {goal}" if goal else "без гола"))
+              f"табло не было {gap} с") + " · " + (f"{by} — гол {goal}" if goal else "без гола"))
     stops: dict[str, tuple] = {}
     if board and board.get("clock"):
         clock = cell_pixels(board["clock"])
         for score, e in picked.items():
+            if score in shared:   # часы вставали на каждом из голов — какая остановка чья, не знаем
+                continue
             if src:   # кадр каждую секунду за CLOCK_BACK до смены счёта
                 dense = [(t, f) for t, f in safe_scan(src, headers, box, e - CLOCK_BACK, e + 5) if visible(f)]
                 got = clock_stop(dense, e, clock, 2)
@@ -1081,9 +1153,12 @@ def probe(name: str, src: str | None, headers: dict | None, truth: dict[str, int
     lag = CLUB_LAG.get(name.split("|")[1]) if name.count("|") == 2 else None
     goals = []
     for score, e in sorted(picked.items(), key=lambda x: x[1]):
-        t, how = goal_time(e, e in exact_t, stops.get(score), lag)
-        goals.append({"score": score, "change": e, "exact": e in exact_t, "clock": list(stops[score]) if score in stops
-                      else None, "t": t, "src": how})
+        t, how = goal_time(e, e in exact_t and score not in shared, stops.get(score), lag)
+        # под слитой сменой счёт сменился на последнем голе: у ранних смена может быть и через минуты после гола —
+        # для превью, счёта хода и проверки отметок (CHANGE_BEFORE) это не их смена; превью последнего их накроет
+        early = score in shared and score != shared[score][-1]
+        goals.append({"score": score, "change": None if early else e, "exact": e in exact_t and score not in shared,
+                      "clock": list(stops[score]) if score in stops else None, "t": t, "src": how})
     timed = [g for g in goals if g["t"] is not None]
     (out / "goals.json").write_text(json.dumps({"key": name, "goals": goals, "rejected": rejected},
                                                ensure_ascii=False, indent=1), encoding="utf-8")
@@ -1139,7 +1214,9 @@ def matches(args) -> dict[str, dict]:
     if args.days:
         today = date.today()
         days |= {(today - timedelta(days=k)).isoformat() for k in range(args.days)}
-    found = recorded(league_json(args.league), days) if days else {}
+    if days:
+        args.league_data = league_json(args.league)   # ещё нужен порядку голов протокола (main, order_of)
+    found = recorded(args.league_data, days) if days else {}
     return {**found, **marked}
 
 
@@ -1191,12 +1268,22 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=ROOT / "probe" / "scoreboard")
     args = ap.parse_args()
     every, exact = [], []
+    league: list = []   # league.json — один раз и только если понадобится порядок голов протокола
+
+    def order_of(key: str, site: list) -> list:
+        if site or key.count("|") != 2:
+            return []
+        if not league:
+            league.append(getattr(args, "league_data", None) or league_json(args.league))
+        return protocol_order(league[0], key)
+
     if args.cache:
         for path in args.cache:
             samples, meta = load_cache(path)
             args.step = meta["step"]
-            r, x = probe(meta["name"], None, None, meta.get("truth") or {},
-                         [tuple(g) for g in meta.get("site") or []], tuple(meta["box"]), args, samples)
+            site = [tuple(g) for g in meta.get("site") or []]   # как было у прохода, что сохранил кадры
+            args.order = order_of(meta["name"], site)
+            r, x = probe(meta["name"], None, None, meta.get("truth") or {}, site, tuple(meta["box"]), args, samples)
             every, exact = every + r, exact + x
         if len(args.cache) > 1:
             print(f"\nВсего: {lag_summary(every)}\nТочные: {lag_summary(exact)}")
@@ -1233,7 +1320,9 @@ def main() -> None:
         if args.check:
             every += check(key, src, headers, truth, box, args)
         else:
-            r, x = probe(key, src, headers, truth, site_goals(args.live, key), box, args)
+            site = site_goals(args.live, key)
+            args.order = order_of(key, site)
+            r, x = probe(key, src, headers, truth, site, box, args)
             every, exact = every + r, exact + x
     if len(keys) > 1:
         print("\nВсего: " + lag_summary(every) + ("" if args.check else f"\nТочные: {lag_summary(exact)}"))

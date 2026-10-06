@@ -24,7 +24,9 @@ league.json («Смотреть» от rhl.fhr.ru) или ссылка адми�
 (`coverage` в clips.json): по нему бот пишет админам.
 
 По одному писателю на файл: live/replays.json пишет только бот, live/clips.json — только эта служба. Качаем как
-плеер (yt-dlp), без обхода защиты (ADR-012): VK отказал — пишем ошибку и пробуем позже, не больше TRIES раз.
+плеер (yt-dlp), без обхода защиты (ADR-012): VK отказал — пишем ошибку и пробуем позже, не больше TRIES раз. VK ещё
+не знает длину записи (эфир идёт или запись обрабатывается) — не разбираем (`wait`), спрашиваем снова через
+WAIT_EVERY до конца следующего дня после матча: 06.10 разбор во время эфира дал кадр табло из заставки до матча.
 Кадры прохода и картинки — в probe/scoreboard/<матч>/ (там же, где у пробника), держатся KEEP_DAYS дней с разбора.
 Матчи сезона в clips.json не забываем: по ним сборка ставит «Повтор» и клип у гола.
 
@@ -72,6 +74,7 @@ SINCE = date.fromisoformat(os.environ.get("CLIPS_SINCE") or "2026-10-03")   # с
 SCAN_MAX = 2        # записей за проход: разбор — минуты, между ними — нарезка клипов
 EVERY = 600         # с между проходами; пока есть неразобранные записи сезона — через минуту
 TRIES = 3           # столько раз пробуем матч, который не скачался или упал
+WAIT_EVERY = 1200   # с: VK ещё не знает длину записи (эфир идёт или запись обрабатывается) — спрашиваем снова не чаще
 KEEP_DAYS = 3       # кадры прохода держим столько дней
 VERSION = 7         # разбор поменялся — матчи разбираем заново (05.10: голы по порядку протокола; 06.10: смены
                     # табло — в порядке счёта, у двух голов не бывает одной остановки часов; 06.10: кадр клуба без
@@ -168,16 +171,29 @@ def recordings(league: dict | None, marked: dict, days: set[str], store: dict | 
     return found
 
 
-def pending(league: dict | None, marked: dict, store: dict, today: date) -> list[tuple[str, str]]:
+def wait_over(game: dict, now: datetime) -> bool:
+    """Запись ждёт, пока VK узнает её длину (`wait`), дольше WAIT_EVERY — пора спросить снова."""
+    try:
+        return (now - datetime.fromisoformat(game["scanned"])).total_seconds() >= WAIT_EVERY
+    except (KeyError, TypeError, ValueError):
+        return True
+
+
+def pending(league: dict | None, marked: dict, store: dict, today: date,
+            now: datetime | None = None) -> list[tuple[str, str]]:
     """Какие матчи разобрать: (ключ, ролик), свежие первыми. Сыгранные с SINCE с записью (recordings). Уже разобранный
     ролик не трогаем; новый ролик у матча — разбираем заново; упавший — до TRIES раз; матч без разметки табло —
-    заново, как только табло клуба появилось в boards.json."""
+    заново, как только табло клуба появилось в boards.json; запись, у которой VK ещё не знал длину, — не чаще
+    WAIT_EVERY."""
     found = recordings(league, marked, season_days(today), store)
+    now = now or now_msk()
     out = []
     for key in sorted(found, key=lambda k: (k[:10], k), reverse=True):
         video = found[key]["video"]
         was = store.get(key) or {}
         if replay.same_video(was.get("video"), video) and was.get("v", 1) >= VERSION:
+            if was.get("status") == "wait" and not wait_over(was, now):
+                continue
             marked_now = was.get("status") == "no_board" and key.split("|")[1] in sb.BOARDS   # табло разметили
             if not marked_now and (was.get("status") in ("ok", "no_board", "short") or was.get("tries", 0) >= TRIES):
                 continue
@@ -309,6 +325,12 @@ def scan_match(key: str, video: str, anchors: dict, order: list[tuple] | None = 
     (recordings): ролик клуба короче CLUB_MIN — не запись матча, его не разбираем и кадр табло с него не берём."""
     club = key.split("|")[1]
     src, headers, length = stream(video)
+    if not length and key[:10] >= (now_msk().date() - timedelta(days=1)).isoformat():
+        # эфир ещё идёт или VK обрабатывает запись: кадры с неё — не те. 06.10 «Белгород» и «Дизелист» так разобрались
+        # во время матча, кадр табло для разметки вышел из заставки до игры. Ждём до конца следующего дня; дальше длины
+        # может и не быть — тогда разбираем как есть
+        log.info("%s: VK ещё не знает длину записи %s — эфир идёт или запись обрабатывается, разберу позже", key, video)
+        return {"status": "wait", "goals": {}}
     if kind == "club" and length and length < CLUB_MIN:
         log.info("%s: ролик клуба %s — %d с, не запись матча", key, video, length)
         return {"status": "short", "goals": {}, "length": round(length)}
@@ -438,7 +460,7 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
     games = store.setdefault("games", {})
     guessed = drop_guesses(games)
     flagged = apply_admin(games, marked, league)
-    todo = pending(league, marked, games, now.date())
+    todo = pending(league, marked, games, now.date(), now)
     kinds = recordings(league, marked, season_days(now.date()), games)
     for key, video in todo[:SCAN_MAX]:
         was = games.get(key) or {}
@@ -455,6 +477,11 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
             got = {"status": "error", "error": f"{type(err).__name__}: {err}"[:300], "goals": was.get("goals") or {}}
             if isinstance(err, VkError):
                 vk_note(track, err)
+        if got.get("status") == "wait":   # запись ещё не готова — это не попытка разбора; прежний разбор ролика остаётся
+            tries -= 1
+            if replay.same_video(was.get("video"), video):
+                got = {**{k: was[k] for k in ("goals", "rejected", "length") if k in was}, "status": "wait",
+                       "goals": was.get("goals") or {}}
         short = list(was.get("short") or []) + ([video] if got.get("status") == "short" else [])
         games[key] = {"video": video, "src": kind, "v": VERSION, "tries": tries,
                       "scanned": now_msk().isoformat(timespec="seconds"), **got,
@@ -462,7 +489,10 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
                       **({"short": short} if short else {})}
         apply_admin({key: games[key]}, marked, league)
         timed = sum(1 for g in games[key]["goals"].values() if g.get("t") is not None)
-        log.info("%s: %s, голов по табло %d, с секундой %d", key, got["status"], len(games[key]["goals"]), timed)
+        if got["status"] == "wait":
+            log.info("%s: ждёт, пока VK отдаст запись целиком, — спрошу через %d мин", key, WAIT_EVERY // 60)
+        else:
+            log.info("%s: %s, голов по табло %d, с секундой %d", key, got["status"], len(games[key]["goals"]), timed)
         store["boards"] = boards_todo(games)
         store["updated"] = now_msk().isoformat(timespec="seconds")
         write_atomic(LIVE_DIR / "clips.json", store)
@@ -958,7 +988,7 @@ def coverage(store: dict, league: dict | None, marked: dict, today: date) -> dic
             e["why"] = "ok"
         elif not rec:
             e["why"] = "no_video"
-        elif not game or not replay.same_video(game.get("video"), rec["video"]):
+        elif not game or not replay.same_video(game.get("video"), rec["video"]) or game.get("status") == "wait":
             e["why"] = "pending"
         elif game.get("status") == "error":
             e.update(why="error" if game.get("tries", 0) >= TRIES else "pending", error=game.get("error"))

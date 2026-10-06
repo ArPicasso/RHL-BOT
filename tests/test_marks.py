@@ -328,6 +328,7 @@ class BoardReasons(unittest.TestCase):
         self.assertIn("ещё не разбирала", self.bot.replay_text("2026-10-03", GAME, None, None, VIDEO))
         self.assertIn("не скачалась: VkError", self.text({"video": VIDEO, "status": "error", "error": "VkError: 403"}))
         self.assertIn("не размечено", self.text({"video": VIDEO, "status": "no_board", "goals": {}}))
+        self.assertIn("Запись ещё не готова", self.text({"video": VIDEO, "status": "wait", "goals": {}}))
         self.assertIn("смены счёта на нём служба не увидела", self.text({"video": VIDEO, "status": "ok", "goals": {}}))
         t = self.text({"video": VIDEO, "status": "ok", "goals": {"1:0": {"change": 1500, "team": "home"}},
                        "rejected": {"1:1": "до смены в клетке не «0»"}})

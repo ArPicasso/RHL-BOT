@@ -909,7 +909,8 @@ def lag_summary(rows: list[tuple[str, int, float | None]]) -> str:
 
 def stream_of(video: str, fmt_: str = FORMAT) -> tuple[str, dict, int | None]:
     """Ролик VK → адрес потока для ffmpeg, заголовки и длительность (yt-dlp, как плеер). fmt_ — какой поток
-    брать: для табло хватает 480p, для клипов (probe_cuts.py) — 720p."""
+    брать: для табло хватает 480p, для клипов (probe_cuts.py) — 720p. Эфир ещё идёт (`is_live`) — длительности нет,
+    даже если VK её назвал: записи целиком ещё нет (служба clips такую запись не разбирает, а ждёт)."""
     try:
         import yt_dlp
     except ImportError:
@@ -920,7 +921,7 @@ def stream_of(video: str, fmt_: str = FORMAT) -> tuple[str, dict, int | None]:
     headers = dict(fmt.get("http_headers") or info.get("http_headers") or {})
     if fmt.get("cookies"):
         headers["Cookie"] = fmt["cookies"]
-    return fmt["url"], headers, info.get("duration")
+    return fmt["url"], headers, None if info.get("is_live") else info.get("duration")
 
 
 def parse_truth(text: str) -> dict[str, int]:

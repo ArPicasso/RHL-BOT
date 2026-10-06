@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 import admin
+import marks
 import myplayer
 import predict
 import replay
@@ -1458,8 +1459,103 @@ def load_replays() -> dict:
     return {"games": games if isinstance(games, dict) else {}}
 
 
+# Журнал отметок (ADR-033): каждая отметка админа или помощника — строка в state.db, которую нельзя изменить или
+# удалить, только отменить новой строкой. live/replays.json бот собирает из журнала (marks.resolve) в прежнем формате.
+
+_marks: tuple[Path, marks.MarksStore] | None = None
+HISTORY_MAX = 6    # строк истории у гола в /replay
+REVOKE_MAX = 3     # кнопок «Отозвать» у гола: последние действующие отметки
+ROLE_WORD = {"admin": "админ", "helper": "помощник", "import": "до журнала"}
+VIA_WORD = {"replay": "/replay", "preview": "превью", "confirm": "клип", "import": "перенесено, не проверено"}
+KIND_WORD = {"absent": "🚫 нет в записи", "wrong": "⚠️ табло сбилось", "confirm": "✅ клип верен",
+             "reject": "❌ клип неверен"}
+
+
+def goal_marks() -> marks.MarksStore:
+    """Журнал отметок в state.db. Первое обращение переносит в него отметки из replays.json, сделанные до журнала."""
+    global _marks
+    if _marks is None or _marks[0] != STATE_DB:
+        conn = sqlite3.connect(STATE_DB, isolation_level=None, check_same_thread=False)
+        conn.execute("PRAGMA busy_timeout=5000")
+        store = marks.MarksStore(conn)
+        n = store.import_replays(load_replays()["games"], datetime.now(TZ))
+        if n:
+            logging.info("журнал отметок: перенесено из replays.json %d отметок, все — «не проверено» (ADR-033)", n)
+        _marks = (STATE_DB, store)
+    return _marks[1]
+
+
+def role_of(uid: int | None) -> str:
+    return "admin" if uid in ADMIN_IDS else "helper"
+
+
+def protocol_goal(protocol: list[dict] | None, score: str) -> dict:
+    return next((x for x in protocol or [] if x.get("score") == score), {})
+
+
+def add_mark(key: str, score: str, kind: str, now: datetime, who: int | None, via: str,
+             protocol: list[dict] | None = None, **kw) -> int:
+    """Строка журнала: кто и откуда, период и время гола по протоколу — чтобы найти гол, если лига его поправит."""
+    p = protocol_goal(protocol, score)
+    return goal_marks().add(now, key, score, kind, role=role_of(who), via=via, who=who, period=p.get("period"),
+                            time=p.get("time"), **kw)
+
+
+def marks_apply(key: str, g: dict, now: datetime, protocol: list[dict] | None = None) -> dict | None:
+    """Запись матча в replays.json — заново из журнала: что действует сейчас → ссылки по голам. Действующих отметок
+    нет — матч из replays.json убирается. Возвращает запись матча или None."""
+    st = goal_marks().state(key)
+    entry = replay.entry(g, st["video"], st["anchors"], now, protocol, absent=st["absent"],
+                         wrong=st["wrong"]) if st else None
+    data = load_replays()
+    if entry is None and key not in data["games"]:
+        return None
+    if entry is None:
+        data["games"].pop(key)
+    else:
+        data["games"][key] = entry
+    data["updated"] = admin.iso(now)
+    write_atomic(REPLAYS_FILE, data)
+    return entry
+
+
+def mark_word(r: dict) -> str:
+    return replay.fmt_t(r["sec"]) if r["kind"] == "time" and isinstance(r.get("sec"), int) \
+        else KIND_WORD.get(r["kind"], r["kind"])
+
+
+def goal_history(key: str, score: str, viewer: int | None) -> tuple[list[str], list[dict]]:
+    """История отметок гола для /replay: строки «когда · кто · что · откуда» (отозванные — с пометкой) и действующие
+    отметки, которые можно отозвать."""
+    rows = goal_marks().of(key)
+    off = marks.revoked(rows)
+    mine = [r for r in rows if r["score"] == score and r["kind"] != "revoke"]
+    lines = []
+    for r in mine[-HISTORY_MAX:]:
+        when = datetime.fromisoformat(r["at"]).astimezone(TZ).strftime("%d.%m %H:%M")
+        who = "ты" if r.get("who") and r["who"] == viewer else ROLE_WORD.get(r["role"], r["role"])
+        lines.append(f"{when} · {who} · {mark_word(r)} · {VIA_WORD.get(r['via'], r['via'])}"
+                     + (" — отозвано" if r["id"] in off else ""))
+    return lines, [r for r in mine if r["id"] not in off][-REVOKE_MAX:]
+
+
 def replay_days(now: datetime) -> list[str]:
     return [(now.date() - timedelta(days=i)).isoformat() for i in range(REPLAY_DAYS)]
+
+
+def replay_day_arg(arg: str | None, now: datetime) -> str | None:
+    """«/replay 04.10» (или 04.10.2026) — день, матчи которого открыть: исправить отметку можно всегда (ADR-033).
+    Без года — ближайший такой день не позже сегодня. Не дата — None."""
+    m = re.fullmatch(r"\s*(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?\s*", arg or "")
+    if not m:
+        return None
+    try:
+        d = date(int(m[3]) if m[3] else now.year, int(m[2]), int(m[1]))
+    except ValueError:
+        return None
+    if not m[3] and d > now.date():
+        d = d.replace(year=d.year - 1)
+    return d.isoformat()
 
 
 def replay_game(day: str, i: int) -> dict | None:
@@ -1477,7 +1573,8 @@ def league_match(league: dict | None, g: dict) -> dict | None:
 def protocol_of(league: dict | None, g: dict) -> list[dict] | None:
     """Голы протокола этого матча из league.json без буллитов: счёт, команда, период, автор. Нет — None."""
     m = league_match(league, g)
-    goals = [{"score": x.get("score"), "team": x.get("team"), "period": x.get("period"), "author": x.get("author")}
+    goals = [{"score": x.get("score"), "team": x.get("team"), "period": x.get("period"), "author": x.get("author"),
+              "time": x.get("time")}
              for x in (m or {}).get("goals") or [] if isinstance(x, dict) and x.get("period") != "РБ"]
     return goals or None
 
@@ -1497,10 +1594,10 @@ def replay_goals(g: dict, protocol: list[dict] | None = None) -> list[dict]:
     return replay.with_protocol(replay.goals_of(g), protocol)
 
 
-def replay_matches(now: datetime) -> list[tuple[str, int, dict]]:
-    """Сыгранные и идущие матчи последних дней, где служба live видела хотя бы один гол со счётом."""
+def replay_matches(now: datetime, days: list[str] | None = None) -> list[tuple[str, int, dict]]:
+    """Сыгранные и идущие матчи последних дней (или этих days), где служба live видела хотя бы один гол со счётом."""
     out = []
-    for day in replay_days(now):
+    for day in days or replay_days(now):
         for i, g in enumerate((read_live(f"{day}.json") or {}).get("games") or []):
             if isinstance(g, dict) and replay.goals_of(g):
                 out.append((day, i, g))
@@ -1567,34 +1664,40 @@ def replay_kb(day: str, i: int, g: dict, entry: dict | None, protocol: list[dict
         rows.append(row)
     if entry:
         rows.append([InlineKeyboardButton(text="Сбросить повторы матча", callback_data=f"rp:x:{day}:{i}")])
-    rows.append([InlineKeyboardButton(text="← Матчи", callback_data="rp:list")])
+    back = "rp:list" if day in replay_days(datetime.now(TZ)) else f"rp:d:{day}"
+    rows.append([InlineKeyboardButton(text="← Матчи", callback_data=back)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def replay_list(now: datetime) -> tuple[str, InlineKeyboardMarkup | None]:
-    found = replay_matches(now)
+def replay_list(now: datetime, day: str | None = None) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Матчи для разметки: последние REPLAY_DAYS дней или один день (/replay ДД.ММ)."""
+    found = replay_matches(now, [day] if day else None)
     if not found:
+        if day:
+            return (f"За {day[8:10]}.{day[5:7]} нет матчей, где служба live видела голы.", None)
         return ("Нет матчей, где служба live видела голы, за последние дни. Повтор считается от времени, "
-                "когда сменился счёт на сайте лиги, — без него не из чего.", None)
+                "когда сменился счёт на сайте лиги, — без него не из чего. Матч старше — /replay ДД.ММ.", None)
     marked = load_replays()["games"]
     kb = [[InlineKeyboardButton(text=("✅ " if match_key(g) in marked else "") + replay_title(day, g),
                                 callback_data=f"rp:m:{day}:{i}")] for day, i, g in found[:30]]
-    head = coverage_text((read_live("clips.json") or {}).get("coverage"), full=False)
-    return (head + "\n\n" if head else "") + "Повторы голов: выбери матч.", InlineKeyboardMarkup(inline_keyboard=kb)
+    head = coverage_text((read_live("clips.json") or {}).get("coverage"), full=False) if not day else ""
+    what = f"Повторы голов за {day[8:10]}.{day[5:7]}: выбери матч." if day else \
+        "Повторы голов: выбери матч. Матч старше — /replay ДД.ММ."
+    return (head + "\n\n" if head else "") + what, InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 def replay_save(day: str, i: int, score: str, text: str, now: datetime, key: str | None = None,
-                protocol: list[dict] | None = None, league_vid: str | None = None) -> tuple[str, dict | None]:
-    """Сообщение админа → опоры, пересчёт и запись replays.json. score — нажатый гол, пусто — весь матч:
-    тогда в сообщении времена всех голов по порядку. key — ключ матча на момент нажатия: в файл дня успел
-    добавиться матч — номер уже чужой. league_vid — запись лиги: берём, если ссылки нет ни в сообщении,
-    ни в прежней разметке (ADR-028). Возвращает (ошибка или пусто, запись матча)."""
+                protocol: list[dict] | None = None, league_vid: str | None = None,
+                who: int | None = None) -> tuple[str, dict | None]:
+    """Сообщение админа → отметки в журнал (ADR-033), пересчёт и запись replays.json. score — нажатый гол, пусто —
+    весь матч: тогда в сообщении времена всех голов по порядку. key — ключ матча на момент нажатия: в файл дня
+    успел добавиться матч — номер уже чужой. league_vid — запись лиги: берём, если ссылки нет ни в сообщении,
+    ни в прежней разметке (ADR-028). who — Telegram id отметившего. Возвращает (ошибка или пусто, запись матча)."""
     g = replay_game(day, i)
     if not g or key and match_key(g) != key:
         return "Матч пропал из файла службы live — открой /replay заново.", None
-    data = load_replays()
     key = match_key(g)
-    old = data["games"].get(key) or {}
+    old = goal_marks().state(key) or {}
     got = replay.parse_link(text)
     video, link_t = got if got else (old.get("video") or league_vid, None)
     if not video:
@@ -1604,8 +1707,7 @@ def replay_save(day: str, i: int, score: str, text: str, now: datetime, key: str
         t = link_t if link_t is not None else times[0] if len(times) == 1 else None
         if t is None:
             return ("Пришли время этого гола в записи: 1:08:03 — или ссылку VK «с текущим временем».", None)
-        anchors = dict(old.get("anchors") or {}) if old.get("video") == video else {}
-        anchors[score] = t
+        picked = [(score, t)]
     else:
         goals = replay_goals(g, protocol)
         if not times:
@@ -1616,42 +1718,32 @@ def replay_save(day: str, i: int, score: str, text: str, now: datetime, key: str
                     "или нажми на гол и пришли время одного.", None)
         if any(b <= a for a, b in zip(times, times[1:])):
             return "Времена идут не по порядку: каждый следующий гол позже предыдущего.", None
-        anchors = {x["score"]: t for x, t in zip(goals, times)}
-    marks = {k: old.get(k) or [] for k in ("absent", "wrong")} if old.get("video") == video else {}
-    entry = replay.entry(g, video, anchors, now, protocol, **marks)
-    data["games"][key] = entry
-    data["updated"] = admin.iso(now)
-    write_atomic(REPLAYS_FILE, data)
-    return "", entry
+        picked = [(x["score"], t) for x, t in zip(goals, times)]
+    for s, t in picked:
+        add_mark(key, s, "time", now, who, "replay", protocol, video=video, sec=t, seen=text)
+    return "", marks_apply(key, g, now, protocol)
 
 
-def replay_drop(day: str, i: int, now: datetime) -> None:
+def replay_drop(day: str, i: int, now: datetime, who: int | None = None) -> None:
+    """«Сбросить повторы матча»: все действующие отметки матча отменяются — в журнале они остаются отозванными."""
     g = replay_game(day, i)
-    data = load_replays()
-    if g and data["games"].pop(match_key(g), None) is not None:
-        data["updated"] = admin.iso(now)
-        write_atomic(REPLAYS_FILE, data)
+    if g:
+        goal_marks().revoke_match(now, match_key(g), role=role_of(who), via="replay", who=who)
+        marks_apply(match_key(g), g, now)
 
 
 def replay_mark(key: str, score: str, kind: str, video: str | None, now: datetime,
-                protocol: list[dict] | None = None) -> str:
-    """Пометка админа у гола (ADR-031): `absent` — гола в записи нет (запись началась позже, её разбили на два
-    ролика), `wrong` — табло сбилось: повтор или превью показывают не тот гол. У помеченного гола секунды табло больше
-    нет, у «табло сбилось» — и у следующих голов той же команды; своё время админа главнее пометки. Ошибка или пусто."""
+                protocol: list[dict] | None = None, who: int | None = None, via: str = "replay") -> str:
+    """Пометка у гола (ADR-031) — строка журнала (ADR-033): `absent` — гола в записи нет (запись началась позже, её
+    разбили на два ролика), `wrong` — табло сбилось: повтор или превью показывают не тот гол. У помеченного гола
+    секунды табло больше нет, у «табло сбилось» — и у следующих голов той же команды. «Нет в записи» и время гола —
+    действует последняя из двух отметок. Ошибка или пусто."""
     g = live_by_key(key)
-    data = load_replays()
-    old = data["games"].get(key) or {}
-    video = old.get("video") or video
+    video = (goal_marks().state(key) or {}).get("video") or video
     if not g or not video:
         return "Матч пропал из файла службы live или у него нет записи — пометку не записал."
-    anchors = dict(old.get("anchors") or {})
-    marks = {k: set(old.get(k) or []) for k in ("absent", "wrong")}
-    marks[kind].add(score)
-    if kind == "absent":
-        anchors.pop(score, None)
-    data["games"][key] = replay.entry(g, video, anchors, now, protocol, **marks)
-    data["updated"] = admin.iso(now)
-    write_atomic(REPLAYS_FILE, data)
+    add_mark(key, score, kind, now, who, via, protocol, video=video)
+    marks_apply(key, g, now, protocol)
     return ""
 
 
@@ -1663,12 +1755,31 @@ def replay_waiting(m: Message) -> bool:
 
 
 @dp.message(Command("replay"))   # только админам, в меню команд её нет
-async def h_replay(m: Message):
+async def h_replay(m: Message, command: CommandObject):
     if m.chat.type != "private" or not m.from_user or m.from_user.id not in ADMIN_IDS:
         return
     REPLAY_ASK.pop(m.chat.id, None)
-    text, kb = replay_list(datetime.now(TZ))
+    now = datetime.now(TZ)
+    day = replay_day_arg(command.args, now)
+    if command.args and not day:
+        await m.answer("Не понял день. Пришли так: /replay 04.10 — матчи этого дня, хоть начала сезона.")
+        return
+    text, kb = replay_list(now, day)
     await m.answer(text, reply_markup=kb)
+
+
+@dp.message(Command("marks_forget"))   # только админам: стереть Telegram id отметившего в журнале (ADR-033)
+async def h_marks_forget(m: Message, command: CommandObject):
+    if m.chat.type != "private" or not m.from_user or m.from_user.id not in ADMIN_IDS:
+        return
+    arg = (command.args or "").strip()
+    if not arg.isdigit():
+        await m.answer("Пришли Telegram id: /marks_forget 123456789 — в журнале отметок у этого человека останется "
+                       "только роль (админ или помощник).")
+        return
+    n = goal_marks().forget(int(arg))
+    await m.answer(f"Стёр id {arg} в журнале отметок: строк — {n}. Роль у них осталась." if n
+                   else "Отметок с этим id в журнале нет.")
 
 
 @dp.callback_query(F.data.startswith("rp:"))
@@ -1684,6 +1795,11 @@ async def cb_replay(c: CallbackQuery):
         await safe_edit(c, lambda: replay_list(now))
         await c.answer()
         return
+    if parts[1] == "d" and len(parts) > 2:   # список матчей одного дня (/replay ДД.ММ)
+        REPLAY_ASK.pop(cid, None)
+        await safe_edit(c, lambda: replay_list(now, parts[2]))
+        await c.answer()
+        return
     day, i = parts[2], int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else -1
     g = replay_game(day, i)
     if not g:
@@ -1694,21 +1810,40 @@ async def cb_replay(c: CallbackQuery):
         await c.answer()
         video = (load_replays()["games"].get(match_key(g)) or {}).get("video") \
             or league_video(await published_league(), g)
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🚫 Гола нет в записи", callback_data=f"rp:a:{day}:{i}:{parts[4]}")],
-            [InlineKeyboardButton(text="⚠️ Повтор не тот — табло сбилось", callback_data=f"rp:w:{day}:{i}:{parts[4]}")]]
-        ) if video else None
+        history, open_ = goal_history(match_key(g), parts[4], c.from_user.id)
+        rows = [[InlineKeyboardButton(text="🚫 Гола нет в записи", callback_data=f"rp:a:{day}:{i}:{parts[4]}")],
+                [InlineKeyboardButton(text="⚠️ Повтор не тот — табло сбилось",
+                                      callback_data=f"rp:w:{day}:{i}:{parts[4]}")]] if video else []
+        rows += [[InlineKeyboardButton(text=f"↩️ Отозвать: {mark_word(r)}", callback_data=f"rp:r:{day}:{i}:{r['id']}")]
+                 for r in open_]
         await c.message.answer(
             f"Гол <b>{html.escape(parts[4])}</b>: пришли его время в записи — 1:08:03"
             + ("." if video else " — вместе со ссылкой на запись в VK.")
             + ("\nПовтор открывает не тот гол — нажми «табло сбилось»: секунды табло у этого гола и следующих голов "
-               "команды больше не берём. Гола в записи нет совсем — «нет в записи»." if video else ""),
-            reply_markup=kb)
+               "команды больше не берём. Гола в записи нет совсем — «нет в записи»." if video else "")
+            + ("\n\n<b>Отметки</b> (ошиблись — «Отозвать», это остаётся в истории):\n"
+               + "\n".join(html.escape(x) for x in history) if history else ""),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
+        return
+    if parts[1] == "r" and len(parts) == 5 and parts[4].isdigit():   # отозвать отметку (ADR-033)
+        mark = goal_marks().get(int(parts[4]))
+        if not mark or mark["match"] != match_key(g) or goal_marks().revoke(
+                now, mark["id"], role=role_of(c.from_user.id), via="replay", who=c.from_user.id) is None:
+            await c.answer("Эта отметка уже отозвана", show_alert=True)
+            return
+        TRACK.add("replay_revokes")
+        league = await published_league()
+        protocol, video = protocol_of(league, g), league_video(league, g)
+        entry = marks_apply(match_key(g), g, now, protocol)
+        REPLAY_ASK[cid] = (day, i, "", now, match_key(g))
+        await c.message.answer(replay_text(day, g, entry, protocol, video),
+                               reply_markup=replay_kb(day, i, g, entry, protocol), disable_web_page_preview=True)
+        await c.answer("Отозвал — в истории отметка осталась отозванной")
         return
     if parts[1] in ("a", "w") and len(parts) == 5:
         league = await published_league()
         err = replay_mark(match_key(g), parts[4], "absent" if parts[1] == "a" else "wrong", league_video(league, g),
-                          now, protocol_of(league, g))
+                          now, protocol_of(league, g), who=c.from_user.id)
         if err:
             await c.answer(err, show_alert=True)
             return
@@ -1721,7 +1856,7 @@ async def cb_replay(c: CallbackQuery):
         await c.answer("Записал")
         return
     if parts[1] == "x":
-        replay_drop(day, i, now)
+        replay_drop(day, i, now, who=c.from_user.id)
     REPLAY_ASK[cid] = (day, i, "", now, match_key(g))   # открыт матч — ждём времена всех голов
     league = await published_league()
     protocol, video = protocol_of(league, g), league_video(league, g)
@@ -1737,7 +1872,7 @@ async def h_replay_link(m: Message):
     g = replay_game(day, i)
     league = await published_league()
     protocol, video = (protocol_of(league, g), league_video(league, g)) if g else (None, None)
-    err, entry = replay_save(day, i, score, m.text, now, key, protocol, video)
+    err, entry = replay_save(day, i, score, m.text, now, key, protocol, video, who=m.from_user.id)
     if err:
         await m.answer(err)
         return
@@ -1981,20 +2116,15 @@ def live_by_key(key: str) -> dict | None:
     return next((g for g in games if isinstance(g, dict) and match_key(g) == key), None)
 
 
-def preview_save(key: str, score: str, sec: int, video: str, now: datetime, protocol: list[dict] | None) -> str:
-    """Секунда гола из превью → опора админа в replays.json и пересчёт повторов матча. Ошибка или пусто."""
+def preview_save(key: str, score: str, sec: int, video: str, now: datetime, protocol: list[dict] | None,
+                 who: int | None = None, seen: dict | None = None) -> str:
+    """Секунда гола из превью → строка журнала (ADR-033: кто ответил и какое окно видел) и пересчёт повторов матча.
+    Ошибка или пусто."""
     g = live_by_key(key)
     if not g:
         return "Матч пропал из файла службы live — секунду не записал."
-    data = load_replays()
-    old = data["games"].get(key) or {}
-    same = replay.same_video(old.get("video"), video)
-    anchors = dict(old.get("anchors") or {}) if same else {}
-    anchors[score] = sec
-    marks = {k: old.get(k) or [] for k in ("absent", "wrong")} if same else {}
-    data["games"][key] = replay.entry(g, old["video"] if same else video, anchors, now, protocol, **marks)
-    data["updated"] = admin.iso(now)
-    write_atomic(REPLAYS_FILE, data)
+    add_mark(key, score, "time", now, who, "preview", protocol, video=video, sec=sec, seen=seen)
+    marks_apply(key, g, now, protocol)
     return ""
 
 
@@ -2131,7 +2261,8 @@ async def cb_preview(c: CallbackQuery):
     if pick == "w":   # ADR-031: на табло в превью другой счёт — сопоставление сбилось
         league = await published_league()
         g = live_by_key(key)
-        err = replay_mark(key, score, "wrong", video, datetime.now(TZ), protocol_of(league, g) if g else None)
+        err = replay_mark(key, score, "wrong", video, datetime.now(TZ), protocol_of(league, g) if g else None,
+                          who=c.from_user.id, via="preview")
         if err:
             await c.answer(err, show_alert=True)
             return
@@ -2151,15 +2282,18 @@ async def cb_preview(c: CallbackQuery):
     if not pick.isdigit() or int(pick) >= len(cand):
         await c.answer()
         return
-    await preview_answer(c.bot, c.message.chat.id, key, score, ask, video, int(cand[int(pick)]))
+    await preview_answer(c.bot, c.message.chat.id, key, score, ask, video, int(cand[int(pick)]), who=c.from_user.id)
     await c.answer("Записал")
 
 
-async def preview_answer(bot: Bot, cid: int, key: str, score: str, ask: dict, video: str, t: int) -> None:
+async def preview_answer(bot: Bot, cid: int, key: str, score: str, ask: dict, video: str, t: int,
+                         who: int | None = None) -> None:
     sec = int(ask.get("from") or 0) + t
     league = await published_league()
     g = live_by_key(key)
-    err = preview_save(key, score, sec, video, datetime.now(TZ), protocol_of(league, g) if g else None)
+    seen = {"from": ask.get("from"), "len": ask.get("len"), "cand": ask.get("cand"), "pick": t}   # окно превью
+    err = preview_save(key, score, sec, video, datetime.now(TZ), protocol_of(league, g) if g else None,
+                       who=who, seen=seen)
     if err:
         await bot.send_message(cid, err)
         return
@@ -2188,7 +2322,7 @@ async def h_preview_time(m: Message):
                        f"{replay.fmt_clock(int(ask.get('len') or 0))}).")
         return
     PREVIEW_ASK.pop(m.chat.id, None)
-    await preview_answer(m.bot, m.chat.id, key, score, ask, video, t)
+    await preview_answer(m.bot, m.chat.id, key, score, ask, video, t, who=m.from_user.id)
 
 
 # ---------- кадры табло для разметки (ADR-030, дополнение 06.10) ----------

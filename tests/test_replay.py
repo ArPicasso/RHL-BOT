@@ -177,7 +177,8 @@ class Bot(unittest.TestCase):
         self.dir = Path(tempfile.mkdtemp())
         (self.dir / "2026-10-03.json").write_text(json.dumps({"date": "2026-10-03", "games": [GAME]}), encoding="utf-8")
         self.patches = [mock.patch.object(bot, "LIVE_DIR", self.dir),
-                        mock.patch.object(bot, "REPLAYS_FILE", self.dir / "replays.json")]
+                        mock.patch.object(bot, "REPLAYS_FILE", self.dir / "replays.json"),
+                        mock.patch.object(bot, "STATE_DB", self.dir / "state.db")]
         for p in self.patches:
             p.start()
         self.now = msk("2026-10-04T12:00:00")
@@ -238,7 +239,8 @@ class Bot(unittest.TestCase):
         league = {"games": [{"date": "2026-10-03", "home": "tverichi", "away": "metallurg",
                              "goals": [{"score": "1:0", "team": "home", "period": "1", "author": "Иванов"},
                                        {"score": "2:1", "team": "home", "period": "РБ"}]}]}
-        self.assertEqual(self.bot.protocol_of(league, GAME), [{"score": "1:0", "team": "home", "period": "1", "author": "Иванов"}])
+        self.assertEqual(self.bot.protocol_of(league, GAME),
+                         [{"score": "1:0", "team": "home", "period": "1", "author": "Иванов", "time": None}])
         self.assertIsNone(self.bot.protocol_of({"games": [{"date": "2026-10-04", "home": "a", "away": "b"}]}, GAME))
 
     def test_drop(self):
@@ -327,6 +329,7 @@ class Nag(unittest.TestCase):
         self.now = msk("2026-10-04T21:30:00")
         self.track = admin.Tracker("bot", path=self.dir / "bot.json", clock=lambda: self.now)
         for name, value in (("LIVE_DIR", self.dir), ("REPLAYS_FILE", self.dir / "replays.json"),
+                            ("STATE_DB", self.dir / "state.db"),
                             ("ADMIN_IDS", frozenset({1001, 1002})), ("TRACK", self.track)):
             p = mock.patch.object(bot, name, value)
             p.start()
@@ -464,6 +467,7 @@ class Previews(unittest.TestCase):
         self.now = msk("2026-10-04T12:00:00")
         self.track = admin.Tracker("bot", path=self.dir / "bot.json", clock=lambda: self.now)
         for name, value in (("LIVE_DIR", self.dir), ("REPLAYS_FILE", self.dir / "replays.json"),
+                            ("STATE_DB", self.dir / "state.db"),
                             ("PREVIEWS_FILE", self.dir / "previews.json"), ("BASE", self.dir),
                             ("ADMIN_IDS", frozenset({1001})), ("PREVIEW_IDS", frozenset({761})), ("TRACK", self.track)):
             p = mock.patch.object(bot, name, value)

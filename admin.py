@@ -42,7 +42,8 @@ DISK_LOW = 1 << 30
 CLIPS_STALE = timedelta(hours=1)   # служба clips пишет пульс после каждого матча и прохода (ADR-030, раздел 7)
 VK_FAILS = 3        # столько раз за день VK не отдал запись и ни разу не отдал — тревога: обычно чинит новый yt-dlp
 # что служба clips считает о каталоге голов (`Tracker.gauge`), плитки пульта — в «Рассылках»
-CLIPS_GAUGES = ("goals", "timed", "timed_auto", "timed_admin", "clips", "ask", "no_video", "mismatch")
+CLIPS_GAUGES = ("goals", "timed", "timed_auto", "timed_admin", "clips", "ask", "no_video", "mismatch", "no_board",
+                "boards")
 NIGHT_FROM, NIGHT_TO = 2, 7   # с 2:00 до 7:00 МСК сборку не будят (pages_kick.py) — не тревожимся
 
 STATE_WORDS = {"inactive": "остановлена", "failed": "упала", "activating": "запускается",

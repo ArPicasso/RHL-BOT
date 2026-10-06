@@ -7,8 +7,12 @@ league.json («Смотреть» от rhl.fhr.ru) или ссылка адми�
 проход по записи пробником табло (tools/probe_scoreboard.py, разметка табло клубов — boards.json), точные голы —
 встали часы игры (`clock`) или проверенная задержка табло клуба (`board`). У остальных голов табло знает, какой это
 гол, но не секунду: служба режет превью — PREVIEW_BEFORE секунд записи до смены счёта, 360p — и ищет в нём моменты,
-когда вставали часы игры. Бот присылает превью админам и помощникам с кнопками на эти моменты (шаг 3). Табло
-клуба-хозяина не размечено — кадр с сеткой grid.png для разметки, голов нет.
+когда вставали часы игры. Бот присылает превью админам и помощникам с кнопками на эти моменты (шаг 3). Гол, которого
+табло не нашло вовсе (табло убирали на минуты), — тоже превью: окно пошире, где ждать смену счёта — по времени сайта
+лиги и сдвигу «запись − сайт» у найденных голов того же периода (`est`). Табло клуба-хозяина не размечено — кадр с
+сеткой grid.png для разметки, голов нет: кадр клуба держим в probe/grids/<клуб>.png до разметки, а в clips.json —
+`boards`: какие клубы ждут разметки, сколько их матчей и где кадр. Бот присылает его админам (ADR-030, дополнение
+06.10).
 
 По одному писателю на файл: live/replays.json пишет только бот, live/clips.json — только эта служба. Качаем как
 плеер (yt-dlp), без обхода защиты (ADR-012): VK отказал — пишем ошибку и пробуем позже, не больше TRIES раз.
@@ -48,17 +52,22 @@ import s3  # noqa: E402
 TZ = ZoneInfo("Europe/Moscow")
 LIVE_DIR = Path(os.environ.get("LIVE_DIR") or ROOT / "live")
 WORK = ROOT / "probe" / "scoreboard"
+GRIDS = ROOT / "probe" / "grids"   # кадр с сеткой клуба без разметки табло: держим до разметки, не KEEP_DAYS
 SINCE = date.fromisoformat(os.environ.get("CLIPS_SINCE") or "2026-10-03")   # с этого дня разбираем: сайт РХЛ с записями
 SCAN_MAX = 2        # записей за проход: разбор — минуты, между ними — нарезка клипов
 EVERY = 600         # с между проходами; пока есть неразобранные записи сезона — через минуту
 TRIES = 3           # столько раз пробуем матч, который не скачался или упал
 KEEP_DAYS = 3       # кадры прохода держим столько дней
-VERSION = 3         # разбор поменялся — матчи разбираем заново (05.10: голы по порядку протокола; 06.10: смены
-                    # табло — в порядке счёта, у двух голов не бывает одной остановки часов)
+VERSION = 4         # разбор поменялся — матчи разбираем заново (05.10: голы по порядку протокола; 06.10: смены
+                    # табло — в порядке счёта, у двух голов не бывает одной остановки часов; 06.10: превью и голам,
+                    # которых табло не нашло, кадр клуба без разметки — в probe/grids/)
 PREVIEW_BEFORE = 120   # с записи до смены счёта на табло в превью: оператор меняет счёт через 0–90 с после гола
 PREVIEW_AFTER = 5      # и после смены
 PREVIEW_FORMAT = "b[height<=360][height>=240]/b[height<=480]/w"   # превью лёгкое: смотрят в Telegram
 CANDIDATES = 3         # кнопок «Гол на …» под превью — последние остановки часов перед сменой счёта
+EST_BEFORE = 240       # с записи до ожидаемой смены табло у гола, которого табло не нашло: время сайта лиги внутри
+EST_AFTER = 90         # периода гуляет до двух минут (04.10, «Тверичи» 0:3), оператор меняет счёт через 0–90 с
+EST_SPREAD = 120       # сдвиг «запись − сайт» другого периода берём, только если у всех найденных голов он в этих с
 
 log = logging.getLogger("clips")
 
@@ -158,6 +167,42 @@ def found_goals(board: list[dict], live: dict[str, dict]) -> dict[str, dict]:
     return out
 
 
+def median(xs: list[float]) -> float:
+    xs = sorted(xs)
+    return xs[len(xs) // 2] if len(xs) % 2 else (xs[len(xs) // 2 - 1] + xs[len(xs) // 2]) / 2
+
+
+def missing_goals(goals: dict[str, dict], site: list[tuple[str, str, float]], live: dict[str, dict],
+                  length: float | None = None) -> dict[str, dict]:
+    """Голы, которых табло не нашло (табло убирали на минуты: 04.10 у «Тверичей» 2:5 вернули через 11 минут), —
+    где в записи ждать смену счёта (`est`), чтобы и им прислать превью. Внутри периода «смена табло − отметка сайта
+    лиги» почти одна у всех голов (ADR-029), поэтому оценка — время сайта плюс медиана этого сдвига у найденных голов
+    того же периода. В периоде найденных нет — медиана по матчу, если у всех найденных сдвиг в EST_SPREAD с (иначе
+    трансляцию прерывали в перерыве по-разному и не угадываем). Нет времени сайта — тоже не угадываем.
+    site — голы службы live: (счёт, период, когда сайт показал гол — unix). (счёт → гол без секунды с `est`)."""
+    shifts: dict[str, list[float]] = {}
+    for score, per, at in site:
+        change = (goals.get(score) or {}).get("change")
+        if isinstance(change, (int, float)):
+            shifts.setdefault(per, []).append(change - at)
+    every = [d for ds in shifts.values() for d in ds]
+    out = {}
+    for score, per, at in site:
+        if score in goals or per == "РБ" or not replay.SCORE_RE.fullmatch(score):
+            continue
+        if shifts.get(per):
+            d = median(shifts[per])
+        elif every and max(every) - min(every) <= EST_SPREAD:
+            d = median(every)
+        else:
+            continue
+        est = round(at + d)
+        if est < 0 or (length and est > length):
+            continue
+        out[score] = {**live.get(score, {}), "change": None, "est": est, "t": None, "src": None}
+    return out
+
+
 def clock_stops(vis: list[tuple[float, bytes]], clock: list[int], gap: float = 2) -> list[float]:
     """Когда вставали часы игры: последняя секунда, когда часы шли, перед секундой, когда они уже стоят (как
     clock_stop пробника, ADR-029). vis — кадры с табло подряд, кадр в секунду; разрыв больше gap — не смотрим."""
@@ -173,6 +218,16 @@ def preview_window(change: float, length: float | None = None) -> tuple[int, int
     """Окно превью: (начало, длина) в секундах записи — до смены счёта на табло и чуть после."""
     start = max(0, int(change) - PREVIEW_BEFORE)
     end = int(change) + PREVIEW_AFTER
+    if length:
+        end = min(end, int(length))
+    return start, max(1, end - start)
+
+
+def est_window(est: float, length: float | None = None) -> tuple[int, int]:
+    """Окно превью гола, которого табло не нашло: (начало, длина) вокруг ожидаемой смены счёта `est`. Шире обычного:
+    смену ждём по времени сайта лиги, а не видим на табло."""
+    start = max(0, int(est) - EST_BEFORE)
+    end = int(est) + EST_AFTER
     if length:
         end = min(end, int(length))
     return start, max(1, end - start)
@@ -201,8 +256,11 @@ def video_info(path: Path) -> dict:
 
 
 def add_previews(key: str, video: str, goals: dict[str, dict], length: float | None, out: Path) -> None:
-    """Превью голам, у которых табло знает смену счёта, но не секунду: файл и моменты остановки часов (`ask`)."""
-    need = {s: g for s, g in goals.items() if g.get("t") is None and g.get("change") is not None}
+    """Превью голам, у которых табло знает смену счёта, но не секунду: файл и моменты остановки часов (`ask`). И голам,
+    которых табло не нашло, но есть оценка по сайту лиги (`est`): окно шире, кнопок-моментов нет — остановок часов в
+    пяти минутах много, какая из них гол, не угадать; у такого `ask` пометка `est`."""
+    need = {s: g for s, g in goals.items()
+            if g.get("t") is None and (g.get("change") is not None or g.get("est") is not None)}
     if not need:
         return
     club = key.split("|")[1]
@@ -210,10 +268,11 @@ def add_previews(key: str, video: str, goals: dict[str, dict], length: float | N
     src480, h480, _ = sb.stream_of(video)
     src360, h360, _ = sb.stream_of(video, PREVIEW_FORMAT)
     for score, g in need.items():
-        start, span = preview_window(g["change"], length)
+        guess = g.get("change") is None
+        start, span = est_window(g["est"], length) if guess else preview_window(g["change"], length)
         path = out / f"preview_{score.replace(':', '-')}.mp4"
         cand: list[int] = []
-        if board.get("clock"):
+        if board.get("clock") and not guess:
             dense = sb.safe_scan(src480, h480, sb.BOXES[club], start, start + span)
             model = sb.name_model([f for _, f in dense], board["name"]) if dense else None
             vis = [(t, f) for t, f in dense if not model or sb.on_screen(f, model)]
@@ -232,8 +291,10 @@ def add_previews(key: str, video: str, goals: dict[str, dict], length: float | N
         if info.get("dur", span) < min(span, PREVIEW_AFTER + 10):
             log.warning("%s %s: превью вышло %s с вместо %d — не шлём", key, score, info.get("dur"), span)
             continue
-        g["ask"] = {"from": start, "len": span, "file": str(path.relative_to(ROOT)), "cand": cand, **info}
-        log.info("%s %s: превью %s, моментов часов %d", key, score, replay.fmt_t(start), len(cand))
+        g["ask"] = {"from": start, "len": span, "file": str(path.relative_to(ROOT)), "cand": cand, **info,
+                    **({"est": 1} if guess else {})}
+        log.info("%s %s: превью %s%s, моментов часов %d", key, score, replay.fmt_t(start),
+                 " (табло гол не нашло — окно по сайту лиги)" if guess else "", len(cand))
 
 
 def protocol_order(league: dict | None, key: str) -> list[tuple[str, str, str]]:
@@ -254,20 +315,63 @@ def scan_match(key: str, video: str, anchors: dict, order: list[tuple[str, str, 
     out.mkdir(parents=True, exist_ok=True)
     if club not in sb.BOARDS:
         sb.grid_sheet(src, headers, length, out / "grid.png")
+        keep_grid(club, out / "grid.png")
         log.info("%s: табло клуба %s не размечено — grid.png для разметки в boards.json", key, club)
         return {"status": "no_board", "goals": {}}
     args = SimpleNamespace(out=WORK, step=sb.STEP, start=0, end=None, rescan=False,
                            order=[(score, team) for score, team, _ in order or []])
     truth = {s: t for s, t in (anchors or {}).items() if isinstance(t, int)}
-    sb.probe(key, src, headers, truth, sb.site_goals(LIVE_DIR, key), sb.BOXES[club], args)
+    site = sb.site_goals(LIVE_DIR, key)
+    sb.probe(key, src, headers, truth, site, sb.BOXES[club], args)
     board = read_json(out / "goals.json").get("goals") or []
     live = live_goals(key) or {score: {"team": team, "period": per} for score, team, per in order or []}
     goals = found_goals(board, live)
+    goals.update(missing_goals(goals, site, live, length))
     try:
         add_previews(key, video, goals, length, out)
     except Exception as err:   # без превью голы всё равно записываем: секунды табло уже есть
         log.warning("%s: превью не сделали — %s: %s", key, type(err).__name__, err)
     return {"status": "ok", "goals": goals}
+
+
+def keep_grid(club: str, grid: Path, root: Path | None = None) -> None:
+    """Кадр с сеткой клуба без разметки табло — в probe/grids/<клуб>.png: папки матчей чистятся через KEEP_DAYS, а
+    кадр нужен, пока табло не разметили. До 06.10 он оставался в папке матча, его никто не видел, и домашние матчи
+    неразмеченных клубов шли без секунд, превью и клипов."""
+    root = root or GRIDS
+    if grid.is_file() and grid.stat().st_size:
+        root.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(grid, root / f"{club}.png")
+
+
+def boards_todo(games: dict, root: Path | None = None) -> dict[str, dict]:
+    """Клубы-хозяева, чьё табло не размечено (ADR-030, дополнение 06.10): сколько их матчей с записью ждут разметки,
+    последний из них и кадр для разметки — путь от корня проекта (его бот присылает админам). Кадры клубов, которых
+    уже разметили, удаляем. (клуб → {"matches", "key", "grid"?})."""
+    root = root or GRIDS
+    out: dict[str, dict] = {}
+    for key in sorted(games):
+        g = games[key]
+        club = key.split("|")[1] if key.count("|") == 2 else ""
+        if not (isinstance(g, dict) and g.get("status") == "no_board" and club) or club in sb.BOARDS:
+            continue
+        e = out.setdefault(club, {"matches": 0})
+        e["matches"] += 1
+        e["key"] = key                                     # ключи по порядку — последний и есть свежий
+    for club, e in out.items():
+        grid = root / f"{club}.png"
+        if not grid.is_file():                             # разобран до 06.10: кадр ещё в папке матча
+            keep_grid(club, WORK / safe_name(e["key"]) / "grid.png", root)
+        if grid.is_file():
+            try:
+                e["grid"] = str(grid.relative_to(ROOT))
+            except ValueError:
+                e["grid"] = str(grid)
+    if root.is_dir():
+        for old in root.glob("*.png"):
+            if old.stem in sb.BOARDS:
+                old.unlink(missing_ok=True)
+    return out
 
 
 def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan=scan_match,
@@ -293,12 +397,18 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
                       **got, "clips": was.get("clips") or {}}   # выложенные клипы остаются: нарезка сверит их сама
         timed = sum(1 for g in games[key]["goals"].values() if g.get("t") is not None)
         log.info("%s: %s, голов по табло %d, с секундой %d", key, got["status"], len(games[key]["goals"]), timed)
+        store["boards"] = boards_todo(games)
         store["updated"] = now_msk().isoformat(timespec="seconds")
         write_atomic(LIVE_DIR / "clips.json", store)
         if track is not None:   # пульс после каждого матча: разбор записи — минуты, пульт ждёт не дольше часа
             track.flush()
     for key in [k for k in games if k[:10] < SINCE.isoformat()]:
         games.pop(key)
+    boards = boards_todo(games)
+    if boards != store.get("boards"):   # клуб разметили или его кадр появился — бот должен узнать и без разбора
+        store["boards"] = boards
+        store["updated"] = now_msk().isoformat(timespec="seconds")
+        write_atomic(LIVE_DIR / "clips.json", store)
     done = min(len(todo), SCAN_MAX)
     return done, len(todo) - done
 
@@ -448,13 +558,15 @@ def catalog(store: dict, league: dict | None, marked: dict, today: date) -> dict
     лиги и без ссылки админа: клипов у них не будет. Остальные — `goals` (голы протокола без буллитов; протокола ещё
     нет — голы, найденные табло), из них `timed` с точной секундой (`timed_admin` — от админа, `timed_auto` — часы и
     табло), `clips` с клипом, `ask` ждут ответа на превью и `mismatch` — табло нашло гол, которого нет в протоколе
-    (лига отменила гол или поправила счёт)."""
+    (лига отменила гол или поправила счёт). `no_board` — матчей с записью, где табло клуба-хозяина не размечено (ни
+    секунд, ни превью, пока не разметят), `boards` — сколько таких клубов (ADR-030, дополнение 06.10)."""
     days = season_days(today)
     found = sb.recorded(league, days)
     for key, e in (marked or {}).items():
         if key[:10] in days and isinstance(e, dict) and isinstance(e.get("video"), str):
             found.setdefault(key, {"video": e["video"]})
     out = dict.fromkeys(admin.CLIPS_GAUGES, 0)
+    unmarked: set = set()
     games = store.get("games") or {}
     for g in (league or {}).get("games") or []:
         if not (isinstance(g, dict) and g.get("date") in days and g.get("score")):
@@ -464,6 +576,9 @@ def catalog(store: dict, league: dict | None, marked: dict, today: date) -> dict
             out["no_video"] += 1
             continue
         game = games.get(key) if isinstance(games.get(key), dict) else {}
+        if game.get("status") == "no_board" and g.get("home") not in sb.BOARDS:
+            out["no_board"] += 1
+            unmarked.add(g.get("home"))
         admin_e = (marked or {}).get(key) if isinstance((marked or {}).get(key), dict) else None
         board = game.get("goals") or {}
         protocol = league_goals(league, key)
@@ -481,8 +596,9 @@ def catalog(store: dict, league: dict | None, marked: dict, today: date) -> dict
                 out["ask"] += 1
             if score in have:
                 out["clips"] += 1
-        if protocol:
-            out["mismatch"] += sum(1 for s in board if s not in protocol)
+        if protocol:   # гол, которого табло не нашло (`est`), взят у службы live, а не с табло
+            out["mismatch"] += sum(1 for s, b in board.items() if s not in protocol and (b or {}).get("est") is None)
+    out["boards"] = len(unmarked)
     return out
 
 

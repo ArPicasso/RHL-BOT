@@ -408,6 +408,17 @@ class Nag(unittest.TestCase):
         self.bot.replay_save("2026-10-03", 0, "1:0", f"{VIDEO}?t=27m", self.now)      # админ ответил на одно
         self.assertEqual(self.bot.previews_waiting(clips_, self.bot.load_replays()["games"]), {GAME["key"]: ["2:1"]})
 
+    def test_unmarked_boards_line(self):
+        """Дополнение 06.10: клубы без разметки табло — строкой, даже когда превью ждать нечего."""
+        clips_ = {"games": {}, "boards": {"polet": {"matches": 2, "key": "2026-10-03|polet|sokol",
+                                                    "grid": "probe/grids/polet.png"}}}
+        (self.dir / "clips.json").write_text(json.dumps(clips_), encoding="utf-8")
+        sent, say = self.run_step(league={"games": []})
+        self.assertEqual(sent, 2)
+        text, kb = say.call_args.args[2]()
+        self.assertTrue(text.startswith("🖼 Табло не размечено: Полёт (2)"), text)
+        self.assertIsNone(kb)                                   # матчей для /replay нет — без пустой клавиатуры
+
     def test_many_matches_link_to_list(self):
         todo = [("2026-10-03", k, GAME) for k in range(10)]
         text, kb = self.bot.replay_nag(todo)
@@ -456,6 +467,12 @@ class Previews(unittest.TestCase):
         tok = self.bot.preview_token(GAME["key"], "1:0")
         self.assertEqual(kb.inline_keyboard[0][0].callback_data, f"pv:{tok}:0")
         self.assertEqual(self.bot.preview_find(tok)[1], "1:0")
+
+    def test_caption_guessed_by_site_time(self):
+        """Гол, которого табло не нашло (`est`): кнопок-моментов нет, только «Пришлю время», и сказано почему."""
+        text, kb = self.bot.preview_caption(GAME["key"], "2:1", {**self.ask, "cand": [], "est": 1})
+        self.assertIn("Табло этот гол не нашло", text)
+        self.assertEqual([b.text for row in kb.inline_keyboard for b in row], ["Пришлю время"])
 
     def test_step_sends_once_to_admins_and_helpers(self):
         import asyncio
@@ -510,6 +527,64 @@ class Previews(unittest.TestCase):
         self.assertTrue(self.bot.board_covers(g, found))
         self.assertFalse(self.bot.board_covers(GAME, found))          # 2:1 табло не нашло, превью нет
         self.assertFalse(self.bot.board_covers(g, {**found, "status": "no_board"}))
+
+
+class Grids(unittest.TestCase):
+    """ADR-030, дополнение 06.10: кадр табло клуба без разметки — админам файлом, один раз на клуб."""
+
+    def setUp(self):
+        import admin
+        import bot
+        self.bot = bot
+        self.dir = Path(tempfile.mkdtemp())
+        (self.dir / "probe" / "grids").mkdir(parents=True)
+        (self.dir / "probe" / "grids" / "polet.png").write_bytes(b"png")
+        self.boards = {"polet": {"matches": 2, "key": "2026-10-05|polet|ermak", "grid": "probe/grids/polet.png"},
+                       "ermak": {"matches": 1, "key": "2026-10-04|ermak|polet"}}   # кадра ещё нет
+        (self.dir / "clips.json").write_text(json.dumps({"games": {}, "boards": self.boards}), encoding="utf-8")
+        self.now = msk("2026-10-05T12:00:00")
+        self.track = admin.Tracker("bot", path=self.dir / "bot.json", clock=lambda: self.now)
+        for name, value in (("LIVE_DIR", self.dir), ("GRIDS_FILE", self.dir / "grids.json"), ("BASE", self.dir),
+                            ("ADMIN_IDS", frozenset({1001, 1002})), ("PREVIEW_IDS", frozenset({761})),
+                            ("TRACK", self.track)):
+            p = mock.patch.object(bot, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def step(self, bot, now=None):
+        import asyncio
+        with mock.patch.object(self.bot.asyncio, "sleep", mock.AsyncMock()):
+            return asyncio.run(self.bot.grid_step(bot, now or self.now))
+
+    def test_once_per_club_to_admins_as_file(self):
+        bot = mock.Mock()
+        bot.send_document = mock.AsyncMock(return_value=mock.Mock(document=mock.Mock(file_id="G")))
+        self.assertEqual(self.step(bot), 1)
+        self.assertEqual(self.step(bot), 0)                                   # второй раз не шлём
+        self.assertEqual(sorted(c.args[0] for c in bot.send_document.call_args_list), [1001, 1002])   # не помощнику
+        self.assertEqual(bot.send_document.call_args_list[1].args[1], "G")    # файл грузим один раз
+        caption = bot.send_document.call_args_list[0].kwargs["caption"]
+        self.assertIn("Табло «Полёт» не размечено", caption)
+        self.assertIn("2 домашних матча", caption)
+        self.assertIn("<code>polet</code>", caption)
+        self.assertEqual(json.loads((self.dir / "grids.json").read_text(encoding="utf-8"))["polet"]["key"],
+                         "2026-10-05|polet|ermak")
+        self.assertEqual(self.track.today()["grids"], 1)
+
+    def test_quiet_at_night_and_forgets_marked(self):
+        bot = mock.Mock()
+        bot.send_document = mock.AsyncMock(return_value=mock.Mock(document=None))
+        self.assertEqual(self.step(bot, msk("2026-10-05T23:30:00")), 0)
+        self.step(bot)
+        (self.dir / "clips.json").write_text(json.dumps({"games": {}, "boards": {}}), encoding="utf-8")   # разметили
+        self.step(bot)
+        self.assertEqual(json.loads((self.dir / "grids.json").read_text(encoding="utf-8")), {})
+
+    def test_failed_send_retried(self):
+        bot = mock.Mock()
+        bot.send_document = mock.AsyncMock(side_effect=RuntimeError("сеть"))
+        self.assertEqual(self.step(bot), 0)
+        self.assertFalse((self.dir / "grids.json").exists())
 
 
 class ClockFormat(unittest.TestCase):

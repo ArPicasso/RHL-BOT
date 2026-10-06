@@ -97,6 +97,7 @@ https://claude.ai/code/artifact/b73460ae-abd0-4c96-9670-c62615e1ffa5
 | `deploy/` | Сервер: `setup.sh` — первая настройка VPS, `update.sh` — выкладка (`rhl-update`), службы `bot.service`, `live.service`, `api.service`, `pages.service`, `clips.service`, ночной бэкап состояния `backup.sh` с `backup.service` и `backup.timer` (`/var/backups/rhl`, 14 дней), `https.sh` — Caddy и HTTPS для API, `tunnel.sh` и `tg-tunnel.service` — выход в Telegram через зарубежный сервер (`TELEGRAM_PROXY`) |
 | `.github/workflows/deploy.yml` | После слияния в `main` выкладывает бота на сервер по ключу, который умеет только `rhl-update` |
 | `calendar.pdf` | Календарь на печать, отдаётся по кнопке |
+| `docs/PLAN.md` | Работа над готовым проектом (с 06.10.2026): как работаем, ближайшие PR, агенты-сторожа, регулярные дела, что решить владельцу |
 | `docs/SYSTEM.md` | Как система работает сейчас: части, выкладка, секреты, сервер, что делать при сбоях |
 | `docs/research/` | Результаты разведки: источники данных, аудитория, письмо клубу |
 

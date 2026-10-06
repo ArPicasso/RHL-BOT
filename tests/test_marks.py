@@ -290,5 +290,29 @@ class MarkChecks(unittest.TestCase):
                          "rp:g:2026-10-03:0:1:1")
 
 
+class Coverage(unittest.TestCase):
+    """«Почему не у всех» в /replay: причины, что делать и кнопки на недоделанные матчи."""
+
+    def setUp(self):
+        BotJournal.setUp(self)
+
+    def test_button_and_todo(self):
+        cov = {KEY: {"goals": 5, "replays": 3, "why": "not_found", "missing": ["1:1", "2:2"]},
+               "2026-10-03|rostov|krasnodar": {"goals": 4, "replays": 4, "why": "ok"},
+               "2026-10-03|kaluga|dinamo-576": {"goals": 2, "replays": 0, "why": "no_board"}}
+        (self.dir / "clips.json").write_text(json.dumps({"coverage": cov}), encoding="utf-8")
+        text, kb = self.bot.replay_list(self.now)
+        self.assertEqual(kb.inline_keyboard[0][0].callback_data, "rp:why")
+        self.assertIn("2 матча", kb.inline_keyboard[0][0].text)
+        text, kb = self.bot.coverage_todo(cov)
+        self.assertIn("Что сделать", text)
+        self.assertIn("пришли время", text)
+        self.assertIn("кадр табло", text)
+        calls = [b.callback_data for row in kb.inline_keyboard for b in row]
+        self.assertEqual(calls, ["rp:m:2026-10-03:0", "rp:list"])   # калуги нет в файле дня — без кнопки
+        self.assertIn("без повтора 2", kb.inline_keyboard[0][0].text)
+        self.assertIn("Всё готово", self.bot.coverage_todo({KEY: {"goals": 1, "replays": 1, "why": "ok"}})[0])
+
+
 if __name__ == "__main__":
     unittest.main()

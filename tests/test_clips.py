@@ -695,6 +695,70 @@ class Coverage(unittest.TestCase):
             got = clips.scan_match("2026-10-04|rostov|krasnodar", "https://vk.com/video-1_2", {}, [], "club")
         self.assertEqual(got["status"], "short")
 
+    def test_waiting_recording_is_pending(self):
+        store = {"games": {KEY: {"video": VIDEO, "status": "wait", "goals": {}}}}
+        self.assertEqual(clips.coverage(store, LEAGUE, {}, date(2026, 10, 5))[KEY]["why"], "pending")
+
+
+class Waiting(unittest.TestCase):
+    """06.10: «Белгород» и «Дизелист» разобраны во время эфира — VK ещё не знал длину записи, и кадр табло для
+    разметки вышел из заставки до матча. Свежий матч без длины записи ждёт, а не разбирается."""
+    now = datetime(2026, 10, 6, 21, 30, tzinfo=TZ)
+
+    def test_fresh_recording_without_length_waits(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "WORK", Path(tmp) / "w"), \
+                mock.patch.object(clips, "GRIDS", Path(tmp) / "g"), \
+                mock.patch.object(clips, "now_msk", return_value=self.now), \
+                mock.patch.object(clips, "stream", return_value=("http://x", {}, None)), \
+                mock.patch.object(clips.sb, "grid_sheet") as grid:
+            got = clips.scan_match("2026-10-06|polet|sokol", "https://vk.com/video-9_1", {}, [], "league")
+            self.assertEqual(got, {"status": "wait", "goals": {}})
+            grid.assert_not_called()                                         # кадра табло из эфира нет
+            got = clips.scan_match("2026-10-04|polet|sokol", "https://vk.com/video-9_2", {}, [], "league")
+            self.assertEqual(got["status"], "no_board")                      # через сутки длины может и не быть
+            grid.assert_called_once()
+
+    def test_wait_is_not_a_try_and_asked_again_later(self):
+        one = {"games": LEAGUE["games"][:1]}
+        scan = mock.Mock(return_value={"status": "wait", "goals": {}})
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)), \
+                mock.patch.object(clips, "now_msk", return_value=self.now):
+            store = {}
+            for _ in range(clips.TRIES + 1):                                 # ждать можно сколько угодно раз
+                clips.run_pass(store, one, {}, self.now, scan=scan)
+                store["games"][KEY]["scanned"] = "2026-10-06T20:00:00+03:00"
+            self.assertEqual((store["games"][KEY]["status"], store["games"][KEY]["tries"]), ("wait", 0))
+            store["games"][KEY]["scanned"] = self.now.isoformat()
+            self.assertEqual(clips.pending(one, {}, store["games"], self.now.date(), self.now), [])   # только что
+            later = self.now + timedelta(seconds=clips.WAIT_EVERY)
+            self.assertEqual(clips.pending(one, {}, store["games"], later.date(), later), [(KEY, VIDEO)])
+
+    def test_wait_keeps_previous_scan_of_same_video(self):
+        """Повторный разбор того же ролика (табло разметили, разбор поменялся), а VK длину не назвал — прежние голы
+        табло остаются, а не стираются до следующего разбора."""
+        one = {"games": LEAGUE["games"][:1]}
+        goals = {"0:1": {"t": 2600, "src": "clock", "team": "away"}}
+        store = {"games": {KEY: {"video": VIDEO, "status": "no_board", "v": clips.VERSION, "tries": 1, "length": 9000,
+                                 "goals": goals, "rejected": {"0:2": "цифра не та"}}}}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)), \
+                mock.patch.object(clips, "now_msk", return_value=self.now):
+            clips.run_pass(store, one, {}, self.now, scan=mock.Mock(return_value={"status": "wait", "goals": {}}))
+        g = store["games"][KEY]
+        self.assertEqual((g["status"], g["goals"], g["rejected"], g["length"], g["tries"]),
+                         ("wait", goals, {"0:2": "цифра не та"}, 9000, 1))
+
+    def test_live_stream_has_no_length(self):
+        """Эфир ещё идёт — длины нет, даже если VK её назвал: записи целиком ещё нет."""
+        def ydl(info):
+            box = mock.MagicMock()
+            box.return_value.__enter__.return_value.extract_info.return_value = info
+            return SimpleNamespace(YoutubeDL=box)
+        base = {"url": "http://x", "http_headers": {}, "duration": 5400}
+        with mock.patch.dict(sys.modules, {"yt_dlp": ydl({**base, "is_live": True})}):
+            self.assertIsNone(sb.stream_of("https://vk.com/video-1_1")[2])
+        with mock.patch.dict(sys.modules, {"yt_dlp": ydl(base)}):
+            self.assertEqual(sb.stream_of("https://vk.com/video-1_1")[2], 5400)
+
 
 class MarkChecks(unittest.TestCase):
     """ADR-033: вердикт по отметкам людей в clips.json (`checks`); спорный гол — без клипа и без точной секунды."""

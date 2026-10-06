@@ -541,6 +541,24 @@ class AdminPanel(Base):
         self.assertEqual(st["sends"]["clips"], {"goals": 10, "timed": 7, "clips": 5})
         self.assertEqual(st["system"]["clips"]["vk_ok"], 2)
 
+    async def test_agent_status_by_token_only(self):
+        """Агент разбора (ADR-030, дополнение 06.10, ночь): пульт и status/*.json по токену, без него адреса нет."""
+        r = await self.client.get("/api/agent/status")
+        self.assertEqual(r.status, 404)   # токена на сервере нет — адрес выключен
+        self.api.cfg.agent_token = "t" * 40
+        for h in ({}, {"Authorization": "Bearer " + "x" * 40}, {"Authorization": "t" * 40},
+                  self.auth(fan(1))):   # и админ из Telegram — не агент
+            r = await self.client.get("/api/agent/status", headers=h)
+            self.assertEqual(r.status, 401, h)
+        (self.status / "clips.json").write_text(json.dumps({"info": {"cut": "off"}, "days": {}}), encoding="utf-8")
+        r = await self.client.get("/api/agent/status", headers={"Authorization": "Bearer " + "t" * 40})
+        self.assertEqual(r.status, 200)
+        d = await r.json()
+        self.assertEqual(d["files"]["clips"]["info"], {"cut": "off"})
+        self.assertIsNone(d["files"]["bot"])   # файла нет — пусто, а не ошибка
+        self.assertEqual(d["pult"]["now"], "2026-10-03T12:00:00+03:00")
+        self.assertEqual(server.Config(agent_token="short").agent_token, "")   # короткий токен не включает адрес
+
     async def test_alerts_file_for_the_bot(self):
         """Тревоги (ADR-022): список проблем api кладёт в status/alerts.json, разносит его бот."""
         found = await self.api.write_alerts()

@@ -432,6 +432,14 @@ class S3Sign(unittest.TestCase):
         self.assertTrue(h.endswith("Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41"))
         self.assertIn("SignedHeaders=host;range;x-amz-content-sha256;x-amz-date", h)
 
+    def test_aws_list_vector(self):
+        """Пример «GET Bucket (List Objects)» из той же документации: подпись с query — для стирания клипов."""
+        import s3
+        h = s3.sign("GET", "examplebucket.s3.amazonaws.com", "/", {}, s3.EMPTY,
+                    "AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "us-east-1",
+                    datetime(2013, 5, 24, tzinfo=ZoneInfo("UTC")), "max-keys=2&prefix=J")
+        self.assertTrue(h.endswith("Signature=34b48302e7b5fa45bde8084f4b7868a86f0a534bc59db6670ed5711ef69dc6f7"))
+
     def test_store_from_env(self):
         import s3
         self.assertFalse(s3.Store({}).ok)
@@ -481,7 +489,7 @@ class Cutting(unittest.TestCase):
             cut = mock.Mock(return_value=(clip, poster, 30.0))
             stream = mock.Mock(return_value=("src", {}, 7200))
             with mock.patch.object(clips, "LIVE_DIR", Path(tmp)), mock.patch.object(clips, "WORK", Path(tmp)), \
-                    mock.patch.object(clips.pc, "font_file", return_value="font.ttf"):
+                    mock.patch.object(clips.pc, "font_file", return_value="font.ttf"), mock.patch.object(clips, "CUT", True):
                 self.assertEqual(clips.cut_pass(store, league, {}, bucket, cut=cut, stream=stream), 1)
         c = store["games"][KEY]["clips"]["0:1"]
         self.assertEqual((c["t"], c["team"], c["dur"]), (2600, "away", 30.0))
@@ -491,6 +499,16 @@ class Cutting(unittest.TestCase):
 
     def test_no_keys_no_cutting(self):
         self.assertEqual(clips.cut_pass({"games": {KEY: dict(self.game)}}, None, {}, mock.Mock(ok=False)), 0)
+
+    def test_paused_no_cutting(self):
+        """Нарезка на паузе (дополнение 06.10, ночь): ключи есть, секунда и протокол есть — клип не режется."""
+        bucket, cut = mock.Mock(ok=True), mock.Mock()
+        league = {"games": [{"date": "2026-10-04", "home": "tverichi", "away": "metallurg",
+                             "goals": list(self.protocol.values())}]}
+        with mock.patch.object(clips, "CUT", False):
+            self.assertEqual(clips.cut_pass({"games": {KEY: dict(self.game)}}, league, {}, bucket, cut=cut), 0)
+        cut.assert_not_called()
+        bucket.put.assert_not_called()
 
     def test_build_clip_on_protocol_goal(self):
         g = {"date": "2026-10-04", "home": "tverichi", "away": "metallurg", "goals": [
@@ -505,6 +523,63 @@ class Cutting(unittest.TestCase):
         self.assertEqual(g["goals"][0]["clip"], {"mp4": url + ".mp4", "poster": url + ".jpg", "dur": 30})
         self.assertNotIn("clip", g["goals"][1])   # скрыт по просьбе
         self.assertNotIn("clip", g["goals"][2])   # клип другой команды — не этот гол
+
+
+class Wipe(unittest.TestCase):
+    """Дополнение 06.10, ночь: все клипы стираются один раз — по clips.json и всё под clips/ в бакете, с копией."""
+
+    def store(self):
+        return {"games": {KEY: {"video": VIDEO, "goals": {}, "clips": {
+                    "0:1": {"t": 2600, "files": ["clips/a/0-1-2600.mp4", "clips/a/0-1-2600.jpg"]}}},
+                          "2026-10-05|kaluga|dinamo-576": {"video": VIDEO, "goals": {}}}}
+
+    def test_wipes_known_and_listed_files_once(self):
+        bucket = mock.Mock(ok=True)
+        bucket.list.return_value = ["clips/a/0-1-2600.mp4", "clips/b/orphan-1.mp4"]   # выпавший из clips.json
+        store = self.store()
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(clips.wipe(store, bucket, "m1", Path(tmp)), 3)
+            backup = json.loads((Path(tmp) / "clips.before-wipe-m1.json").read_text(encoding="utf-8"))
+            on_disk = json.loads((Path(tmp) / "clips.json").read_text(encoding="utf-8"))
+            self.assertIsNone(clips.wipe(store, bucket, "m1", Path(tmp)))   # метка стоит — второй раз не стирает
+        self.assertEqual(sorted(c.args[0] for c in bucket.delete.call_args_list),
+                         ["clips/a/0-1-2600.jpg", "clips/a/0-1-2600.mp4", "clips/b/orphan-1.mp4"])
+        bucket.list.assert_called_once_with("clips/")
+        self.assertIn("clips", backup["games"][KEY])           # копия — до стирания
+        self.assertNotIn("clips", on_disk["games"][KEY])       # у матча клипов больше нет, разбор табло — на месте
+        self.assertEqual(on_disk["games"][KEY]["video"], VIDEO)
+        self.assertEqual(on_disk["wiped"], "m1")
+
+    def test_failed_deletes_retry_next_pass(self):
+        bucket = mock.Mock(ok=True)
+        bucket.list.side_effect = OSError("нет сети")   # не перечислил — стираем хотя бы известное
+        bucket.delete.side_effect = lambda name: (_ for _ in ()).throw(OSError("503")) if name.endswith(".jpg") else None
+        store = self.store()
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(clips.wipe(store, bucket, "m1", Path(tmp)), 1)
+            self.assertEqual(store["wipe_left"], ["clips/a/0-1-2600.jpg"])
+            self.assertNotIn("wiped", store)
+            bucket.delete.side_effect = None
+            bucket.delete.reset_mock()
+            self.assertEqual(clips.wipe(store, bucket, "m1", Path(tmp)), 1)   # следующий проход — оставшееся
+        bucket.delete.assert_called_once_with("clips/a/0-1-2600.jpg")
+        self.assertNotIn("wipe_left", store)
+        self.assertEqual(store["wiped"], "m1")
+
+    def test_no_keys_nothing_to_wipe_with(self):
+        store = self.store()
+        self.assertIsNone(clips.wipe(store, mock.Mock(ok=False), "m1"))
+        self.assertIn("clips", store["games"][KEY])
+
+    def test_parse_bucket_listing(self):
+        import s3
+        ns = 'xmlns="http://s3.amazonaws.com/doc/2006-03-01/"'
+        page = (f'<ListBucketResult {ns}><IsTruncated>true</IsTruncated><Contents><Key>clips/a.mp4</Key></Contents>'
+                f'<Contents><Key>clips/a.jpg</Key></Contents><NextContinuationToken>tok/1=</NextContinuationToken>'
+                f'</ListBucketResult>').encode()
+        self.assertEqual(s3.parse_list(page), (["clips/a.mp4", "clips/a.jpg"], "tok/1="))
+        last = b"<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>"
+        self.assertEqual(s3.parse_list(last), ([], None))
 
 
 class AdminMarks(unittest.TestCase):

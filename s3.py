@@ -1,7 +1,8 @@
 """Хранилище клипов голов (ADR-030, шаг 6): S3 API Timeweb Cloud, только stdlib — подпись запроса AWS Signature V4.
 
 Бакет `rhl-clips` публичный на чтение: клип и обложку мини-апп берёт прямой ссылкой. Пишет только служба clips:
-положить файл (PUT) и убрать (DELETE). Ключи — в /etc/rhl/bot.env, не в git:
+положить файл (PUT), убрать (DELETE) и перечислить файлы (ListObjectsV2 — для стирания клипов). Ключи — в
+/etc/rhl/bot.env, не в git:
 
     CLIPS_S3_KEY=…            # access key
     CLIPS_S3_SECRET=…         # secret key
@@ -16,6 +17,7 @@ import os
 import urllib.request
 from datetime import datetime, timezone
 from urllib.parse import quote
+from xml.etree import ElementTree
 
 EMPTY = hashlib.sha256(b"").hexdigest()
 
@@ -82,3 +84,31 @@ class Store:
 
     def delete(self, name: str) -> None:
         self._request("DELETE", name)
+
+    def list(self, prefix: str, now: datetime | None = None) -> list[str]:
+        """Имена всех файлов бакета, начинающиеся с prefix (ListObjectsV2, по 1000 за запрос). Нужен один раз — стереть
+        и то, что выпало из clips.json (ADR-030, дополнение 06.10, ночь)."""
+        names, token = [], None
+        path = f"/{self.bucket}/"
+        while True:
+            params = {"list-type": "2", "prefix": prefix, **({"continuation-token": token} if token else {})}
+            query = "&".join(f"{quote(k, safe='')}={quote(v, safe='')}" for k, v in sorted(params.items()))
+            now_ = now or datetime.now(timezone.utc)
+            auth = sign("GET", self.host, path, {}, EMPTY, self.key, self.secret, self.region, now_, query)
+            req = urllib.request.Request(f"{self.endpoint}{path}?{query}", method="GET", headers={
+                "Authorization": auth, "x-amz-content-sha256": EMPTY,
+                "x-amz-date": now_.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                got, token = parse_list(r.read())
+            names += got
+            if not token:
+                return names
+
+
+def parse_list(body: bytes) -> tuple[list[str], str | None]:
+    """Ответ ListObjectsV2 → (имена файлов, continuation-token следующей страницы или None)."""
+    root = ElementTree.fromstring(body)
+    ns = root.tag[:root.tag.index("}") + 1] if root.tag.startswith("{") else ""
+    names = [k.text for k in root.iter(f"{ns}Key") if k.text]
+    more = (root.findtext(f"{ns}IsTruncated") or "").strip().lower() == "true"
+    return names, (root.findtext(f"{ns}NextContinuationToken") or None) if more else None

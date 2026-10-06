@@ -1713,9 +1713,8 @@ def board_covers(g: dict, found: dict | None) -> bool:
 
 
 def goal_place(item: tuple[str, dict]) -> float:
-    """Где гол в записи для порядка превью: смена счёта на табло, а у гола, которого табло не нашло, — оценка `est`."""
-    g = item[1] or {}
-    return g.get("change") or g.get("est") or 0
+    """Где гол в записи для порядка превью: смена счёта на табло."""
+    return (item[1] or {}).get("change") or 0
 
 
 def previews_waiting(clips: dict | None, marked: dict) -> dict[str, list[str]]:
@@ -1853,16 +1852,11 @@ def preview_todo(clips: dict | None, marked: dict, sent: dict) -> list[tuple[str
 
 
 def preview_caption(key: str, score: str, ask: dict) -> tuple[str, InlineKeyboardMarkup]:
-    """Подпись и кнопки превью. Гол, которого табло не нашло (`est`, дополнение 06.10): видео длиннее и взято по
-    времени сайта лиги, кнопок-моментов нет — только «Пришлю время»."""
+    """Подпись и кнопки превью: моменты, когда вставали часы, и «Другое время»."""
     day, home, away = key.split("|")
     text = (f"🎬 <b>{day[8:10]}.{day[5:7]} {html.escape(tname(home))} — {html.escape(tname(away))}</b>, гол "
-            f"<b>{html.escape(score)}</b>\n")
-    if ask.get("est"):
-        text += ("Табло этот гол не нашло — видео взято по времени сайта лиги, гол где-то внутри. Пришли время гола "
-                 "в видео, например 3:05. Гола в видео нет — пришли его время в записи через /replay.")
-    else:
-        text += "Где в этом видео гол? Нажми момент или пришли время в видео, например 1:05."
+            f"<b>{html.escape(score)}</b>\n"
+            "Где в этом видео гол? Нажми момент или пришли время в видео, например 1:05.")
     tok = preview_token(key, score)
     rows = [[InlineKeyboardButton(text=f"Гол на {replay.fmt_clock(t)}", callback_data=f"pv:{tok}:{k}")]
             for k, t in enumerate(ask.get("cand") or [])]
@@ -1901,17 +1895,61 @@ def preview_save(key: str, score: str, sec: int, video: str, now: datetime, prot
     return ""
 
 
+def preview_stale(rec_key: str, rec: dict, clips: dict | None, marked: dict) -> bool:
+    """Ушедшее превью больше не нужно (ADR-030, дополнение 06.10, вечер): секунда гола нашлась иначе (табло после
+    переразбора, админ в /replay), служба превью отозвала (06.10 — пятиминутные окна по времени сайта лиги без
+    гола) или окно у гола теперь другое (другой ролик или начало) — тогда ответ по старому видео дал бы не ту
+    секунду. Отвеченное — нужно."""
+    if "done" in rec:
+        return False
+    key, _, score = rec_key.rpartition("|")
+    game = ((clips or {}).get("games") or {}).get(key) or {}
+    g = (game.get("goals") or {}).get(score)
+    ask = g.get("ask") if isinstance(g, dict) else None
+    anchors = ((marked or {}).get(key) or {}).get("anchors") or {}
+    return (not isinstance(ask, dict) or g.get("t") is not None or score in anchors
+            or (rec.get("from") is not None and ask.get("from") != rec["from"])
+            or (rec.get("video") is not None and not replay.same_video(rec["video"], game.get("video"))))
+
+
+async def preview_close(bot: Bot, rec: dict) -> dict:
+    """Убрать ненужное превью из чатов: удалить, а не вышло (Telegram даёт удалить только за 48 часов) — подпись
+    без кнопок. Сеть подвела — эти сообщения остаются, попробуем через минуту. (чат → сообщение) оставшихся."""
+    left = {}
+    for cid, mid in (rec.get("msgs") or {}).items():
+        try:
+            await bot.delete_message(int(cid), mid)
+        except TelegramBadRequest:
+            try:
+                await bot.edit_message_caption(chat_id=int(cid), message_id=mid, reply_markup=None,
+                                               caption="Это превью больше не нужно — отвечать на него не надо.")
+            except TelegramBadRequest:   # сообщения уже нет
+                pass
+            except Exception:
+                left[cid] = mid
+        except Exception:
+            left[cid] = mid
+    return left
+
+
 async def preview_step(bot: Bot, now: datetime) -> int:
-    """Раз в минуту: новые превью — админам и помощникам, не больше PREVIEW_MAX за проход. Ночью молчим, как
-    тревоги (ADR-022). Файл грузим в Telegram один раз, остальным — тот же file_id."""
+    """Раз в минуту: ненужные превью — убрать из чатов, новые — админам и помощникам, не больше PREVIEW_MAX за
+    проход. Ночью молчим, как тревоги (ADR-022). Файл грузим в Telegram один раз, остальным — тот же file_id."""
     people = sorted(preview_people())
     if not people or quiet(now):
         return 0
     sent = load_previews()
     edge = admin.iso(now - PREVIEW_KEEP)
     sent = {k: v for k, v in sent.items() if isinstance(v, dict) and (v.get("at") or "") >= edge}
+    clips, marked = read_live("clips.json"), load_replays()["games"]
+    for rec_key in [k for k, v in sent.items() if clips is not None and preview_stale(k, v, clips, marked)]:
+        left = await preview_close(bot, sent[rec_key])
+        if left:
+            sent[rec_key]["msgs"] = left
+        else:   # запись забываем: появится у гола новое превью — уйдёт как новое
+            sent.pop(rec_key)
     n = 0
-    for key, score, ask, video in preview_todo(read_live("clips.json"), load_replays()["games"], sent)[:PREVIEW_MAX]:
+    for key, score, ask, video in preview_todo(clips, marked, sent)[:PREVIEW_MAX]:
         path = BASE / ask["file"]
         if not path.is_file():
             continue
@@ -1935,7 +1973,8 @@ async def preview_step(bot: Bot, now: datetime) -> int:
                 logging.exception("preview to %s failed", cid)
             await asyncio.sleep(0.05)
         if msgs:   # не дошло ни до кого — попробуем в следующую минуту
-            sent[f"{key}|{score}"] = {"at": admin.iso(now), "msgs": msgs, "v": PREVIEW_V}
+            sent[f"{key}|{score}"] = {"at": admin.iso(now), "msgs": msgs, "v": PREVIEW_V, "from": ask.get("from"),
+                                      "video": video}
             n += 1
     write_atomic(PREVIEWS_FILE, sent)
     if n:
@@ -1968,7 +2007,8 @@ async def cb_preview(c: CallbackQuery):
     _, tok, pick = (c.data.split(":") + ["", ""])[:3]
     got = preview_find(tok)
     if not got:
-        await c.answer("Этого превью уже нет — матч старше трёх дней", show_alert=True)
+        await c.answer("Этого превью уже нет: у гола уже есть секунда, превью отозвано или матч старше трёх дней",
+                       show_alert=True)
         return
     key, score, ask, video = got
     if pick == "x":
@@ -2010,7 +2050,7 @@ async def h_preview_time(m: Message):
     t = replay.parse_clock(m.text.strip())
     if not got:
         PREVIEW_ASK.pop(m.chat.id, None)
-        await m.answer("Этого превью уже нет — матч старше трёх дней.")
+        await m.answer("Этого превью уже нет: у гола уже есть секунда, превью отозвано или матч старше трёх дней.")
         return
     key, score, ask, video = got
     if t is None or t > int(ask.get("len") or 0) + 5:

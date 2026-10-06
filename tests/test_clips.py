@@ -35,8 +35,11 @@ LEAGUE = {"games": [
 
 class Boards(unittest.TestCase):
     def test_markup_from_file(self):
-        self.assertLessEqual({"kaluga", "rostov", "ryazan-vdv", "tverichi", "proton"}, set(sb.BOARDS))
+        self.assertLessEqual({"kaluga", "rostov", "ryazan-vdv", "tverichi", "proton", "krasnaya-mashina",
+                              "fakel-yamal"}, set(sb.BOARDS))
         for club, b in sb.BOARDS.items():                                  # клетки — внутри рамки 240×90
+            x, y, w, h = b["box"]                                          # рамка — внутри кадра
+            self.assertTrue(0 <= x and 0 <= y and x + w <= 1 and y + h <= 1, f"{club} box")
             for cell in ("name", "home", "away", "clock"):
                 x0, y0, x1, y1 = b[cell]
                 self.assertTrue(0 <= x0 < x1 <= sb.W and 0 <= y0 < y1 <= sb.H, f"{club} {cell}")
@@ -182,15 +185,14 @@ class Pulse(unittest.TestCase):
                                "no_video": 1, "mismatch": 1, "no_board": 0, "boards": 0})
         # без записи — rostov; 9:9 нет в протоколе
 
-    def test_catalog_unmarked_board_and_guessed_goals(self):
-        """Дополнение 06.10: матчи клуба без разметки табло — отдельной плиткой; гол по времени сайта (`est`) — не
-        «гол табло, которого нет в протоколе»."""
+    def test_catalog_unmarked_board(self):
+        """Дополнение 06.10: матчи клуба без разметки табло — отдельной плиткой."""
         league = json.loads(json.dumps(LEAGUE))
         league["games"][0]["goals"] = [{"score": "0:1", "team": "away", "period": "1"}]
         league["games"].append({"date": "2026-10-04", "home": "polet", "away": "sokol", "score": {"home": 1, "away": 0},
                                 "watch": [{"src": "rhl.fhr.ru", "url": "https://vk.com/video-9_1"}]})
         store = {"games": {KEY: {"video": VIDEO, "status": "ok", "goals": {
-            "0:1": {"t": None, "change": None, "est": 2600, "ask": {"file": "p.mp4", "est": 1}}}},
+            "0:1": {"t": None, "change": 2690, "ask": {"file": "p.mp4"}}}},
             "2026-10-04|polet|sokol": {"video": "https://vk.com/video-9_1", "status": "no_board", "goals": {}}}}
         got = clips.catalog(store, league, {}, date(2026, 10, 5))
         self.assertEqual((got["no_board"], got["boards"], got["ask"], got["mismatch"]), (1, 1, 1, 0))
@@ -254,52 +256,27 @@ class Previews(unittest.TestCase):
             self.assertEqual(clips.video_info(Path("p.mp4")), {})
 
 
-class Missing(unittest.TestCase):
-    """Дополнение 06.10: гол, которого табло не нашло (04.10 у «Тверичей» 2:5 табло вернули через 11 минут), — тоже
-    превью: смену счёта ждём по времени сайта лиги и сдвигу «запись − сайт» у найденных голов того же периода."""
-    live = {"2:5": {"team": "away", "period": "3"}, "0:1": {"team": "away", "period": "1"}}
+class Guesses(unittest.TestCase):
+    """Дополнение 06.10, вечер: гол, которого табло не нашло, превью по времени сайта лиги больше не получает — в
+    пятиминутных окнах 06.10 гола не было («Протон — Кристалл» 6:3)."""
+    guess = {"t": None, "change": None, "est": 6590, "ask": {"file": "p.mp4", "from": 6350, "len": 330, "est": 1}}
 
-    def test_same_period_shift(self):
-        goals = {"2:4": {"change": 6000, "t": 5994}, "1:4": {"change": 5400, "t": None}, "0:4": {"change": 3000}}
-        site = [("0:4", "2", 1000.0), ("1:4", "3", 3300.0), ("2:4", "3", 3920.0), ("2:5", "3", 4500.0)]
-        got = clips.missing_goals(goals, site, self.live)
-        # сдвиг 3-го периода: 2100 и 2080 → медиана 2090; 2-й период (2000) не берём
-        self.assertEqual(got, {"2:5": {"team": "away", "period": "3", "change": None, "est": 6590, "t": None,
-                                       "src": None}})
+    def test_drop_guessed_goals(self):
+        games = {KEY: {"status": "ok", "goals": {"0:2": {"t": 2963, "change": 2969}, "2:5": dict(self.guess)}},
+                 "2026-10-04|polet|sokol": {"status": "no_board", "goals": {}}, "x": None}
+        self.assertTrue(clips.drop_guesses(games))
+        self.assertEqual(list(games[KEY]["goals"]), ["0:2"])
+        self.assertFalse(clips.drop_guesses(games))
 
-    def test_other_period_only_when_shifts_agree(self):
-        goals = {"0:2": {"change": 3000}, "0:3": {"change": 4000}}
-        site = [("0:1", "1", 500.0), ("0:2", "2", 1000.0), ("0:3", "3", 1950.0)]
-        self.assertEqual(clips.missing_goals(goals, site, self.live)["0:1"]["est"], 2525)   # сдвиги 2000 и 2050
-        goals["0:3"]["change"] = 6000                                                     # перерыв — сдвиг другой
-        self.assertEqual(clips.missing_goals(goals, site, self.live), {})
-
-    def test_no_guess_without_site_or_board(self):
-        self.assertEqual(clips.missing_goals({"0:2": {"change": 3000}}, [], self.live), {})
-        self.assertEqual(clips.missing_goals({}, [("0:1", "1", 500.0)], self.live), {})     # ни одной смены табло
-        site = [("0:2", "1", 1000.0), ("0:1", "1", 9000.0), ("1:2", "РБ", 1100.0)]
-        self.assertEqual(clips.missing_goals({"0:2": {"change": 3000}}, site, self.live, length=5000), {})
-
-    def test_wide_window_without_clock_buttons(self):
-        self.assertEqual(clips.est_window(6590), (6350, 330))
-        self.assertEqual(clips.est_window(100, length=150), (0, 150))
-
-        def run(cmd, **kw):
-            Path(cmd[-1]).write_bytes(b"v")
-            return mock.Mock(returncode=0)
-        goals = {"2:5": {"t": None, "change": None, "est": 6590}}
-        with tempfile.TemporaryDirectory(dir=clips.ROOT) as tmp, \
-                mock.patch.object(clips.sb, "stream_of", return_value=("http://x", {}, 9123)), \
-                mock.patch.object(clips.sb, "safe_scan") as scan, \
-                mock.patch.object(clips.sb, "ffmpeg", return_value="f"), \
-                mock.patch.object(clips.subprocess, "run", side_effect=run) as ff, \
-                mock.patch.object(clips, "video_info", return_value={"w": 640, "h": 360, "dur": 330}):
-            clips.add_previews(KEY, VIDEO, goals, 9123, Path(tmp))
-        scan.assert_not_called()                     # остановок часов в пяти минутах много — кнопок не даём
-        ask = goals["2:5"]["ask"]
-        self.assertEqual((ask["from"], ask["len"], ask["cand"], ask["est"]), (6350, 330, [], 1))
-        cmd = ff.call_args.args[0]
-        self.assertEqual((cmd[cmd.index("-ss") + 1], cmd[cmd.index("-t") + 1]), ("6350", "330"))
+    def test_pass_writes_without_guesses(self):
+        """Разбирать нечего, а гол с оценкой по сайту в clips.json остался с прошлого разбора — убираем и пишем:
+        бот закроет его превью."""
+        store = {"games": {KEY: {"video": VIDEO, "v": clips.VERSION, "status": "ok",
+                                 "goals": {"0:2": {"t": 2963}, "2:5": dict(self.guess)}}}}
+        with tempfile.TemporaryDirectory(dir=clips.ROOT) as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            self.assertEqual(clips.run_pass(store, {"games": []}, {}, datetime(2026, 10, 5, 12, tzinfo=TZ)), (0, 0))
+            disk = json.loads((Path(tmp) / "clips.json").read_text(encoding="utf-8"))
+        self.assertEqual(list(disk["games"][KEY]["goals"]), ["0:2"])
 
 
 class Grids(unittest.TestCase):

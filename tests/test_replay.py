@@ -468,12 +468,6 @@ class Previews(unittest.TestCase):
         self.assertEqual(kb.inline_keyboard[0][0].callback_data, f"pv:{tok}:0")
         self.assertEqual(self.bot.preview_find(tok)[1], "1:0")
 
-    def test_caption_guessed_by_site_time(self):
-        """Гол, которого табло не нашло (`est`): кнопок-моментов нет, только «Пришлю время», и сказано почему."""
-        text, kb = self.bot.preview_caption(GAME["key"], "2:1", {**self.ask, "cand": [], "est": 1})
-        self.assertIn("Табло этот гол не нашло", text)
-        self.assertEqual([b.text for row in kb.inline_keyboard for b in row], ["Пришлю время"])
-
     def test_step_sends_once_to_admins_and_helpers(self):
         import asyncio
         bot = mock.Mock()
@@ -487,6 +481,8 @@ class Previews(unittest.TestCase):
         self.assertEqual(bot.send_video.call_args_list[1].args[1], "F")                # файл грузим один раз
         sent = json.loads((self.dir / "previews.json").read_text(encoding="utf-8"))
         self.assertEqual(sent[f"{GAME['key']}|1:0"]["msgs"], {"761": 5, "1001": 5})
+        self.assertEqual(sent[f"{GAME['key']}|1:0"]["from"], 1500)                     # окно, на которое отвечают
+        self.assertEqual(sent[f"{GAME['key']}|1:0"]["video"], VIDEO)
         kw = bot.send_video.call_args_list[0].kwargs
         self.assertEqual((kw["duration"], kw["width"], kw["height"]), (125, 640, 360))   # без них в чате «0:01»
 
@@ -506,6 +502,60 @@ class Previews(unittest.TestCase):
         self.assertEqual((kw["duration"], kw["width"], kw["height"]), (124, 480, 360))
         sent = json.loads((self.dir / "previews.json").read_text(encoding="utf-8"))
         self.assertEqual(sent[f"{GAME['key']}|1:0"]["v"], 2)
+
+    def stale_step(self, rec: dict, clips: dict, delete=None, edit=None):
+        import asyncio
+        (self.dir / "previews.json").write_text(json.dumps({f"{GAME['key']}|1:0": {
+            "at": "2026-10-04T09:00:00+03:00", "v": 2, **rec}}), encoding="utf-8")
+        (self.dir / "clips.json").write_text(json.dumps(clips), encoding="utf-8")
+        bot = mock.Mock()
+        bot.delete_message = mock.AsyncMock(side_effect=delete)
+        bot.edit_message_caption = mock.AsyncMock(side_effect=edit)
+        bot.send_video = mock.AsyncMock(return_value=mock.Mock(message_id=9, video=mock.Mock(file_id="F")))
+        with mock.patch.object(self.bot.asyncio, "sleep", mock.AsyncMock()):
+            asyncio.run(self.bot.preview_step(bot, self.now))
+        return bot, json.loads((self.dir / "previews.json").read_text(encoding="utf-8"))
+
+    def test_stale_previews_closed(self):
+        """Дополнение 06.10, вечер: превью, на которое отвечать уже не нужно, бот убирает из чатов сам — 06.10 утром
+        пришли пятиминутные превью по времени сайта лиги без гола, служба их отозвала."""
+        rec = {"msgs": {"761": 3, "1001": 4}, "from": 1500}
+        goals = self.clips["games"][GAME["key"]]["goals"]
+        withdrawn = {"games": {GAME["key"]: {"video": VIDEO, "status": "ok", "goals": {"1:1": goals["1:1"]}}}}
+        timed = json.loads(json.dumps(self.clips))
+        timed["games"][GAME["key"]]["goals"]["1:0"]["t"] = 1590                      # табло нашло секунду
+        for clips_ in (withdrawn, timed):
+            bot, sent = self.stale_step(rec, clips_)
+            self.assertEqual(sorted(c.args for c in bot.delete_message.call_args_list), [(761, 3), (1001, 4)])
+            self.assertEqual(sent, {})
+            bot.send_video.assert_not_called()
+        self.bot.replay_save("2026-10-03", 0, "1:0", f"{VIDEO}?t=27m", self.now)    # админ ответил в /replay
+        bot, sent = self.stale_step(rec, self.clips)
+        self.assertEqual(sent, {})
+
+    def test_answered_or_same_window_kept(self):
+        for rec in ({"msgs": {"761": 3}, "from": 1500, "video": VIDEO}, {"msgs": {"761": 3}, "done": 1547},
+                    {"msgs": {"761": 3}}):
+            bot, sent = self.stale_step(rec, self.clips)
+            bot.delete_message.assert_not_called()
+            self.assertIn(f"{GAME['key']}|1:0", sent)
+
+    def test_moved_window_replaced(self):
+        """Переразбор дал гол другое окно: ответ по старому видео дал бы не ту секунду — старое убираем, шлём новое."""
+        for rec in ({"msgs": {"761": 3}, "from": 1400}, {"msgs": {"761": 3}, "from": 1500, "video": f"{VIDEO}9"}):
+            bot, sent = self.stale_step(rec, self.clips)
+            bot.delete_message.assert_awaited_once_with(761, 3)
+            self.assertEqual(sent[f"{GAME['key']}|1:0"]["msgs"], {"761": 9, "1001": 9})
+
+    def test_old_message_edited_network_retried(self):
+        rec = {"msgs": {"761": 3}, "from": 1500}
+        clips_ = {"games": {}}
+        too_old = self.bot.TelegramBadRequest(method=mock.Mock(), message="message can't be deleted")
+        bot, sent = self.stale_step(rec, clips_, delete=too_old)
+        self.assertIsNone(bot.edit_message_caption.call_args.kwargs["reply_markup"])   # кнопки убраны
+        self.assertEqual(sent, {})
+        bot, sent = self.stale_step(rec, clips_, delete=RuntimeError("сеть"))
+        self.assertEqual(sent[f"{GAME['key']}|1:0"]["msgs"], {"761": 3})                 # попробуем через минуту
 
     def test_answer_becomes_admin_anchor(self):
         import asyncio

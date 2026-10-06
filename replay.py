@@ -246,6 +246,13 @@ def same_video(a: str | None, b: str | None) -> bool:
     return bool(ma and mb and ma.groups() == mb.groups())
 
 
+def disputed(entry: dict | None, board: dict | None) -> set[str]:
+    """Голы со спором (ADR-033): служба clips проверила отметку человека (`checks`) — не сошлось, и отметка та же."""
+    anchors = (entry or {}).get("anchors") or {}
+    return {s for s, c in ((board or {}).get("checks") or {}).items()
+            if isinstance(c, dict) and c.get("status") == "conflict" and anchors.get(s) == c.get("t")}
+
+
 def _sec(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= MAX_T
 
@@ -258,20 +265,27 @@ def with_board(entry: dict | None, board: dict | None) -> dict | None:
     полторы-две минуты. Она главнее расчёта по времени сайта лиги. Опора админа главнее всего, гол, которого, по
     словам админа, в записи нет (`absent`), — без повтора. Табло считали по своему ролику: админ прислал другой —
     секунды табло к нему не подходят, остаётся запись админа.
-    board — запись матча из live/clips.json: {"video", "goals": {счёт: {"t", "src", "team", "change", "win"}}}."""
+    Спор (ADR-033): отметка человека не сошлась с табло или ходом часов (`checks` службы) — точной секунды у гола нет
+    ни от человека, ни от табло: повтор примерный, по окну или смене счёта, нет их — с отметки человека, но «≈».
+    board — запись матча из live/clips.json: {"video", "goals": {счёт: {"t", "src", "team", "change", "win"}},
+    "checks": {счёт: {"t", "status"}}}."""
     goals = (board or {}).get("goals") or {}
     video = (board or {}).get("video")
     if not goals or not video or (entry and not same_video(entry.get("video"), video)):
         return entry
-    admin = (entry or {}).get("anchors") or {}
+    spor = disputed(entry, board)
+    admin = {s: t for s, t in ((entry or {}).get("anchors") or {}).items() if s not in spor}
     off = board_off(entry, goals)
     out = {g["score"]: g for g in (entry or {}).get("goals") or [] if isinstance(g, dict) and g.get("score")}
+    for s in spor:
+        if s in out:
+            out[s] = {**out[s], "exact": False, "src": "dispute"}
     for score, b in goals.items():
         if not isinstance(b, dict) or score in admin or score in off or b.get("off") \
                 or (out.get(score) or {}).get("exact"):
             continue
         t, win, change = b.get("t"), b.get("win"), b.get("change")
-        if _sec(t):
+        if _sec(t) and score not in spor:
             out[score] = {"score": score, "team": b.get("team"), "t": max(0, round(t - EXACT_LEAD)), "exact": True,
                           "src": b.get("src") or "board"}
         elif isinstance(win, list) and len(win) == 2 and _sec(win[0]):

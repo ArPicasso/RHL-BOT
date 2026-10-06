@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 import admin
+import clockrun
 import marks
 import myplayer
 import predict
@@ -100,6 +101,9 @@ PREVIEW_V = 2                      # 05.10: превью уходили без �
 # бот один раз присылает его админам файлом — по нему табло размечают в boards.json, и матчи клуба разбираются заново
 GRIDS_FILE = BASE / "grids.json"   # кадры табло, которые ушли админам: клуб → когда и по какому матчу. Не в git
 GRID_MAX = 2                       # кадров за один проход пульса
+DISPUTES_FILE = BASE / "disputes.json"   # о каких спорах по отметкам уже написали (ADR-033): «ключ|счёт|секунда» → когда
+DISPUTE_MAX = 4                    # споров за один проход пульса
+DISPUTE_KEEP = timedelta(days=7)   # столько помним, что о споре написали
 
 DOW = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
@@ -1450,7 +1454,8 @@ async def h_admin(m: Message):
 # того же периода бот досчитает по времени, когда служба live заметила смену счёта (replay.py). Ответ —
 # сразу ссылки на все голы: их можно проверить тут же. Порядок голов — по протоколу, пока его нет — по live.
 
-REPLAY_ASK: dict[int, tuple[str, int, str, datetime, str]] = {}   # чат → (дата, номер, счёт или "" — весь матч, когда, ключ)
+REPLAY_ASK: dict[int, tuple[str, int, str, datetime, str]] = {}
+PENDING_MARK: dict[int, tuple[str, int, str, str, str, datetime]] = {}   # чат → отметка с вопросами (ADR-033)   # чат → (дата, номер, счёт или "" — весь матч, когда, ключ)
 
 
 def load_replays() -> dict:
@@ -1520,7 +1525,7 @@ def marks_apply(key: str, g: dict, now: datetime, protocol: list[dict] | None = 
 
 
 def mark_word(r: dict) -> str:
-    return replay.fmt_t(r["sec"]) if r["kind"] == "time" and isinstance(r.get("sec"), int) \
+    return replay.fmt_clock(r["sec"]) if r["kind"] == "time" and isinstance(r.get("sec"), int) \
         else KIND_WORD.get(r["kind"], r["kind"])
 
 
@@ -1618,6 +1623,8 @@ def replay_text(day: str, g: dict, entry: dict | None, protocol: list[dict] | No
     board = ((read_live("clips.json") or {}).get("games") or {}).get(match_key(g)) or {}
     off = replay.board_off(entry, board.get("goals") or {}) | set((entry or {}).get("wrong") or [])
     absent = set((entry or {}).get("absent") or [])
+    checks = board.get("checks") or {}
+    anchors = (entry or {}).get("anchors") or {}
     entry = replay.with_board(entry, board)
     links = {x["score"]: x for x in (entry or {}).get("goals") or []}
     goals = replay_goals(g, protocol)
@@ -1637,6 +1644,12 @@ def replay_text(day: str, g: dict, entry: dict | None, protocol: list[dict] | No
         url = replay.at_link(entry["video"], r["t"]) if r else None   # заново: старые записи хранят прежний формат
         sign = {"clock": "⏱", "board": "📺", "run": "🕐"}.get(r.get("src"), "✅") if r and r["exact"] else "≈"
         mark = f' — <a href="{html.escape(url)}">{sign} {replay.fmt_t(r["t"])}</a>' if url else ""
+        c = checks.get(x["score"]) if x["score"] in anchors else None
+        if isinstance(c, dict) and c.get("t") == anchors[x["score"]]:   # проверка отметки службой (ADR-033)
+            mark += {"ok": " · сошлось", "conflict": " · ⚠️ спор: " + html.escape(", ".join(c.get("against") or [])),
+                     "unknown": " · нечем проверить"}.get(c.get("status"), " · не проверено")
+        elif x["score"] in anchors:
+            mark += " · не проверено"
         if x["score"] in absent:
             mark = " — 🚫 нет в записи"
         elif x["score"] in off and not (r and r.get("exact") and r.get("src") in (None, "admin")):
@@ -1645,8 +1658,10 @@ def replay_text(day: str, g: dict, entry: dict | None, protocol: list[dict] | No
     lines.append("")
     if entry:
         lines.append("✅ — по твоему времени, ⏱ и 📺 — нашла служба по табло (встали часы, сменился счёт), 🕐 — по "
-                     "ходу часов от соседнего гола, ≈ — примерно, начинается раньше гола. Мимо — нажми на гол: пришли "
-                     "время, «табло сбилось» или «нет в записи».")
+                     "ходу часов от соседнего гола, ≈ — примерно, начинается раньше гола. Время человека служба "
+                     "сверяет с табло: «сошлось», «не проверено» или «спор» — тогда точной секунды нет ни у отметки, ни "
+                     "у табло, пока не пришлёшь верное время. Мимо — нажми на гол: пришли время, «табло сбилось», "
+                     "«нет в записи» или «Отозвать».")
     what = "времена" if entry or video else "ссылку на запись и времена"
     lines.append(f"Пришли {what} всех {len(goals)} голов по порядку, по строке на гол: "
                  "1:08:03. Или нажми на гол и пришли время одного.")
@@ -1686,42 +1701,119 @@ def replay_list(now: datetime, day: str | None = None) -> tuple[str, InlineKeybo
     return (head + "\n\n" if head else "") + what, InlineKeyboardMarkup(inline_keyboard=kb)
 
 
-def replay_save(day: str, i: int, score: str, text: str, now: datetime, key: str | None = None,
-                protocol: list[dict] | None = None, league_vid: str | None = None,
-                who: int | None = None) -> tuple[str, dict | None]:
-    """Сообщение админа → отметки в журнал (ADR-033), пересчёт и запись replays.json. score — нажатый гол, пусто —
+def replay_parse(day: str, i: int, score: str, text: str, key: str | None = None,
+                 protocol: list[dict] | None = None, league_vid: str | None = None
+                 ) -> tuple[str, dict | None, str | None, list[tuple[str, int]]]:
+    """Сообщение админа → (ошибка или пусто, матч, ролик, [(счёт, секунда записи)]). score — нажатый гол, пусто —
     весь матч: тогда в сообщении времена всех голов по порядку. key — ключ матча на момент нажатия: в файл дня
     успел добавиться матч — номер уже чужой. league_vid — запись лиги: берём, если ссылки нет ни в сообщении,
-    ни в прежней разметке (ADR-028). who — Telegram id отметившего. Возвращает (ошибка или пусто, запись матча)."""
+    ни в прежней разметке (ADR-028)."""
     g = replay_game(day, i)
     if not g or key and match_key(g) != key:
-        return "Матч пропал из файла службы live — открой /replay заново.", None
+        return "Матч пропал из файла службы live — открой /replay заново.", None, None, []
     key = match_key(g)
     old = goal_marks().state(key) or {}
     got = replay.parse_link(text)
     video, link_t = got if got else (old.get("video") or league_vid, None)
     if not video:
-        return "Ролика этого матча ещё не знаю: пришли ссылку на запись в VK.", None
+        return "Ролика этого матча ещё не знаю: пришли ссылку на запись в VK.", g, None, []
     times = replay.parse_times(text)
     if score:
         t = link_t if link_t is not None else times[0] if len(times) == 1 else None
         if t is None:
-            return ("Пришли время этого гола в записи: 1:08:03 — или ссылку VK «с текущим временем».", None)
-        picked = [(score, t)]
-    else:
-        goals = replay_goals(g, protocol)
-        if not times:
-            return (f"Пришли времена всех {len(goals)} голов в записи по порядку, по строке на гол: 1:08:03. "
-                    "Или нажми на гол и пришли время одного.", None)
-        if len(times) != len(goals):
-            return (f"В матче {len(goals)} голов, а времён {len(times)}. Пришли все по порядку "
-                    "или нажми на гол и пришли время одного.", None)
-        if any(b <= a for a, b in zip(times, times[1:])):
-            return "Времена идут не по порядку: каждый следующий гол позже предыдущего.", None
-        picked = [(x["score"], t) for x, t in zip(goals, times)]
+            return ("Пришли время этого гола в записи: 1:08:03 — или ссылку VK «с текущим временем».", g, video, [])
+        return "", g, video, [(score, t)]
+    goals = replay_goals(g, protocol)
+    if not times:
+        return (f"Пришли времена всех {len(goals)} голов в записи по порядку, по строке на гол: 1:08:03. "
+                "Или нажми на гол и пришли время одного.", g, video, [])
+    if len(times) != len(goals):
+        return (f"В матче {len(goals)} голов, а времён {len(times)}. Пришли все по порядку "
+                "или нажми на гол и пришли время одного.", g, video, [])
+    if any(b <= a for a, b in zip(times, times[1:])):
+        return "Времена идут не по порядку: каждый следующий гол позже предыдущего.", g, video, []
+    return "", g, video, [(x["score"], t) for x, t in zip(goals, times)]
+
+
+def replay_save(day: str, i: int, score: str, text: str, now: datetime, key: str | None = None,
+                protocol: list[dict] | None = None, league_vid: str | None = None,
+                who: int | None = None, force_t: int | None = None) -> tuple[str, dict | None]:
+    """Сообщение админа → отметки в журнал (ADR-033), пересчёт и запись replays.json. who — Telegram id отметившего,
+    force_t — секунда, которую админ выбрал кнопкой вместо присланной (вероятная опечатка). Возвращает (ошибка или
+    пусто, запись матча)."""
+    err, g, video, picked = replay_parse(day, i, score, text, key, protocol, league_vid)
+    if err:
+        return err, None
+    if force_t is not None and score:
+        picked = [(score, force_t)]
+    key = match_key(g)
     for s, t in picked:
         add_mark(key, s, "time", now, who, "replay", protocol, video=video, sec=t, seen=text)
     return "", marks_apply(key, g, now, protocol)
+
+
+GAP_MIN = 20       # с записи: два гола ближе — один момент отмечен дважды (ADR-033)
+SITE_DRIFT = 120   # с: сдвиг «запись − отметка сайта» у гола не уходит от соседей периода дальше
+TYPO_MAX = 3       # кнопок с вероятными опечатками
+
+
+def mark_issues(score: str, t: int, anchors: dict[str, int], info: dict[str, dict],
+                times: dict[str, int | None]) -> list[str]:
+    """Что не так с отметкой гола score на секунде t против других отметок матча (ADR-033, раздел 3). info — голы
+    службы live с протоколом (период, время по часам `at`), times — время гола по протоколу от начала матча."""
+    out = []
+    me = info.get(score) or {}
+    for o, ot in sorted(anchors.items()):
+        if o == score or not isinstance(ot, int):
+            continue
+        if abs(t - ot) < GAP_MIN:
+            out.append(f"{score} и {o} — почти одна секунда записи ({replay.fmt_clock(t)} и {replay.fmt_clock(ot)})")
+            continue
+        oi = info.get(o) or {}
+        gs, go = times.get(score), times.get(o)
+        if gs is not None and go is not None and gs != go and (t > ot) != (gs > go):
+            out.append(f"{score} в записи {'раньше' if t < ot else 'позже'} гола {o}, а по протоколу наоборот")
+            continue
+        if not me.get("period") or me.get("period") != oi.get("period"):
+            continue
+        if gs is not None and go is not None and abs(t - ot) < abs(gs - go):
+            out.append(f"между {o} и {score} в записи {replay.fmt_clock(abs(t - ot))}, а по часам игры "
+                       f"{replay.fmt_clock(abs(gs - go))} — часы не идут быстрее записи")
+        elif me.get("at") and oi.get("at"):
+            drift = (t - ot) - (me["at"] - oi["at"]).total_seconds()
+            if abs(drift) > SITE_DRIFT:
+                out.append(f"{score} и {o}: в записи между ними на {round(abs(drift))} с "
+                           f"{'больше' if drift > 0 else 'меньше'}, чем между отметками сайта лиги")
+    return out
+
+
+def typo_variants(t: int) -> list[int]:
+    """Вероятные опечатки во времени записи: минуты и секунды местами, переставленные цифры минут или секунд, ±1 час."""
+    h, m, s = t // 3600, t % 3600 // 60, t % 60
+    out = []
+    for hh, mm, ss in ((h, s, m), (h, m % 10 * 10 + m // 10, s), (h, m, s % 10 * 10 + s // 10), (h + 1, m, s),
+                       (h - 1, m, s)):
+        v = hh * 3600 + mm * 60 + ss
+        if hh >= 0 and mm < 60 and ss < 60 and v != t and 0 < v <= replay.MAX_T and v not in out:
+            out.append(v)
+    return out
+
+
+def replay_issues(key: str, g: dict, video: str, picked: list[tuple[str, int]],
+                  protocol: list[dict] | None) -> tuple[list[str], list[int]]:
+    """Проверка присланных времён до записи (ADR-033, раздел 3): порядок голов, ход часов, сдвиг к отметкам сайта, дубли.
+    (что не так, вероятные верные секунды — только когда прислан один гол)."""
+    st = goal_marks().state(key) or {}
+    same = st.get("video") == video or replay.same_video(st.get("video"), video)
+    anchors = {**(st.get("anchors") or {} if same else {}), **dict(picked)}
+    info = {x["score"]: x for x in replay_goals(g, protocol)}
+    times = {x.get("score"): clockrun.game_sec(x.get("time")) for x in protocol or []}
+    issues = list(dict.fromkeys(i for s, t in picked for i in mark_issues(s, t, anchors, info, times)))
+    cands = []
+    if issues and len(picked) == 1:
+        s, t = picked[0]
+        cands = [v for v in typo_variants(t) if not mark_issues(s, v, {**anchors, s: v}, info, times)][:TYPO_MAX]
+    return issues, cands
 
 
 def replay_drop(day: str, i: int, now: datetime, who: int | None = None) -> None:
@@ -1825,6 +1917,25 @@ async def cb_replay(c: CallbackQuery):
                + "\n".join(html.escape(x) for x in history) if history else ""),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
         return
+    if parts[1] in ("k", "t"):   # отметка с вопросами: как прислал или выбранная секунда (ADR-033)
+        pend = PENDING_MARK.get(cid)
+        if not pend or pend[:2] != (day, i) or now - pend[5] > REPLAY_WAIT:
+            await c.answer("Это время уже не ждёт — пришли его заново", show_alert=True)
+            return
+        force = int(parts[4]) if parts[1] == "t" and len(parts) == 5 and parts[4].isdigit() else None
+        PENDING_MARK.pop(cid, None)
+        league = await published_league()
+        protocol, video = protocol_of(league, g), league_video(league, g)
+        err, entry = replay_save(day, i, pend[2], pend[3], now, pend[4], protocol, video, who=c.from_user.id,
+                                 force_t=force)
+        if err:
+            await c.answer(err, show_alert=True)
+            return
+        REPLAY_ASK[cid] = (day, i, "", now, match_key(g))
+        await c.message.answer(replay_text(day, g, entry, protocol), reply_markup=replay_kb(day, i, g, entry, protocol),
+                               disable_web_page_preview=True)
+        await c.answer("Записал")
+        return
     if parts[1] == "r" and len(parts) == 5 and parts[4].isdigit():   # отозвать отметку (ADR-033)
         mark = goal_marks().get(int(parts[4]))
         if not mark or mark["match"] != match_key(g) or goal_marks().revoke(
@@ -1872,6 +1983,20 @@ async def h_replay_link(m: Message):
     g = replay_game(day, i)
     league = await published_league()
     protocol, video = (protocol_of(league, g), league_video(league, g)) if g else (None, None)
+    err, g2, vid, picked = replay_parse(day, i, score, m.text, key, protocol, video)
+    if err:
+        await m.answer(err)
+        return
+    issues, cands = replay_issues(key, g2, vid, picked, protocol)
+    if issues:   # не записываем молча: показываем, что не так, и вероятные опечатки (ADR-033)
+        PENDING_MARK[m.chat.id] = (day, i, score, m.text, key, now)
+        rows = [[InlineKeyboardButton(text=f"Записать {replay.fmt_clock(v)}", callback_data=f"rp:t:{day}:{i}:{v}")]
+                for v in cands]
+        rows.append([InlineKeyboardButton(text="Записать как прислал", callback_data=f"rp:k:{day}:{i}")])
+        await m.answer("Проверь, прежде чем записать:\n" + "\n".join(f"• {html.escape(x)}" for x in issues)
+                       + ("\n\nМожет быть, опечатка?" if cands else ""),
+                       reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        return
     err, entry = replay_save(day, i, score, m.text, now, key, protocol, video, who=m.from_user.id)
     if err:
         await m.answer(err)
@@ -2323,6 +2448,93 @@ async def h_preview_time(m: Message):
         return
     PREVIEW_ASK.pop(m.chat.id, None)
     await preview_answer(m.bot, m.chat.id, key, score, ask, video, t, who=m.from_user.id)
+
+
+# ---------- спор по отметке (ADR-033) ----------
+# Служба clips проверила отметку человека табло и ходом часов — не сошлось. Точной секунды у гола теперь нет ни от
+# отметки, ни от табло. Бот один раз пишет отметившему (неизвестно кто — админам): что не сошлось, обе версии ссылками
+# и кнопку открыть гол в /replay — там прислать верное время или отозвать отметку.
+
+
+def load_disputes(now: datetime) -> dict:
+    was = admin.read_json(DISPUTES_FILE, {})
+    edge = (now - DISPUTE_KEEP).isoformat(timespec="seconds")
+    return {k: v for k, v in (was if isinstance(was, dict) else {}).items() if isinstance(v, str) and v >= edge}
+
+
+def match_place(key: str) -> tuple[str, int] | None:
+    """(день, номер в файле дня службы live) — для кнопки «Открыть гол» в /replay."""
+    games = (read_live(f"{key[:10]}.json") or {}).get("games") or []
+    i = next((n for n, g in enumerate(games) if isinstance(g, dict) and match_key(g) == key), None)
+    return (key[:10], i) if i is not None else None
+
+
+def dispute_todo(clips: dict | None, marked: dict, sent: dict) -> list[tuple[str, str, dict]]:
+    """Споры, о которых ещё не писали: (ключ матча, счёт, вердикт). Отметка та же, что проверена."""
+    out = []
+    for key, game in sorted(((clips or {}).get("games") or {}).items()):
+        e = (marked or {}).get(key) or {}
+        for score in sorted(replay.disputed(e, game)):
+            c = game["checks"][score]
+            if f"{key}|{score}|{c['t']}" not in sent:
+                out.append((key, score, c))
+    return out
+
+
+def dispute_text(key: str, score: str, c: dict, game: dict, video: str) -> str:
+    day, home, away = key.split("|")
+    lines = [f"⚠️ <b>Спор по голу {html.escape(score)}</b> · {html.escape(tname(home))} — {html.escape(tname(away))}, "
+             f"{day[8:10]}.{day[5:7]}",
+             f"Отметка {replay.fmt_clock(c['t'])} не сходится с табло: {html.escape(', '.join(c.get('against') or []))}."]
+    mine = replay.at_link(video, max(0, c["t"] - replay.EXACT_LEAD))
+    if mine:
+        lines.append(f'Отметка: <a href="{html.escape(mine)}">{replay.fmt_clock(c["t"])}</a>')
+    b = (game.get("goals") or {}).get(score) or {}
+    if isinstance(b.get("change"), (int, float)):
+        at = max(0, round(b["change"] - replay.CHANGE_LEAD))
+        lines.append(f'Табло: счёт сменился на {replay.fmt_clock(round(b["change"]))} — '
+                     f'<a href="{html.escape(replay.at_link(video, at) or "")}">смотреть с {replay.fmt_clock(at)}</a>')
+    lines.append("Пока спор не решён, точной секунды у гола нет ни от отметки, ни от табло — у болельщиков «≈». "
+                 "Пришли верное время или отзови отметку.")
+    return "\n".join(lines)
+
+
+async def dispute_step(bot: Bot, now: datetime) -> int:
+    """Раз в минуту: новые споры по отметкам — отметившему (кто неизвестен или ушёл — админам), по одному разу."""
+    clips = read_live("clips.json")
+    if not ADMIN_IDS or quiet(now) or clips is None:
+        return 0
+    marked = load_replays()["games"]
+    old = load_disputes(now)
+    sent = dict(old)
+    n = 0
+    for key, score, c in dispute_todo(clips, marked, sent)[:DISPUTE_MAX]:
+        game = clips["games"][key]
+        video = (marked.get(key) or {}).get("video") or game.get("video")
+        mark = next((r for r in reversed(marks.active(goal_marks().of(key), score))
+                     if r["kind"] == "time" and r.get("sec") == c["t"]), None)
+        who = (mark or {}).get("who")
+        to = [who] if who in ADMIN_IDS else sorted(ADMIN_IDS)
+        place = match_place(key)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="🛠 Открыть гол", callback_data=f"rp:g:{place[0]}:{place[1]}:{score}")]]) if place else None
+        got = 0
+        for cid in to:
+            try:
+                await sending(lambda: bot.send_message(cid, dispute_text(key, score, c, game, video), reply_markup=kb,
+                                                       disable_web_page_preview=True))
+                got += 1
+            except Exception:
+                logging.exception("dispute to %s failed", cid)
+            await asyncio.sleep(0.05)
+        if got:   # не дошло ни до кого — попробуем через минуту
+            sent[f"{key}|{score}|{c['t']}"] = admin.iso(now)
+            n += 1
+    if sent != old:
+        write_atomic(DISPUTES_FILE, sent)
+    if n:
+        TRACK.add("disputes", n)
+    return n
 
 
 # ---------- кадры табло для разметки (ADR-030, дополнение 06.10) ----------
@@ -3276,6 +3488,10 @@ async def status_loop(bot: Bot):
             await grid_step(bot, now)
         except Exception:
             logging.exception("grid step failed")
+        try:
+            await dispute_step(bot, now)
+        except Exception:
+            logging.exception("dispute step failed")
         await asyncio.sleep(STATUS_EVERY)
 
 

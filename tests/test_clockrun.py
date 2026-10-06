@@ -79,7 +79,8 @@ class Solve(unittest.TestCase):
         state = match(SEG)
         goals = [goal("1:0", "05:00", 399, "admin"), goal("2:0", "08:20", 949, "clock"), goal("3:0", "12:00")]
         got = cr.solve(goals, state)
-        self.assertEqual((got["drop"], got["fail"], got["found"]), (["2:0"], ["1"], {}))
+        # ADR-033: отметка человека — тоже показание: пара не сошлась — точность снимается с обоих
+        self.assertEqual((got["drop"], got["fail"], got["found"]), (["1:0", "2:0"], ["1"], {}))
 
     def test_wide_window_or_other_period_gives_nothing(self):
         unknown = set(range(460, 600))
@@ -98,6 +99,35 @@ class Solve(unittest.TestCase):
         goals[2]["time"] = "12:30"     # по протоколу на 30 с позже — от неё гол 1:1 ушёл бы на 30 с: окна врозь
         got = cr.solve(goals, state)
         self.assertNotIn("1:1", got["found"])
+
+
+class CheckMarks(unittest.TestCase):
+    """ADR-033: отметка человека проверяется табло — встали ли часы, когда сменился счёт, сходится ли ход часов."""
+
+    def test_true_mark_agrees(self):
+        state = match(SEG)
+        goals = [goal("1:0", "05:00", 400, "admin", change=430), goal("1:1", "08:20", 659, "clock")]
+        got = cr.check_marks(goals, state)["1:0"]
+        self.assertEqual(got["status"], "ok")
+        self.assertEqual(got["for"], ["часы встали", "счёт на табло сменился после", "ход часов от 1:1"])
+
+    def test_typo_is_a_conflict(self):
+        # опечатка: 0:05:00 → 0:00:05 — часы ещё не пошли, счёт сменился позже на семь минут, ход часов не сходится
+        state = match(SEG)
+        goals = [goal("1:0", "05:00", 300, "admin", change=430), goal("1:1", "08:20", 659, "clock")]
+        got = cr.check_marks(goals, state)["1:0"]
+        self.assertEqual(got["status"], "conflict")
+        self.assertIn("часы в это время идут", got["against"])
+        self.assertIn("ход часов от 1:1 не сходится", got["against"])
+        late = cr.check_marks([goal("1:0", "05:00", 500, "admin", change=430)])["1:0"]
+        self.assertEqual((late["status"], late["against"]), ("conflict", ["счёт на табло сменился раньше"]))
+
+    def test_nothing_to_check(self):
+        state = match(SEG, unknown=set(range(380, 420)))   # табло нет вокруг отметки, смены счёта не видели
+        got = cr.check_marks([goal("1:0", "05:00", 399, "admin"), goal("2:0", "28:00", 2000, "clock", period="2")],
+                             state)
+        self.assertEqual(set(got), {"1:0"})                   # проверяем только отметки людей
+        self.assertEqual(got["1:0"]["status"], "unknown")
 
 
 if __name__ == "__main__":

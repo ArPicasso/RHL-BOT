@@ -1,4 +1,5 @@
 """tools/probe_scoreboard.py (ADR-029): голы по табло трансляции на синтетических кадрах, без ffmpeg и сети."""
+import json
 import random
 import sys
 import unittest
@@ -374,7 +375,27 @@ class Merged(unittest.TestCase):
     def test_rostov_0_3_and_0_4_under_one_change(self):
         got = sb.align_by_order(self.found(self.CHANGES), self.GOALS)
         self.assertEqual(got, {"0:1": 6330, "0:2": 9830, "0:3": 11930, "0:4": 11930, "0:5": 12680, "0:6": 13200})
-        self.assertEqual(list(sb.in_order(got)), ["0:1", "0:2", "0:3", "0:4", "0:5", "0:6"])
+        self.assertEqual(list(sb.in_order(got, {"0:3", "0:4"})), ["0:1", "0:2", "0:3", "0:4", "0:5", "0:6"])
+        self.assertEqual(len(sb.in_order(got)), 4)   # одна смена у двух голов не по merged — спор, оба админу
+
+    def test_probe_by_protocol_order(self):
+        # проход целиком, как у службы без времени голов от live: под одной сменой хозяев 1:0 и 2:0
+        import tempfile
+        from types import SimpleNamespace
+        from unittest import mock
+        goals = [(206, "home"), (236, "home"), (476, "away")]
+        s = [(t, scoreboard(t, goals, [(212, 300)])) for t in range(0, 1200, 10)]
+        order = [("1:0", "home", "1", 100), ("2:0", "home", "1", 130), ("2:1", "away", "1", 300)]
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(sb.BOARDS, {"x": CELL_BOARD}):
+            args = SimpleNamespace(out=Path(tmp), step=10, start=0, end=None, rescan=False, order=order)
+            sb.probe("2026-10-03|x|y", None, None, {}, [], CELL_BOARD["box"], args, s)
+            got = json.loads((Path(tmp) / "2026-10-03_x_y" / "goals.json").read_text(encoding="utf-8"))
+        by = {g["score"]: g for g in got["goals"]}
+        self.assertEqual(set(by), {"1:0", "2:0", "2:1"})
+        self.assertIsNone(by["1:0"]["change"])            # смена счёта — у последнего гола под ней
+        self.assertEqual(by["2:0"]["change"], 300)
+        self.assertEqual((by["1:0"]["t"], by["2:0"]["t"], by["1:0"]["exact"]), (None, None, False))
+        self.assertEqual(got["rejected"], {})
 
     def test_two_ways_left_to_admin(self):
         # между 0:5 и 0:6 тоже 37 с — под третью или пятую смену, не знаем: голы гостей админу

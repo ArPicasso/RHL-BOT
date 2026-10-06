@@ -510,14 +510,19 @@ def goal_rank(score: str) -> int:
     return h + a
 
 
-def in_order(picked: dict[str, float]) -> dict[str, float]:
+def in_order(picked: dict[str, float], joint: set[str] = frozenset()) -> dict[str, float]:
     """Смены табло идут в порядке голов: (k+1)-й гол сменил счёт позже k-го. Оставляем голы, которые стоят в любом
     самом длинном ряду, где это так (наибольшая возрастающая подпоследовательность); спорные и выпавшие — админу
     (превью): клип не того гола хуже, чем никакого. «Калуга — Динамо 576» 05.10: гол 4:0 сел на смену через 22 с
-    после 1:0, раньше 2:0 и 3:0; 5:1 — раньше 4:1. Одна смена у голов подряд — так её отдаёт только align_by_order,
-    когда табло убрали на оба гола (merged), — порядку не мешает."""
+    после 1:0, раньше 2:0 и 3:0; 5:1 — раньше 4:1. joint — голы под одной сменой своей команды (merged): у них одна
+    секунда, и порядку это не мешает; у остальных одна смена на два гола — спор."""
     items = sorted(picked.items(), key=lambda x: (goal_rank(x[0]), x[1]))
-    before = lambda i, j: items[i][1] <= items[j][1] and goal_rank(items[i][0]) < goal_rank(items[j][0])  # noqa: E731
+
+    def before(i: int, j: int) -> bool:
+        ti, tj = items[i][1], items[j][1]
+        same = ti == tj and items[i][0] in joint and items[j][0] in joint
+        return (ti < tj or same) and goal_rank(items[i][0]) < goal_rank(items[j][0])
+
     n = len(items)
     left = [1] * n    # самый длинный ряд, кончающийся на голе
     for j in range(n):
@@ -758,7 +763,8 @@ def merged(cs: list[dict], goals: list[tuple]) -> dict[str, float]:
     0:4 на 47:25, табло убрали на повтор и вернули через 130 с уже с «4» — пять смен на шесть голов, и не нашёлся ни
     один гол. Смена закрывает голы подряд, только если они одного периода и по протоколу между ними не больше, чем
     табло не было, плюс MERGE_TOL (часы стоят, а запись идёт, поэтому по записи между голами не меньше, чем по
-    протоколу); соседние смены — не ближе, чем голы между ними по протоколу, минус MERGE_TOL. Берём, только если
+    протоколу); от начала окна без табло у смены до конца окна у следующей — не меньше, чем голы между ними по
+    протоколу, минус MERGE_TOL (раньше начала окна гол табло ещё не показало, позже конца — уже). Берём, только если
     разложить так можно одним способом, иначе — {} (голы админу). cs — смены по времени, goals — (счёт, команда,
     период, секунда игры). (счёт → секунда смены)."""
     if any(len(g) < 4 or not isinstance(g[3], (int, float)) for g in goals):
@@ -1076,19 +1082,30 @@ def probe(name: str, src: str | None, headers: dict | None, truth: dict[str, int
         print(f"  времени голов от сайта лиги нет — по порядку протокола: {len(picked)} из {len(order)}")
     else:
         picked = align_order(main_, site) if cells else align_sides(main_, site)[0]
-    picked = in_order(picked)
+    groups: dict[tuple, list[str]] = {}   # голы под одной сменой своей команды (merged) — только по порядку протокола
+    if cells and not site and order:
+        team = {g[0]: g[1] for g in order}
+        for score, t in sorted(picked.items(), key=lambda x: goal_rank(x[0])):
+            groups.setdefault((team.get(score), t), []).append(score)
+    shared = {s: ss for ss in groups.values() if len(ss) > 1 for s in ss}   # счёт → все голы его смены по порядку
+    picked = in_order(picked, set(shared))
     rejected: dict[str, str] = {}
     if board and cells and samples:
-        scores = [g[0] for g in site] if site else [s for s, _ in order or []]
+        scores = [g[0] for g in site] if site else [g[0] for g in order or []]
         totals = (max((int(x.split(":")[0]) for x in scores), default=0),
                   max((int(x.split(":")[1]) for x in scores), default=0))
         picked, rejected = verify_digits(picked, main_, board, samples, visible, totals)
+    for score, ss in shared.items():   # из голов одной смены выпал хоть один — не знаем, чья она, не берём никого
+        if score in picked and any(x not in picked for x in ss):
+            del picked[score]
+            rejected.setdefault(score, "под той же сменой табло гол " + ", ".join(x for x in ss if x not in picked
+                                                                                 and x != score) + " не взят")
+    if rejected:
         for score, why in sorted(rejected.items(), key=lambda x: goal_rank(x[0])):
             print(f"  гол {score} не беру: {why}")
     by_t: dict[float, list[str]] = {}
     for s, t in sorted(picked.items(), key=lambda x: goal_rank(x[0])):
         by_t.setdefault(t, []).append(s)
-    joint = {t for t, ss in by_t.items() if len(ss) > 1}   # одна смена на голы подряд (merged): секунды у них нет
     by = "по сайту лиги" if site or not order else "по протоколу"
     print(f"  смен табло: {len(main_)}, голов у админа: {len(truth)}, у сайта лиги: {len(site)}; "
           f"{by} нашлось {len(picked)} из {len(site) or len(order or [])}")
@@ -1102,7 +1119,7 @@ def probe(name: str, src: str | None, headers: dict | None, truth: dict[str, int
     if board and board.get("clock"):
         clock = cell_pixels(board["clock"])
         for score, e in picked.items():
-            if e in joint:   # часы вставали на каждом из голов — какая остановка чья, не знаем
+            if score in shared:   # часы вставали на каждом из голов — какая остановка чья, не знаем
                 continue
             if src:   # кадр каждую секунду за CLOCK_BACK до смены счёта
                 dense = [(t, f) for t, f in safe_scan(src, headers, box, e - CLOCK_BACK, e + 5) if visible(f)]
@@ -1113,7 +1130,7 @@ def probe(name: str, src: str | None, headers: dict | None, truth: dict[str, int
                 stops[score] = got   # остановка до смены прошлого гола — его, не этого (05.10 у 1:0 и 4:0 одна)
     nearest = against([c["hi"] for c in main_], truth)
     rows = [(score, t, picked.get(score)) for score, t, _ in nearest] if site else nearest
-    exact_t = {c["hi"] for c in main_ if c["hi"] - c["lo"] <= EXACT} - joint
+    exact_t = {c["hi"] for c in main_ if c["hi"] - c["lo"] <= EXACT}
     exact = [r for r in rows if r[2] in exact_t]
     if truth:
         print("  против админа (смена — " + ("та, что по сайту лиги):" if site else "первая после гола):"))
@@ -1136,9 +1153,12 @@ def probe(name: str, src: str | None, headers: dict | None, truth: dict[str, int
     lag = CLUB_LAG.get(name.split("|")[1]) if name.count("|") == 2 else None
     goals = []
     for score, e in sorted(picked.items(), key=lambda x: x[1]):
-        t, how = goal_time(e, e in exact_t, stops.get(score), lag)
-        goals.append({"score": score, "change": e, "exact": e in exact_t, "clock": list(stops[score]) if score in stops
-                      else None, "t": t, "src": how})
+        t, how = goal_time(e, e in exact_t and score not in shared, stops.get(score), lag)
+        # под слитой сменой счёт сменился на последнем голе: у ранних смена может быть и через минуты после гола —
+        # для превью, счёта хода и проверки отметок (CHANGE_BEFORE) это не их смена; превью последнего их накроет
+        early = score in shared and score != shared[score][-1]
+        goals.append({"score": score, "change": None if early else e, "exact": e in exact_t and score not in shared,
+                      "clock": list(stops[score]) if score in stops else None, "t": t, "src": how})
     timed = [g for g in goals if g["t"] is not None]
     (out / "goals.json").write_text(json.dumps({"key": name, "goals": goals, "rejected": rejected},
                                                ensure_ascii=False, indent=1), encoding="utf-8")
@@ -1194,7 +1214,9 @@ def matches(args) -> dict[str, dict]:
     if args.days:
         today = date.today()
         days |= {(today - timedelta(days=k)).isoformat() for k in range(args.days)}
-    found = recorded(league_json(args.league), days) if days else {}
+    if days:
+        args.league_data = league_json(args.league)   # ещё нужен порядку голов протокола (main, order_of)
+    found = recorded(args.league_data, days) if days else {}
     return {**found, **marked}
 
 
@@ -1252,14 +1274,14 @@ def main() -> None:
         if site or key.count("|") != 2:
             return []
         if not league:
-            league.append(league_json(args.league))
+            league.append(getattr(args, "league_data", None) or league_json(args.league))
         return protocol_order(league[0], key)
 
     if args.cache:
         for path in args.cache:
             samples, meta = load_cache(path)
             args.step = meta["step"]
-            site = [tuple(g) for g in meta.get("site") or []] or site_goals(args.live, meta["name"])
+            site = [tuple(g) for g in meta.get("site") or []]   # как было у прохода, что сохранил кадры
             args.order = order_of(meta["name"], site)
             r, x = probe(meta["name"], None, None, meta.get("truth") or {}, site, tuple(meta["box"]), args, samples)
             every, exact = every + r, exact + x

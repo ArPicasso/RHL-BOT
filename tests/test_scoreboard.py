@@ -386,7 +386,8 @@ class Merged(unittest.TestCase):
         goals = [(206, "home"), (236, "home"), (476, "away")]
         s = [(t, scoreboard(t, goals, [(212, 300)])) for t in range(0, 1200, 10)]
         order = [("1:0", "home", "1", 100), ("2:0", "home", "1", 130), ("2:1", "away", "1", 300)]
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(sb.BOARDS, {"x": CELL_BOARD}):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(sb.BOARDS, {"x": CELL_BOARD}), \
+                mock.patch.object(sb, "save_raw"):   # картинки смен — через ffmpeg, его нет у раннера Actions
             args = SimpleNamespace(out=Path(tmp), step=10, start=0, end=None, rescan=False, order=order)
             sb.probe("2026-10-03|x|y", None, None, {}, [], CELL_BOARD["box"], args, s)
             got = json.loads((Path(tmp) / "2026-10-03_x_y" / "goals.json").read_text(encoding="utf-8"))

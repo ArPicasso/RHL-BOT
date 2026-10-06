@@ -854,7 +854,7 @@ def verify_digits(picked: dict[str, float], found: list[dict], board: dict, samp
         c, mine, opp = seq[side][k], board[side], other[side]
         if not broken[side] and any(j not in seq[side] for j in range(1, k)):
             broken[side] = f"смену {min(j for j in range(1, k) if j not in seq[side])}-го гола табло не увидело"
-        joint_prev = k > 1 and seq[side][k - 1]["hi"] == c["hi"]   # одна смена с прошлым голом (merged)…
+        joint_prev = (seq[side].get(k - 1) or {}).get("hi") == c["hi"]   # одна смена с прошлым голом (merged)…
         joint_next = (seq[side].get(k + 1) or {}).get("hi") == c["hi"]   # …или со следующим: после неё уже не «k»
         if not broken[side]:
             if k == 1 and side in zero_bad:

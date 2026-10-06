@@ -356,6 +356,15 @@ class Digits(unittest.TestCase):
         kept, bad = sb.verify_digits(picked, found, CELL_BOARD, s, visible, (2, 1))
         self.assertEqual((kept, bad), (picked, {}))
 
+    def test_missed_first_change_does_not_crash(self):
+        # «Факел Ямал — Ахмат-Гранит» 05.10: смены первого гола хозяев нет, есть только второго — KeyError: 2
+        s, visible, found = self.found(GOALS)
+        home = [c["hi"] for c in found if c["zone"] == "home"]
+        away = next(c["hi"] for c in found if c["zone"] == "away")
+        kept, bad = sb.verify_digits({"1:1": away, "2:1": home[1]}, found, CELL_BOARD, s, visible, (2, 1))
+        self.assertEqual(set(kept), {"1:1"})
+        self.assertIn("1-го гола табло не увидело", bad["2:1"])
+
     def test_cells_of_other_size_not_compared(self):
         self.assertIsNone(sb.cell_same(bytes(W * H), bytes(W * H), (0, 0, 10, 10), (20, 0, 31, 10)))
         self.assertTrue(sb.cell_same(bytes(W * H), bytes(W * H), (0, 0, 10, 10), (20, 0, 30, 10)))

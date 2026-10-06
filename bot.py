@@ -1906,6 +1906,10 @@ async def cb_replay(c: CallbackQuery):
         rows = [[InlineKeyboardButton(text="🚫 Гола нет в записи", callback_data=f"rp:a:{day}:{i}:{parts[4]}")],
                 [InlineKeyboardButton(text="⚠️ Повтор не тот — табло сбилось",
                                       callback_data=f"rp:w:{day}:{i}:{parts[4]}")]] if video else []
+        now_t = next((r for r in reversed(open_) if r["kind"] == "time"), None)   # действующее время гола
+        if now_t and now_t.get("who") != c.from_user.id:
+            rows.append([InlineKeyboardButton(text=f"✅ Время верное: {mark_word(now_t)}",
+                                              callback_data=f"rp:v:{day}:{i}:{now_t['id']}")])
         rows += [[InlineKeyboardButton(text=f"↩️ Отозвать: {mark_word(r)}", callback_data=f"rp:r:{day}:{i}:{r['id']}")]
                  for r in open_]
         await c.message.answer(
@@ -1913,7 +1917,8 @@ async def cb_replay(c: CallbackQuery):
             + ("." if video else " — вместе со ссылкой на запись в VK.")
             + ("\nПовтор открывает не тот гол — нажми «табло сбилось»: секунды табло у этого гола и следующих голов "
                "команды больше не берём. Гола в записи нет совсем — «нет в записи»." if video else "")
-            + ("\n\n<b>Отметки</b> (ошиблись — «Отозвать», это остаётся в истории):\n"
+            + ("\n\n<b>Отметки</b> (перепроверил и всё верно — «Время верное»; ошиблись — «Отозвать», это остаётся "
+               "в истории):\n"
                + "\n".join(html.escape(x) for x in history) if history else ""),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
         return
@@ -1935,6 +1940,22 @@ async def cb_replay(c: CallbackQuery):
         await c.message.answer(replay_text(day, g, entry, protocol), reply_markup=replay_kb(day, i, g, entry, protocol),
                                disable_web_page_preview=True)
         await c.answer("Записал")
+        return
+    if parts[1] == "v" and len(parts) == 5 and parts[4].isdigit():   # «Время верное»: перепроверил — своя отметка
+        mark = goal_marks().get(int(parts[4]))
+        if not mark or mark["match"] != match_key(g) or mark["kind"] != "time" \
+                or mark["id"] in marks.revoked(goal_marks().of(mark["match"])):
+            await c.answer("Этой отметки уже нет — открой гол заново", show_alert=True)
+            return
+        league = await published_league()
+        protocol = protocol_of(league, g)
+        add_mark(mark["match"], mark["score"], "time", now, c.from_user.id, "replay", protocol, video=mark["video"],
+                 sec=mark["sec"], seen=f"подтвердил отметку #{mark['id']}")
+        entry = marks_apply(match_key(g), g, now, protocol)
+        TRACK.add("replay_confirms")
+        await c.message.answer(replay_text(day, g, entry, protocol), reply_markup=replay_kb(day, i, g, entry, protocol),
+                               disable_web_page_preview=True)
+        await c.answer(f"Записал: {mark_word(mark)} подтверждено тобой")
         return
     if parts[1] == "r" and len(parts) == 5 and parts[4].isdigit():   # отозвать отметку (ADR-033)
         mark = goal_marks().get(int(parts[4]))

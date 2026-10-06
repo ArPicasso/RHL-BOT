@@ -137,6 +137,28 @@ class BotJournal(unittest.TestCase):
         self.assertIn("перенесено, не проверено", lines[0])
         self.assertEqual([r["id"] for r in open_], [rows[0]["id"]])
 
+    def test_confirm_old_mark(self):
+        """Перепроверил перенесённую отметку — «Время верное»: та же секунда, но уже от него, в истории обе строки."""
+        (self.dir / "replays.json").write_text(json.dumps({"games": {KEY: {
+            "video": VIDEO, "anchors": {"1:0": 7406}, "updated": "2026-10-05T02:14:00+03:00"}}}), encoding="utf-8")
+        old = self.bot.goal_marks().of(KEY)[0]
+        c = mock.Mock(data=f"rp:g:2026-10-03:0:1:0", from_user=mock.Mock(id=1001),
+                      message=mock.Mock(chat=mock.Mock(id=1001)))
+        c.answer = mock.AsyncMock()
+        c.message.answer = mock.AsyncMock()
+        with mock.patch.object(self.bot, "published_league", mock.AsyncMock(return_value=None)):
+            asyncio.run(self.bot.cb_replay(c))
+            kb = c.message.answer.call_args.kwargs["reply_markup"]
+            buttons = {b.text: b.callback_data for row in kb.inline_keyboard for b in row}
+            self.assertEqual(buttons["✅ Время верное: 2:03:26"], f"rp:v:2026-10-03:0:{old['id']}")
+            c.data = buttons["✅ Время верное: 2:03:26"]
+            asyncio.run(self.bot.cb_replay(c))
+        rows = self.bot.goal_marks().of(KEY)
+        self.assertEqual([(r["role"], r["who"], r["sec"]) for r in rows], [("import", None, 7406), ("admin", 1001, 7406)])
+        self.assertEqual(self.saved()["anchors"], {"1:0": 7406})
+        lines, _ = self.bot.goal_history(KEY, "1:0", 1001)
+        self.assertIn("· ты · 2:03:26", lines[-1])
+
     def test_typo_fixed_and_revoked(self):
         self.bot.replay_save("2026-10-03", 0, "1:0", f"{VIDEO}?t=1h3m8s", self.now, who=1001)
         self.bot.replay_save("2026-10-03", 0, "1:0", "1:08:03", self.now, who=1001)

@@ -38,7 +38,10 @@ LEAGUE = {"games": [
 class Boards(unittest.TestCase):
     def test_markup_from_file(self):
         self.assertLessEqual({"kaluga", "rostov", "ryazan-vdv", "tverichi", "proton", "krasnaya-mashina",
-                              "fakel-yamal"}, set(sb.BOARDS))
+                              "fakel-yamal", "belgorod", "dizelist"}, set(sb.BOARDS))
+        # шаблон табло «Рязань-ВДВ» — и у «Белгорода», и у «Дизелиста»: сверено по кадрам 06.10
+        self.assertEqual(sb.BOARDS["belgorod"], sb.BOARDS["ryazan-vdv"])
+        self.assertEqual(sb.BOARDS["dizelist"], sb.BOARDS["ryazan-vdv"])
         for club, b in sb.BOARDS.items():                                  # клетки — внутри рамки 240×90
             x, y, w, h = b["box"]                                          # рамка — внутри кадра
             self.assertTrue(0 <= x and 0 <= y and x + w <= 1 and y + h <= 1, f"{club} box")

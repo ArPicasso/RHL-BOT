@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 TZ = ZoneInfo("Europe/Moscow")
 EXACT_LEAD = 10    # секунд до отмеченного админом момента: видно, как развивалась атака
 GUESS_LEAD = 60    # у расчётного: запоздание сайта лиги в одном периоде — до полутора минут (04.10.2026)
+CHANGE_LEAD = 100  # примерный повтор по смене счёта на табло: оператор меняет счёт через 0–90 с после гола (ADR-031)
 MAX_T = 6 * 3600   # трансляция матча не длиннее шести часов: больше — ошибка в ссылке
 VK_HOSTS = ("vk.com", "vk.ru", "m.vk.com", "m.vk.ru", "vkvideo.ru", "m.vkvideo.ru")
 SCORE_RE = re.compile(r"\d{1,2}:\d{1,2}")
@@ -168,17 +169,20 @@ def with_protocol(goals: list[dict], protocol: list[dict] | None) -> list[dict]:
     return out
 
 
-def place(goals: list[dict], anchors: dict[str, int]) -> list[dict]:
+def place(goals: list[dict], anchors: dict[str, int], absent=()) -> list[dict]:
     """Секунда записи для каждого гола. anchors — {счёт после гола: секунда записи}, их отметил админ.
 
     Отмеченный гол — точно (за EXACT_LEAD). Остальные — от ближайшей по часам опоры того же периода: её
     секунда плюс разница по часам, минус GUESS_LEAD. Опоры в этом периоде нет, у гола нет времени по часам
-    или периода — без повтора: между периодами запись и часы расходятся на минуты."""
+    или периода — без повтора: между периодами запись и часы расходятся на минуты. absent — голы, которых, по
+    словам админа, в записи нет (запись началась позже, её разбили на два ролика): у них повтора нет совсем."""
     by = {g["score"]: g for g in goals}
     marks = [(by[s]["at"], t, by[s].get("period")) for s, t in anchors.items()
              if s in by and by[s].get("at") and by[s].get("period")]
     out = []
     for g in goals:
+        if g["score"] in absent:
+            continue
         same = [m for m in marks if g.get("period") and m[2] == g["period"]]
         if g["score"] in anchors:
             t, exact = anchors[g["score"]] - EXACT_LEAD, True
@@ -193,13 +197,33 @@ def place(goals: list[dict], anchors: dict[str, int]) -> list[dict]:
     return out
 
 
-def entry(game: dict, video: str, anchors: dict[str, int], now: datetime, protocol: list[dict] | None = None) -> dict:
-    """Запись матча в replays.json: ролик, опоры админа и готовые ссылки по голам."""
-    goals = place(with_protocol(goals_of(game), protocol), anchors)
+def entry(game: dict, video: str, anchors: dict[str, int], now: datetime, protocol: list[dict] | None = None,
+          absent=(), wrong=()) -> dict:
+    """Запись матча в replays.json: ролик, опоры админа, голы, которых в записи нет (`absent`), голы, у которых табло
+    сбилось (`wrong`, ADR-031: секунды табло у них и у следующих голов команды не берём), и ссылки по голам."""
+    absent = sorted(set(absent) - set(anchors))
+    wrong = sorted(set(wrong))
+    goals = place(with_protocol(goals_of(game), protocol), anchors, absent)
     for g in goals:
         g["url"] = at_link(video, g["t"])
-    return {"video": video, "anchors": dict(sorted(anchors.items())), "goals": goals,
+    return {"video": video, "anchors": dict(sorted(anchors.items())), **({"absent": absent} if absent else {}),
+            **({"wrong": wrong} if wrong else {}), "goals": goals,
             "updated": now.astimezone(TZ).isoformat(timespec="seconds")}
+
+
+def board_off(entry: dict | None, goals: dict) -> set[str]:
+    """Голы, у которых секунды табло не берём (ADR-031): гола в записи нет (`absent`) и табло сбилось (`wrong`) — у
+    помеченного гола и у следующих голов той же команды: их сопоставили по тому же порядку."""
+    out = set((entry or {}).get("absent") or [])
+    for s in (entry or {}).get("wrong") or []:
+        out.add(s)
+        team = (goals.get(s) or {}).get("team")
+        if team not in ("home", "away") or not SCORE_RE.fullmatch(s):
+            continue
+        k = int(s.split(":")[0 if team == "home" else 1])
+        out |= {o for o, g in goals.items() if isinstance(g, dict) and g.get("team") == team and SCORE_RE.fullmatch(o)
+                and int(o.split(":")[0 if team == "home" else 1]) >= k}
+    return out
 
 
 def by_score(entry_: dict) -> dict[str, str]:
@@ -222,23 +246,39 @@ def same_video(a: str | None, b: str | None) -> bool:
     return bool(ma and mb and ma.groups() == mb.groups())
 
 
+def _sec(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= MAX_T
+
+
 def with_board(entry: dict | None, board: dict | None) -> dict | None:
-    """Опоры админа и секунды голов по табло службы clips (ADR-030): у гола без отметки админа — точная секунда
-    табло (`src` — `clock` или `board`), расчётный (≈) ей уступает. Опора админа главнее всего. Табло считали по
-    своему ролику: админ прислал другой — секунды табло к нему не подходят, остаётся запись админа.
-    board — запись матча из live/clips.json: {"video", "goals": {счёт: {"t", "src", "team"}}}."""
+    """Опоры админа и секунды голов по табло службы clips (ADR-030, ADR-031): у гола без отметки админа — точная
+    секунда табло (`src` — `clock`, `board` или `run` — по ходу часов), расчётный (≈) ей уступает. Нет точной —
+    примерная:
+    с начала окна счёта хода часов (`win`) или за CHANGE_LEAD до смены счёта на табло (`change`): гол — в ближайшие
+    полторы-две минуты. Она главнее расчёта по времени сайта лиги. Опора админа главнее всего, гол, которого, по
+    словам админа, в записи нет (`absent`), — без повтора. Табло считали по своему ролику: админ прислал другой —
+    секунды табло к нему не подходят, остаётся запись админа.
+    board — запись матча из live/clips.json: {"video", "goals": {счёт: {"t", "src", "team", "change", "win"}}}."""
     goals = (board or {}).get("goals") or {}
     video = (board or {}).get("video")
     if not goals or not video or (entry and not same_video(entry.get("video"), video)):
         return entry
     admin = (entry or {}).get("anchors") or {}
+    off = board_off(entry, goals)
     out = {g["score"]: g for g in (entry or {}).get("goals") or [] if isinstance(g, dict) and g.get("score")}
     for score, b in goals.items():
-        t = b.get("t") if isinstance(b, dict) else None
-        if (not isinstance(t, (int, float)) or isinstance(t, bool) or not 0 <= t <= MAX_T or score in admin
-                or (out.get(score) or {}).get("exact")):
+        if not isinstance(b, dict) or score in admin or score in off or b.get("off") \
+                or (out.get(score) or {}).get("exact"):
             continue
-        out[score] = {"score": score, "team": b.get("team"), "t": max(0, round(t - EXACT_LEAD)), "exact": True,
-                      "src": b.get("src") or "board"}
+        t, win, change = b.get("t"), b.get("win"), b.get("change")
+        if _sec(t):
+            out[score] = {"score": score, "team": b.get("team"), "t": max(0, round(t - EXACT_LEAD)), "exact": True,
+                          "src": b.get("src") or "board"}
+        elif isinstance(win, list) and len(win) == 2 and _sec(win[0]):
+            out[score] = {"score": score, "team": b.get("team"), "t": max(0, round(win[0] - EXACT_LEAD)),
+                          "exact": False, "src": "win"}
+        elif _sec(change):
+            out[score] = {"score": score, "team": b.get("team"), "t": max(0, round(change - CHANGE_LEAD)),
+                          "exact": False, "src": "change"}
     return {**(entry or {"anchors": {}}), "video": (entry or {}).get("video") or video,
             "goals": sorted(out.values(), key=lambda g: g["t"])}

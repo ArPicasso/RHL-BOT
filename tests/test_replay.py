@@ -419,6 +419,26 @@ class Nag(unittest.TestCase):
         self.assertTrue(text.startswith("🖼 Табло не размечено: Полёт (2)"), text)
         self.assertIsNone(kb)                                   # матчей для /replay нет — без пустой клавиатуры
 
+    def test_coverage_report(self):
+        """ADR-031: каждый вечер — сколько матчей с повтором у всех голов и почему не у остальных, с ошибками."""
+        cover = {"2026-10-03|tverichi|metallurg": {"goals": 4, "replays": 4, "why": "ok"},
+                 "2026-10-04|kaluga|dinamo-576": {"goals": 6, "replays": 3, "why": "not_found",
+                                                  "missing": ["1:0", "2:0", "3:0"],
+                                                  "rejected": {"1:0": "до первого гола в клетке не «0»"}},
+                 "2026-10-04|polet|sokol": {"goals": 2, "replays": 0, "why": "no_board"},
+                 "2026-10-05|belgorod|tambov": {"goals": 2, "replays": 0, "why": "error", "error": "VkError: HTTP 403"}}
+        (self.dir / "clips.json").write_text(json.dumps({"games": {}, "coverage": cover}), encoding="utf-8")
+        sent, say = self.run_step(league={"games": []})
+        self.assertEqual(sent, 2)
+        text, kb = say.call_args.args[2]()
+        self.assertTrue(text.startswith("📊 Повторы с 03.10: у всех голов — 1 из 4 матчей, голов с повтором — 7 из 14."),
+                        text)
+        self.assertIn("• табло не нашло голы — 1: Калужские Ракеты — Динамо-576 04.10, без повтора 3 из 6 "
+                      "(1:0: до первого гола в клетке не «0»)", text)
+        self.assertIn("VkError: HTTP 403", text)
+        self.assertIn("табло клуба не размечено — 1: Полёт — Сокол 04.10", text)
+        self.assertEqual(self.bot.coverage_text(cover, full=False).count("\n"), 0)
+
     def test_many_matches_link_to_list(self):
         todo = [("2026-10-03", k, GAME) for k in range(10)]
         text, kb = self.bot.replay_nag(todo)
@@ -463,7 +483,7 @@ class Previews(unittest.TestCase):
         text, kb = self.bot.preview_caption(GAME["key"], "1:0", self.ask)
         self.assertIn("1:0", text)
         labels = [b.text for row in kb.inline_keyboard for b in row]
-        self.assertEqual(labels, ["Гол на 0:47", "Гол на 1:12", "Другое время"])
+        self.assertEqual(labels, ["Гол на 0:47", "Гол на 1:12", "Другое время", "⚠️ Гола тут нет — табло сбилось"])
         tok = self.bot.preview_token(GAME["key"], "1:0")
         self.assertEqual(kb.inline_keyboard[0][0].callback_data, f"pv:{tok}:0")
         self.assertEqual(self.bot.preview_find(tok)[1], "1:0")
@@ -557,6 +577,25 @@ class Previews(unittest.TestCase):
         bot, sent = self.stale_step(rec, clips_, delete=RuntimeError("сеть"))
         self.assertEqual(sent[f"{GAME['key']}|1:0"]["msgs"], {"761": 3})                 # попробуем через минуту
 
+    def test_wrong_board_pressed(self):
+        """ADR-031: «Факел Ямал — Ахмат-Гранит» 05.10 — превью 1:3, а на табло 0:2: «табло сбилось» — пометка в
+        replays.json, секунды табло у гола и у следующих голов команды не берём, превью закрыто у всех."""
+        import asyncio
+        (self.dir / "previews.json").write_text(json.dumps({f"{GAME['key']}|1:0": {
+            "at": "2026-10-04T11:00:00+03:00", "msgs": {"761": 3, "1001": 4}, "v": 2}}), encoding="utf-8")
+        tok = self.bot.preview_token(GAME["key"], "1:0")
+        c = mock.Mock(data=f"pv:{tok}:w", from_user=mock.Mock(id=761), message=mock.Mock(chat=mock.Mock(id=761)))
+        c.answer = mock.AsyncMock()
+        c.bot.edit_message_caption = mock.AsyncMock()
+        with mock.patch.object(self.bot, "published_league", mock.AsyncMock(return_value=None)):
+            asyncio.run(self.bot.cb_preview(c))
+        saved = json.loads((self.dir / "replays.json").read_text(encoding="utf-8"))["games"][GAME["key"]]
+        self.assertEqual((saved["video"], saved["wrong"]), (VIDEO, ["1:0"]))
+        self.assertEqual(c.bot.edit_message_caption.await_count, 2)
+        self.assertIn("табло сбилось", c.bot.edit_message_caption.call_args.kwargs["caption"])
+        board = replay.with_board(saved, self.clips["games"][GAME["key"]])
+        self.assertNotIn("1:0", {x["score"] for x in board["goals"]})          # повтора по табло больше нет
+
     def test_answer_becomes_admin_anchor(self):
         import asyncio
         bot = mock.Mock()
@@ -640,3 +679,30 @@ class Grids(unittest.TestCase):
 class ClockFormat(unittest.TestCase):
     def test_fmt_clock(self):
         self.assertEqual([replay.fmt_clock(x) for x in (0, 65, 723, 3723)], ["0:00", "1:05", "12:03", "1:02:03"])
+
+
+class BoardApprox(unittest.TestCase):
+    """ADR-031: у гола без точной секунды, но со сменой счёта на табло или окном счёта хода — примерный повтор."""
+
+    def test_change_and_window(self):
+        board = {"video": VIDEO, "goals": {"1:0": {"t": None, "change": 1620, "team": "home"},
+                                           "1:1": {"t": None, "win": [2900, 2960], "change": 3000, "team": "away"},
+                                           "2:1": {"t": 4000, "src": "run", "team": "home"}}}
+        got = {g["score"]: g for g in replay.with_board(None, board)["goals"]}
+        self.assertEqual((got["1:0"]["t"], got["1:0"]["exact"], got["1:0"]["src"]), (1520, False, "change"))
+        self.assertEqual((got["1:1"]["t"], got["1:1"]["src"]), (2890, "win"))     # окно уже смены
+        self.assertEqual((got["2:1"]["t"], got["2:1"]["exact"]), (3990, True))
+        self.assertEqual(set(replay.by_score({**replay.with_board(None, board)})), {"1:0", "1:1", "2:1"})
+
+    def test_marks_switch_board_off(self):
+        board = {"video": VIDEO, "goals": {"1:0": {"t": 100, "src": "clock", "team": "home"},
+                                           "1:1": {"t": 300, "src": "clock", "team": "away"},
+                                           "2:1": {"t": 500, "src": "clock", "team": "home"}}}
+        entry = {"video": VIDEO, "anchors": {}, "goals": [], "wrong": ["1:0"]}
+        self.assertEqual(replay.board_off(entry, board["goals"]), {"1:0", "2:1"})   # и следующий гол хозяев
+        got = {g["score"] for g in replay.with_board(entry, board)["goals"]}
+        self.assertEqual(got, {"1:1"})
+        absent = {"video": VIDEO, "anchors": {}, "goals": [], "absent": ["1:1"]}
+        self.assertEqual({g["score"] for g in replay.with_board(absent, board)["goals"]}, {"1:0", "2:1"})
+        kept = replay.entry(GAME, VIDEO, {"1:0": 60}, msk("2026-10-04T12:00:00"), absent=["1:0", "2:1"], wrong=["1:1"])
+        self.assertEqual((kept["absent"], kept["wrong"]), (["2:1"], ["1:1"]))    # своё время главнее «нет в записи»

@@ -736,6 +736,101 @@ def align_by_order(found: list[dict], order: list[tuple[str, str]]) -> dict[str,
     return out
 
 
+def cell_same(fa: bytes, fb: bytes, ca, cb=None) -> bool | None:
+    """Одна ли цифра в клетке ca кадра fa и в клетке cb кадра fb (cb — клетка той же величины, по умолчанию та же):
+    разных пикселей меньше, чем бывает у смены цифры (CELL_MIN, CELL_SHARE). Клетки разной величины — None."""
+    cb = cb or ca
+    if (ca[2] - ca[0], ca[3] - ca[1]) != (cb[2] - cb[0], cb[3] - cb[1]):
+        return None
+    shift = (cb[1] - ca[1]) * W + (cb[0] - ca[0])
+    pixels = cell_pixels(ca)
+    diff = sum(abs(fa[p] - fb[p + shift]) > DIFF for p in pixels)
+    return diff < max(CELL_MIN, CELL_SHARE * len(pixels))
+
+
+def verify_digits(picked: dict[str, float], found: list[dict], board: dict, samples: list[tuple[float, bytes]],
+                  visible, totals: tuple[int, int]) -> tuple[dict[str, float], dict[str, str]]:
+    """Цифры табло против того, какой это гол. 05.10 «Калуга — Динамо 576»: повтор 1:0 открывался, когда на табло уже
+    3:0; «Факел Ямал — Ахмат-Гранит»: превью 1:3, а на табло 0:2 — смены сопоставились голам по порядку, а табло то
+    не видело ранних смен, то принимало за смену фон за прозрачными цифрами. Цифр не читаем — сравниваем картинки
+    клетки; голы — по порядку матча. k-й гол команды берём, только если в клетке до смены «k−1», а после — «k»:
+    - до первого гола — «0»: та же картинка, что у соперника до его первого гола (клетки одной величины) или у
+      соперника без голов в том же кадре. Не сошлось — запись началась после гола или табло пропустило смену: не
+      берём голы той команды, что забила первой (соперник до своего гола точно показывал «0»);
+    - до k-го гола — то, что устоялось после (k−1)-го;
+    - после: не вернулась прежняя цифра до смены (k+1)-го гола, у последнего гола — то, что в клетке в конце записи;
+      и если соперник уже доходил до k — та же картинка, что у него тогда.
+    Клетки разной величины («Ростов») сравниваем только с самими собой. Разорвалась цепочка — дальше голы этой
+    команды не берём: секунда и повтор по чужой смене хуже, чем никакого. (оставленные голы — счёт → смена,
+    отброшенные — счёт → почему)."""
+    zone_of = {c["hi"]: c["zone"] for c in found if c.get("zone") in ("home", "away")}
+    vis = [(t, f) for t, f in samples if visible(f)]
+    seq: dict[str, dict[int, dict]] = {"home": {}, "away": {}}
+    for score, hi in picked.items():
+        side = zone_of.get(hi)
+        if side:
+            c = next(c for c in found if c["hi"] == hi and c.get("zone") == side)
+            seq[side][int(score.split(":")[0 if side == "home" else 1])] = {**c, "score": score}
+    side_changes = {side: sorted(c["hi"] for c in found if c.get("zone") == side) for side in ("home", "away")}
+
+    def settled(side: str, c: dict) -> bytes:
+        """Кадр с новой цифрой, когда она устоялась (смена бывает с анимацией), но раньше следующей смены клетки."""
+        nxt = next((t for t in side_changes[side] if t > c["hi"]), float("inf"))
+        got = [f for t, f in vis if c["hi"] + 5 <= t < nxt - 5]
+        return got[min(len(got) - 1, 2)] if got else c["after"]
+
+    other = {"home": "away", "away": "home"}
+    total = {"home": totals[0], "away": totals[1]}
+    first = {side: seq[side].get(1) for side in seq}
+    zero_bad: set[str] = set()
+    if first["home"] and first["away"]:
+        same = cell_same(first["home"]["before"], first["away"]["before"], board["home"], board["away"])
+        if same is False:   # кто забил первым по ходу матча, у того и сбилось
+            zero_bad.add(min(("home", "away"), key=lambda x: goal_rank(first[x]["score"])))
+        elif same is None and vis:
+            zero_bad |= {x for x in ("home", "away") if not cell_same(first[x]["before"], vis[0][1], board[x])}
+    for side in ("home", "away"):
+        c1 = first[side]
+        if c1 and not first[other[side]]:
+            same = (cell_same(c1["before"], c1["before"], board[side], board[other[side]])
+                    if total[other[side]] == 0 else None)
+            if same is None and vis:
+                same = cell_same(c1["before"], vis[0][1], board[side])
+            if same is False:
+                zero_bad.add(side)
+    last = vis[-1][1] if vis else None
+    kept, bad, broken = {}, {}, {"home": "", "away": ""}
+    goals = sorted(((side, k) for side in seq for k in seq[side]), key=lambda x: goal_rank(seq[x[0]][x[1]]["score"]))
+    for side, k in goals:
+        c, mine, opp = seq[side][k], board[side], other[side]
+        if not broken[side] and any(j not in seq[side] for j in range(1, k)):
+            broken[side] = f"смену {min(j for j in range(1, k) if j not in seq[side])}-го гола табло не увидело"
+        if not broken[side]:
+            if k == 1 and side in zero_bad:
+                broken[side] = "до первого гола в клетке не «0»"
+            elif k > 1 and not cell_same(settled(side, seq[side][k - 1]), c["before"], mine):
+                broken[side] = f"между {k - 1}-м и {k}-м голом цифра сменилась ещё раз"
+            else:
+                post, nxt = None, seq[side].get(k + 1)
+                if nxt and not cell_same(settled(side, c), nxt["before"], mine):
+                    # до следующей смены снова прежняя цифра — эта смена не держалась (фон, повтор со старым табло);
+                    # иначе между ними пропущена смена, и цепочку порвёт следующий гол
+                    post = False if cell_same(c["before"], nxt["before"], mine) else None
+                elif not nxt and k == total[side] and last is not None:
+                    post = cell_same(settled(side, c), last, mine)
+                twin = seq[opp].get(k)
+                earlier = twin and twin["score"] in kept and goal_rank(twin["score"]) < goal_rank(c["score"])
+                if post is not False and earlier:
+                    post = cell_same(settled(side, c), settled(opp, twin), mine, board[opp])
+                if post is False:
+                    broken[side] = f"после смены в клетке не та цифра, что должна быть после {k}-го гола"
+        if broken[side]:
+            bad[c["score"]] = broken[side]
+        else:
+            kept[c["score"]] = c["hi"]
+    return kept, bad
+
+
 def against(found: list[float], truth: dict[str, int]) -> list[tuple[str, int, float | None]]:
     """Гол админа → первая смена табло в окне MATCH_WINDOW после него. (счёт, секунда гола, смена или None)."""
     out = []
@@ -933,6 +1028,14 @@ def probe(name: str, src: str | None, headers: dict | None, truth: dict[str, int
     else:
         picked = align_order(main_, site) if cells else align_sides(main_, site)[0]
     picked = in_order(picked)
+    rejected: dict[str, str] = {}
+    if board and cells and samples:
+        scores = [g[0] for g in site] if site else [s for s, _ in order or []]
+        totals = (max((int(x.split(":")[0]) for x in scores), default=0),
+                  max((int(x.split(":")[1]) for x in scores), default=0))
+        picked, rejected = verify_digits(picked, main_, board, samples, visible, totals)
+        for score, why in sorted(rejected.items(), key=lambda x: goal_rank(x[0])):
+            print(f"  гол {score} не беру: {why}")
     by_t = {t: s for s, t in picked.items()}
     print(f"  смен табло: {len(main_)}, голов у админа: {len(truth)}, у сайта лиги: {len(site)}; "
           f"по сайту лиги нашлось {len(picked)} из {len(site)}")
@@ -982,8 +1085,8 @@ def probe(name: str, src: str | None, headers: dict | None, truth: dict[str, int
         goals.append({"score": score, "change": e, "exact": e in exact_t, "clock": list(stops[score]) if score in stops
                       else None, "t": t, "src": how})
     timed = [g for g in goals if g["t"] is not None]
-    (out / "goals.json").write_text(json.dumps({"key": name, "goals": goals}, ensure_ascii=False, indent=1),
-                                    encoding="utf-8")
+    (out / "goals.json").write_text(json.dumps({"key": name, "goals": goals, "rejected": rejected},
+                                               ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"  время гола по табло (для повтора и клипа): {len(timed)} из {len(site) or len(goals)}"
           + (" — " + ", ".join(f"{g['score']} {replay.fmt_t(int(g['t']))} ({'часы' if g['src'] == 'clock' else 'табло'})"
                                for g in timed) if timed else ""))

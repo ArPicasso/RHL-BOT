@@ -1695,9 +1695,14 @@ def replay_list(now: datetime, day: str | None = None) -> tuple[str, InlineKeybo
     marked = load_replays()["games"]
     kb = [[InlineKeyboardButton(text=("✅ " if match_key(g) in marked else "") + replay_title(day, g),
                                 callback_data=f"rp:m:{day}:{i}")] for day, i, g in found[:30]]
-    head = coverage_text((read_live("clips.json") or {}).get("coverage"), full=False) if not day else ""
+    cov = (read_live("clips.json") or {}).get("coverage")
+    head = coverage_text(cov, full=False) if not day else ""
     what = f"Повторы голов за {day[8:10]}.{day[5:7]}: выбери матч." if day else \
         "Повторы голов: выбери матч. Матч старше — /replay ДД.ММ."
+    left = sum(1 for e in (cov or {}).values() if isinstance(e, dict) and e.get("why") not in (None, "ok"))
+    if head and left:   # что мешает повтору у каждого гола и кнопки на эти матчи
+        kb.insert(0, [InlineKeyboardButton(text=f"📋 Почему не у всех — {left} {plural(left, 'матч', 'матча', 'матчей')}",
+                                           callback_data="rp:why")])
     return (head + "\n\n" if head else "") + what, InlineKeyboardMarkup(inline_keyboard=kb)
 
 
@@ -1885,6 +1890,11 @@ async def cb_replay(c: CallbackQuery):
     if parts[1] == "list":
         REPLAY_ASK.pop(cid, None)
         await safe_edit(c, lambda: replay_list(now))
+        await c.answer()
+        return
+    if parts[1] == "why":   # разбор покрытия целиком и кнопки на недоделанные матчи
+        REPLAY_ASK.pop(cid, None)
+        await safe_edit(c, lambda: coverage_todo((read_live("clips.json") or {}).get("coverage")))
         await c.answer()
         return
     if parts[1] == "d" and len(parts) > 2:   # список матчей одного дня (/replay ДД.ММ)
@@ -2079,6 +2089,16 @@ COVER_WHY = {   # причины, по которым у матча не все 
     "pending": "ждут разбора",
 }
 COVER_NAMES = 4   # матчей на причину в разборе — дальше «и ещё N»
+COVER_TODO = {   # что сделать, чтобы у матча были повторы всех голов (кнопка «Почему не у всех» в /replay)
+    "no_video": "открой матч и пришли ссылку на запись в VK (из канала клуба) с временами голов",
+    "error": "VK не отдал запись трижды: на сервере sudo -u rhl /opt/rhl/venv/bin/pip install -U yt-dlp, "
+             "systemctl restart clips — или пришли время голов в матче сам",
+    "no_board": "перешли кадр табло, который прислал бот, в сессию Claude — после разметки служба переберёт матчи сама; "
+                "или пришли время голов в матче",
+    "not_found": "открой матч: у голов без ссылки пришли время (одно сообщение — все голы по порядку)",
+    "pending": "ничего: служба разберёт запись сама, свежие матчи — первыми",
+}
+COVER_BUTTONS = 10   # кнопок на матчи в «Почему не у всех»
 
 
 def coverage_text(cov: dict | None, full: bool = True) -> str:
@@ -2111,6 +2131,32 @@ def coverage_text(cov: dict | None, full: bool = True) -> str:
         more = f" и ещё {len(keys) - COVER_NAMES}" if len(keys) > COVER_NAMES else ""
         lines.append(f"• {label} — {len(keys)}: " + html.escape(", ".join(names) + more))
     return "\n".join(lines)
+
+
+def coverage_todo(cov: dict | None) -> tuple[str, InlineKeyboardMarkup | None]:
+    """«Почему не у всех» в /replay: разбор покрытия целиком, что делать по каждой причине и кнопки на матчи, где
+    повтор есть не у всех голов, — сначала те, где можно доделать руками сейчас."""
+    cov = {k: e for k, e in (cov or {}).items() if isinstance(e, dict) and k.count("|") == 2}
+    text = coverage_text(cov)
+    if not text:
+        return "Разбора покрытия ещё нет: служба clips его не писала.", None
+    todo = [k for k in cov if cov[k].get("why") not in (None, "ok")]
+    if not todo:
+        return text + "\n\nВсё готово: повтор у каждого гола.", None
+    why_now = [w for w in COVER_WHY if any(cov[k]["why"] == w for k in todo)]
+    lines = [text, "", "<b>Что сделать</b>"] + [f"• {COVER_WHY[w]} — {html.escape(COVER_TODO[w])}" for w in why_now]
+    order = {"not_found": 0, "no_video": 1, "no_board": 2, "error": 3, "pending": 4}
+    rows = []
+    for k in sorted(todo, key=lambda k: (order.get(cov[k]["why"], 9), k))[:COVER_BUTTONS]:
+        place = match_place(k)
+        if not place:
+            continue
+        e = cov[k]
+        miss = int(e.get("goals") or 0) - int(e.get("replays") or 0)
+        rows.append([InlineKeyboardButton(text=f"🛠 {key_title(k)} {k[8:10]}.{k[5:7]} · без повтора {miss}",
+                                          callback_data=f"rp:m:{place[0]}:{place[1]}")])
+    rows.append([InlineKeyboardButton(text="← Матчи", callback_data="rp:list")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def replay_nag(todo: list[tuple[str, int, dict]], waiting: dict[str, list[str]] | None = None,

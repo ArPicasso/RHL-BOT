@@ -573,13 +573,15 @@ def clock_pass(store: dict, league: dict | None, marked: dict, track: "admin.Tra
             continue
         n += 1
         info: dict = {"sig": sig, "at": now_msk().isoformat(timespec="seconds")}
-        if not any(g["t"] is not None for g in goals) or all(g["t"] is not None for g in goals):
+        people = any(g["src"] == "admin" for g in goals)   # отметки людей проверяем всегда (ADR-033)
+        if not any(g["t"] is not None for g in goals) or all(g["t"] is not None for g in goals) and not people:
             game["run"] = info   # опор нет или искать нечего
             continue
         try:
             src, headers, length = stream(game["video"])
             frames = dense(key, game) if dense else Dense(src, headers, club, name_model_of(key, club), length)
             got = clockrun.solve(goals, frames.state)
+            verdicts = clockrun.check_marks(goals, frames.state) if people else {}
             vk_note(track, None)
         except Exception as err:   # VK не отдал или кадры не скачались — в другой проход
             log.warning("%s: счёт хода часов не вышел — %s: %s", key, type(err).__name__, err)
@@ -621,12 +623,65 @@ def clock_pass(store: dict, league: dict | None, marked: dict, track: "admin.Tra
             except Exception as err:
                 log.warning("%s: превью по счёту хода не сделали — %s: %s", key, type(err).__name__, err)
         game["run"] = {**info, "checked": got["checked"], "fail": got["fail"], "drop": got["drop"], "exact": exact,
-                       "windows": sorted(set(got["found"]) - set(exact))}
+                       "windows": sorted(set(got["found"]) - set(exact)), "marks": verdicts}
         store["updated"] = now_msk().isoformat(timespec="seconds")
         write_atomic(LIVE_DIR / "clips.json", store)
         if track is not None:
             track.flush()
     return n
+
+
+# ---------- проверка отметок людей (ADR-033) ----------
+# Отметка человека — показание: служба проверяет её табло (встали ли часы, когда сменился счёт) и ходом часов от соседних
+# точных голов. Вердикт — в clips.json у матча (`checks`): по нему бот показывает статус в /replay и присылает спор, а
+# сборка и нарезка не берут точную секунду у гола со спором — ни отметки, ни табло.
+
+
+def mark_checks(game: dict, admin_e: dict | None, protocol: dict[str, dict], club: str = "") -> dict[str, dict]:
+    """Вердикт по каждой отметке времени у матча: счёт → {"t", "status", "for", "against"}. Статус: «ok», «conflict»,
+    «unknown» — проверить нечем, «pending» — проверка хода часов ещё впереди (кадры качаются в clock_pass). С кадрами
+    — вердикт clock_pass для той же секунды; без них — только смена счёта на табло."""
+    if not (admin_e and replay.same_video(admin_e.get("video"), game.get("video"))):
+        return {}
+    board = game.get("goals") or {}
+    run = (game.get("run") or {}).get("marks") or {}
+    frames = game.get("status") == "ok" and bool((sb.BOARDS.get(club) or {}).get("clock"))
+    out = {}
+    for score, t in sorted((admin_e.get("anchors") or {}).items()):
+        if not isinstance(t, int):
+            continue
+        done = run.get(score)
+        if isinstance(done, dict) and done.get("t") == t:
+            out[score] = done
+            continue
+        x = protocol.get(score) or {}
+        got = clockrun.check_marks([{"score": score, "period": str(x.get("period") or ""), "time": x.get("time"),
+                                     "t": t, "src": "admin", "change": (board.get(score) or {}).get("change")}])
+        v = got.get(score) or {"t": t, "status": "unknown", "for": [], "against": []}
+        if v["status"] == "unknown" and frames:
+            v = {**v, "status": "pending"}
+        out[score] = v
+    return out
+
+
+def checks_pass(store: dict, league: dict | None, marked: dict) -> bool:
+    """Вердикты по отметкам людей у всех матчей — в clips.json (`checks`). Что-то поменялось — запись и True."""
+    changed = False
+    for key, game in (store.get("games") or {}).items():
+        if not isinstance(game, dict):
+            continue
+        club = key.split("|")[1] if key.count("|") == 2 else ""
+        got = mark_checks(game, (marked or {}).get(key), league_goals(league, key) if league else {}, club)
+        if got != (game.get("checks") or {}):
+            if got:
+                game["checks"] = got
+            else:
+                game.pop("checks", None)
+            changed = True
+    if changed:
+        store["updated"] = now_msk().isoformat(timespec="seconds")
+        write_atomic(LIVE_DIR / "clips.json", store)
+    return changed
 
 
 # ---------- клипы (шаг 6) ----------
@@ -658,6 +713,8 @@ def goal_seconds(game: dict, admin: dict | None) -> dict[str, tuple[int, str]]:
         for s in list(admin.get("absent") or []) + list(admin.get("wrong") or []):
             out.pop(s, None)
         out.update({s: (int(t), "admin") for s, t in (admin.get("anchors") or {}).items() if isinstance(t, int)})
+        for s in replay.disputed(admin, game):   # спор (ADR-033): клип мимо гола хуже никакого
+            out.pop(s, None)
     return out
 
 
@@ -995,6 +1052,7 @@ def main() -> None:
             left = left or counted >= CLOCK_MAX   # счёт хода ждёт ещё матчей — следующий проход через минуту
             if n or counted:
                 cut += cut_pass(store, league, marked, bucket, track=track)
+            checks_pass(store, league, marked)   # вердикты по отметкам людей (ADR-033)
             write_coverage(store, league, marked, now)
             if cut:
                 log.info("проход: новых клипов %d", cut)

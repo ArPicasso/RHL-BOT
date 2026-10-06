@@ -418,10 +418,6 @@ class Replays(unittest.TestCase):
         self.assertNotIn("replay", g["goals"][1])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class S3Sign(unittest.TestCase):
     def test_aws_example_vector(self):
         """Пример «GET Object» из документации AWS Signature V4: подпись должна совпасть до знака."""
@@ -695,3 +691,54 @@ class Coverage(unittest.TestCase):
         with mock.patch.object(clips, "stream", return_value=("http://x", {}, 600)):
             got = clips.scan_match("2026-10-04|rostov|krasnodar", "https://vk.com/video-1_2", {}, [], "club")
         self.assertEqual(got["status"], "short")
+
+
+class MarkChecks(unittest.TestCase):
+    """ADR-033: вердикт по отметкам людей в clips.json (`checks`); спорный гол — без клипа и без точной секунды."""
+
+    def test_checks_from_change_and_dispute(self):
+        game = {"video": VIDEO, "status": "ok", "goals": {"0:1": {"t": 2600, "src": "clock", "change": 2620},
+                                                          "0:2": {"t": None, "change": 2969}}}
+        admin = {"video": VIDEO, "anchors": {"0:1": 2590, "0:2": 3100}}
+        protocol = {"0:1": {"period": "1", "time": "05:00"}, "0:2": {"period": "1", "time": "09:00"}}
+        got = clips.mark_checks(game, admin, protocol, "нет-разметки")
+        self.assertEqual(got["0:1"]["status"], "ok")
+        self.assertEqual(got["0:2"]["status"], "conflict")                    # счёт сменился раньше отметки
+        self.assertEqual(clips.mark_checks(game, admin, protocol, "tverichi")["0:1"]["status"], "ok")
+        game["checks"] = got
+        self.assertEqual(clips.goal_seconds(game, admin), {"0:1": (2590, "admin")})   # у спорного — ничего
+        self.assertEqual(clips.mark_checks(game, {**admin, "video": "https://vk.com/video-9_9"}, protocol), {})
+
+    def test_frames_verdict_used_for_same_second(self):
+        game = {"video": VIDEO, "status": "ok", "goals": {},
+                "run": {"marks": {"0:1": {"t": 2590, "status": "conflict", "for": [], "against": ["часы идут"]}}}}
+        admin = {"video": VIDEO, "anchors": {"0:1": 2590}}
+        self.assertEqual(clips.mark_checks(game, admin, {}, "tverichi")["0:1"]["against"], ["часы идут"])
+        admin["anchors"]["0:1"] = 2700                                         # новая отметка — проверка впереди
+        self.assertEqual(clips.mark_checks(game, admin, {}, "tverichi")["0:1"]["status"], "pending")
+
+    def test_pass_writes_checks(self):
+        store = {"games": {KEY: {"video": VIDEO, "status": "ok", "goals": {"0:1": {"change": 2620}}}}}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            self.assertTrue(clips.checks_pass(store, None, {KEY: {"video": VIDEO, "anchors": {"0:1": 2700}}}))
+            self.assertFalse(clips.checks_pass(store, None, {KEY: {"video": VIDEO, "anchors": {"0:1": 2700}}}))
+            saved = json.loads((Path(tmp) / "clips.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["games"][KEY]["checks"]["0:1"]["status"], "conflict")
+
+    def test_replay_link_in_dispute_is_approximate(self):
+        entry = {
+            "video": VIDEO, "anchors": {"0:1": 2700},
+            "goals": [{"score": "0:1", "team": "away", "t": 2690, "exact": True}]}
+        board = {"video": VIDEO, "goals": {"0:1": {"t": 2600, "src": "clock", "change": 2620, "team": "away"}},
+                 "checks": {"0:1": {"t": 2700, "status": "conflict"}}}
+        g = replay.with_board(entry, board)["goals"][0]   # ни отметка, ни секунда табло — примерно по смене счёта
+        self.assertEqual((g["exact"], g["src"], g["t"]), (False, "change", 2620 - replay.CHANGE_LEAD))
+        board["goals"]["0:1"].pop("change")                                    # смены счёта нет — с отметки, но «≈»
+        g = replay.with_board(entry, board)["goals"][0]
+        self.assertEqual((g["exact"], g["src"], g["t"]), (False, "dispute", 2690))
+        board["checks"]["0:1"]["t"] = 2650                                     # проверяли другую отметку — спора нет
+        self.assertEqual(replay.disputed(entry, board), set())
+
+
+if __name__ == "__main__":
+    unittest.main()

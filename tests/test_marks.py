@@ -201,5 +201,72 @@ class BotJournal(unittest.TestCase):
         self.assertEqual(self.bot.goal_marks().of(KEY)[0]["role"], "admin")
 
 
+LEAGUE = {"games": [{"date": "2026-10-03", "home": "tverichi", "away": "metallurg", "goals": [
+    {"score": "1:0", "team": "home", "period": "1", "time": "05:00"},
+    {"score": "1:1", "team": "away", "period": "1", "time": "15:00"},
+    {"score": "2:1", "team": "home", "period": "1", "time": "18:00"},
+    {"score": "2:2", "team": "away", "period": "2", "time": "30:00"}]}]}
+
+
+class MarkChecks(unittest.TestCase):
+    """ADR-033, шаг 3: проверка при вводе, кнопки опечаток, статус проверки службой, спор отметившему."""
+    saved = BotJournal.saved
+
+    def setUp(self):
+        BotJournal.setUp(self)
+        self.protocol = self.bot.protocol_of(LEAGUE, GAME)
+        self.bot.replay_save("2026-10-03", 0, "1:1", f"{VIDEO}?t=40m", self.now, who=1001)   # 1:1 — 40:00
+
+    def test_typo_found_before_saving(self):
+        # 1:0 по сайту на 18,5 минуты раньше 1:1 → в записи около 21:30; прислали 30:21 — минуты и секунды местами
+        issues, cands = self.bot.replay_issues(KEY, GAME, VIDEO, [("1:0", 1821)], self.protocol)
+        self.assertTrue(any("быстрее" in x for x in issues), issues)
+        self.assertIn(1290, cands)                                         # 0:21:30
+        self.assertEqual(self.bot.replay_issues(KEY, GAME, VIDEO, [("1:0", 1290)], self.protocol), ([], []))
+        issues, _ = self.bot.replay_issues(KEY, GAME, VIDEO, [("1:0", 2500)], self.protocol)
+        self.assertTrue(any("наоборот" in x for x in issues), issues)       # в записи позже 1:1, по протоколу раньше
+        issues, _ = self.bot.replay_issues(KEY, GAME, VIDEO, [("2:1", 2410)], self.protocol)
+        self.assertTrue(any("почти одна секунда" in x for x in issues), issues)
+
+    def test_message_asks_then_button_saves(self):
+        m = mock.Mock(text="30:21", chat=mock.Mock(id=1001), from_user=mock.Mock(id=1001))
+        m.answer = mock.AsyncMock()
+        self.bot.REPLAY_ASK[1001] = ("2026-10-03", 0, "1:0", self.now, KEY)
+        with mock.patch.object(self.bot, "published_league", mock.AsyncMock(return_value=LEAGUE)), \
+                mock.patch.object(self.bot, "datetime", mock.Mock(now=lambda tz=None: self.now,
+                                                                  fromisoformat=datetime.fromisoformat)):
+            asyncio.run(self.bot.h_replay_link(m))
+            kb = m.answer.call_args.kwargs["reply_markup"]
+            buttons = {b.text: b.callback_data for row in kb.inline_keyboard for b in row}
+            self.assertIn("Записать 21:30", buttons)
+            self.assertEqual(self.saved()["anchors"], {"1:1": 2400})            # пока не записано
+            c = mock.Mock(data=buttons["Записать 21:30"], from_user=mock.Mock(id=1001),
+                          message=mock.Mock(chat=mock.Mock(id=1001)))
+            c.answer = mock.AsyncMock()
+            c.message.answer = mock.AsyncMock()
+            asyncio.run(self.bot.cb_replay(c))
+        self.assertEqual(self.saved()["anchors"], {"1:0": 1290, "1:1": 2400})
+        self.assertEqual(self.bot.goal_marks().of(KEY)[-1]["seen"], "30:21")   # что прислал — в журнале
+
+    def test_status_and_dispute(self):
+        (self.dir / "clips.json").write_text(json.dumps({"games": {KEY: {
+            "video": VIDEO, "status": "ok", "goals": {"1:1": {"change": 2300, "team": "away"}},
+            "checks": {"1:1": {"t": 2400, "status": "conflict", "for": [],
+                               "against": ["счёт на табло сменился раньше"]}}}}}), encoding="utf-8")
+        text = self.bot.replay_text("2026-10-03", GAME, self.saved(), self.protocol)
+        self.assertIn("спор: счёт на табло сменился раньше", text)
+        bot = mock.Mock()
+        bot.send_message = mock.AsyncMock()
+        with mock.patch.object(self.bot, "DISPUTES_FILE", self.dir / "disputes.json"), \
+                mock.patch.object(self.bot.asyncio, "sleep", mock.AsyncMock()):
+            self.assertEqual(asyncio.run(self.bot.dispute_step(bot, self.now)), 1)
+            self.assertEqual(asyncio.run(self.bot.dispute_step(bot, self.now)), 0)   # один раз
+        cid, text = bot.send_message.call_args.args
+        self.assertEqual(cid, 1001)                                          # отметившему
+        self.assertIn("Спор по голу 1:1", text)
+        self.assertEqual(bot.send_message.call_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data,
+                         "rp:g:2026-10-03:0:1:1")
+
+
 if __name__ == "__main__":
     unittest.main()

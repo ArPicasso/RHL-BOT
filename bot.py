@@ -1634,6 +1634,10 @@ def replay_text(day: str, g: dict, entry: dict | None, protocol: list[dict] | No
     elif video:
         lines.append(f"Запись лиги: {html.escape(video)} — ссылку можно не присылать, только времена. "
                      "Не тот ролик — пришли свою ссылку вместе с временами.")
+    seen = board_state(board, (entry or {}).get("video") or video)
+    if seen:
+        lines.append(seen)
+    rejected = board.get("rejected") or {}
     lines.append("")
     for k, x in enumerate(goals, 1):
         who = html.escape(tname(g.get(x["team"]) or "")) if x.get("team") in ("home", "away") else "?"
@@ -1654,6 +1658,8 @@ def replay_text(day: str, g: dict, entry: dict | None, protocol: list[dict] | No
             mark = " — 🚫 нет в записи"
         elif x["score"] in off and not (r and r.get("exact") and r.get("src") in (None, "admin")):
             mark += " · ⚠️ табло сбилось"
+        elif not url and rejected.get(x["score"]):   # почему табло не взяло гол — чтобы было видно, что чинить
+            mark += f" · табло: {html.escape(str(rejected[x['score']]))}"
         lines.append(f"{k}. <b>{x['score']}</b> {who}{author}{per}{mark}")
     lines.append("")
     if entry:
@@ -1666,6 +1672,28 @@ def replay_text(day: str, g: dict, entry: dict | None, protocol: list[dict] | No
     lines.append(f"Пришли {what} всех {len(goals)} голов по порядку, по строке на гол: "
                  "1:08:03. Или нажми на гол и пришли время одного.")
     return "\n".join(lines)
+
+
+BOARD_STATE = {   # что служба clips сделала с записью матча — строкой под записью в /replay
+    "no_board": "📺 Табло клуба-хозяина не размечено — служба голы не ищет: перешли кадр табло в сессию Claude",
+    "short": "📺 Ролик короче матча — это не запись игры: пришли ссылку на полную запись",
+}
+
+
+def board_state(board: dict | None, video: str | None) -> str:
+    """Почему табло могло не дать секунд: запись не разобрана, не скачалась, табло не размечено. Всё в порядке — пусто."""
+    if not video:
+        return ""
+    if not board or not replay.same_video(board.get("video"), video):
+        return "📺 Служба clips эту запись ещё не разбирала — свежие матчи первыми, дойдёт сама"
+    status = board.get("status")
+    if status == "error":
+        return f"📺 Запись не скачалась: {html.escape(str(board.get('error') or '')[:200])}"
+    if status == "ok" and not any(isinstance(x, dict) and (x.get("change") is not None or x.get("t") is not None)
+                                  for x in (board.get("goals") or {}).values()):
+        return ("📺 Табло разобрано, а смены счёта на нём служба не увидела: возможно, табло другое или его прячут. "
+                "Пришли время голов, а кадр табло — в сессию Claude: разметку проверим")
+    return BOARD_STATE.get(status, "")
 
 
 def replay_kb(day: str, i: int, g: dict, entry: dict | None, protocol: list[dict] | None = None) -> InlineKeyboardMarkup:

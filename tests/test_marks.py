@@ -314,5 +314,27 @@ class Coverage(unittest.TestCase):
         self.assertIn("Всё готово", self.bot.coverage_todo({KEY: {"goals": 1, "replays": 1, "why": "ok"}})[0])
 
 
+class BoardReasons(unittest.TestCase):
+    """Почему табло не дало секунд — у матча и у гола в /replay."""
+
+    def setUp(self):
+        BotJournal.setUp(self)
+
+    def text(self, board):
+        (self.dir / "clips.json").write_text(json.dumps({"games": {KEY: board}}), encoding="utf-8")
+        return self.bot.replay_text("2026-10-03", GAME, None, None, VIDEO)
+
+    def test_reasons(self):
+        self.assertIn("ещё не разбирала", self.bot.replay_text("2026-10-03", GAME, None, None, VIDEO))
+        self.assertIn("не скачалась: VkError", self.text({"video": VIDEO, "status": "error", "error": "VkError: 403"}))
+        self.assertIn("не размечено", self.text({"video": VIDEO, "status": "no_board", "goals": {}}))
+        self.assertIn("смены счёта на нём служба не увидела", self.text({"video": VIDEO, "status": "ok", "goals": {}}))
+        t = self.text({"video": VIDEO, "status": "ok", "goals": {"1:0": {"change": 1500, "team": "home"}},
+                       "rejected": {"1:1": "до смены в клетке не «0»"}})
+        self.assertNotIn("📺 Табло разобрано", t)
+        self.assertIn("1:1</b>", t)
+        self.assertIn("табло: до смены в клетке не «0»", t)
+
+
 if __name__ == "__main__":
     unittest.main()

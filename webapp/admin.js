@@ -219,11 +219,14 @@ function clipTiles(c, myPlayers, t) {
   const timed = c ? `с точной секундой: сами ${num(v(c, "timed_auto"))}, админ ${num(v(c, "timed_admin"))}` : "";
   let html = `<div class="card-title" style="margin:14px 2px 8px">Голы и клипы сезона</div><div class="tiles">`;
   if (c) {
-    html += tile(v(c, "goals"), "голов в матчах с записью лиги")
+    // покрытие повторами (ADR-031): матчи, где повтор есть у каждого гола, и почему не у всех — в вечернем напоминании
+    if (v(c, "m_total")) html += tile(v(c, "m_full"), `матчей с повтором у всех голов из ${num(v(c, "m_total"))}, без единого — ${num(v(c, "m_none"))}`)
+      + tile(v(c, "g_replay"), `голов с повтором${v(c, "run") ? `, по ходу часов — ${num(v(c, "run"))}` : ""}`);
+    html += tile(v(c, "goals"), "голов в матчах с записью")
       + tile(v(c, "timed"), timed)
       + tile(v(c, "clips"), "клипов в хранилище")
       + tile(v(c, "ask"), "голов ждут ответа на превью")
-      + tile(v(c, "no_video"), "матчей без записи лиги")
+      + tile(v(c, "no_video"), "матчей без записи лиги и клуба")
       // табло клуба-хозяина не размечено: голов этих матчей служба не видит, кадры для разметки — у админов в боте
       + (v(c, "no_board") ? tile(v(c, "no_board"), `матчей ждут разметки табло, клубов — ${num(v(c, "boards"))}`) : "")
       + (v(c, "mismatch") ? tile(v(c, "mismatch"), "голов табло нет в протоколе") : "");

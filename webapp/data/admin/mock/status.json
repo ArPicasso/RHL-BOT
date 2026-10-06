@@ -554,7 +554,12 @@
    "no_video": 12,
    "mismatch": 0,
    "no_board": 3,
-   "boards": 2
+   "boards": 2,
+   "m_total": 40,
+   "m_full": 22,
+   "m_none": 9,
+   "g_replay": 131,
+   "run": 18
   },
   "my_players": 41
  },

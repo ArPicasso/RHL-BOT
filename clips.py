@@ -15,6 +15,14 @@ league.json («Смотреть» от rhl.fhr.ru) или ссылка адми�
 `boards`: какие клубы ждут разметки, сколько их матчей и где кадр. Бот присылает его админам (ADR-030, дополнение
 06.10).
 
+Счёт хода часов (ADR-031, clockrun.py): от гола с точной секундой служба идёт по записи кадр в секунду и находит
+соседние голы периода по протоколу — точно (`src: run`), окном для превью (`win`) или никак; самопроверка снимает
+секунды табло, которые с протоколом не сходятся. Пересчёт — когда у матча поменялись опоры (админ ответил на превью).
+Записи клуба (ролик VK из «Смотреть» поста клуба), когда записи лиги нет, — только для повтора, клипов из них нет.
+Пометки админа из live/replays.json — гола в записи нет (`absent`), табло сбилось (`wrong`) — снимают с гола секунду,
+смену табло и превью. Разбор покрытия — у каждого сыгранного матча, сколько голов с повтором и почему не у всех
+(`coverage` в clips.json): по нему бот пишет админам.
+
 По одному писателю на файл: live/replays.json пишет только бот, live/clips.json — только эта служба. Качаем как
 плеер (yt-dlp), без обхода защиты (ADR-012): VK отказал — пишем ошибку и пробуем позже, не больше TRIES раз.
 Кадры прохода и картинки — в probe/scoreboard/<матч>/ (там же, где у пробника), держатся KEEP_DAYS дней с разбора.
@@ -28,6 +36,7 @@ league.json («Смотреть» от rhl.fhr.ru) или ссылка адми�
     venv/bin/python clips.py --once     # один проход и выйти
 """
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -45,6 +54,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import admin  # noqa: E402
+import clockrun  # noqa: E402
 import probe_cuts as pc  # noqa: E402
 import probe_scoreboard as sb  # noqa: E402
 import replay  # noqa: E402
@@ -59,9 +69,11 @@ SCAN_MAX = 2        # записей за проход: разбор — мин�
 EVERY = 600         # с между проходами; пока есть неразобранные записи сезона — через минуту
 TRIES = 3           # столько раз пробуем матч, который не скачался или упал
 KEEP_DAYS = 3       # кадры прохода держим столько дней
-VERSION = 4         # разбор поменялся — матчи разбираем заново (05.10: голы по порядку протокола; 06.10: смены
+VERSION = 5         # разбор поменялся — матчи разбираем заново (05.10: голы по порядку протокола; 06.10: смены
                     # табло — в порядке счёта, у двух голов не бывает одной остановки часов; 06.10: кадр клуба без
-                    # разметки — в probe/grids/)
+                    # разметки — в probe/grids/; 06.10, вечер: гол берём, только если цифры в клетке идут цепочкой)
+CLOCK_MAX = 2       # матчей за проход со счётом хода часов (ADR-031): кадр в секунду — минуты записи на гол
+CLUB_MIN = 3000     # с: ролик клуба короче — не запись матча (пресс-конференция, обзор), берём следующий
 PREVIEW_BEFORE = 120   # с записи до смены счёта на табло в превью: оператор меняет счёт через 0–90 с после гола
 PREVIEW_AFTER = 5      # и после смены
 PREVIEW_FORMAT = "b[height<=360][height>=240]/b[height<=480]/w"   # превью лёгкое: смотрят в Telegram
@@ -123,22 +135,40 @@ def season_days(today: date, since: date | None = None) -> set[str]:
     return {(since + timedelta(days=k)).isoformat() for k in range((today - since).days + 1)}
 
 
-def pending(league: dict | None, marked: dict, store: dict, today: date) -> list[tuple[str, str]]:
-    """Какие матчи разобрать: (ключ, ролик), свежие первыми. Сыгранные с SINCE с записью лиги и размеченные админом
-    (его ролик главнее). Уже разобранный ролик не трогаем; новый ролик у матча — разбираем заново; упавший — до TRIES
-    раз; матч без разметки табло — заново, как только табло клуба появилось в boards.json."""
-    days = season_days(today)
-    found = sb.recorded(league, days)
+def recordings(league: dict | None, marked: dict, days: set[str], store: dict | None = None) -> dict[str, dict]:
+    """Записи сыгранных матчей этих дней: ключ → {"video", "src"}. Ссылка админа главнее (`admin`), потом запись лиги
+    (`league`), а нет её — ролик VK из «Смотреть» поста клуба (`club`, ADR-031): по нему — только повтор, клипы со
+    знаком режем из записи лиги и ссылки админа (разрешение лиги, ADR-029). Ролик клуба, оказавшийся короче
+    CLUB_MIN (`short` у матча в clips.json), пропускаем — берём следующую ссылку."""
+    found = {k: {"video": v["video"], "src": "league"} for k, v in sb.recorded(league, days).items()}
+    for g in (league or {}).get("games") or []:
+        if not (isinstance(g, dict) and g.get("date") in days and g.get("score")):
+            continue
+        key = f"{g['date']}|{g.get('home')}|{g.get('away')}"
+        short = ((store or {}).get(key) or {}).get("short") or []
+        for w in [] if key in found else g.get("watch") or []:
+            got = replay.parse_link(w.get("url") or "") if isinstance(w, dict) and w.get("src") != sb.SITE else None
+            if got and not any(replay.same_video(got[0], x) for x in short):
+                found[key] = {"video": got[0], "src": "club"}
+                break
     for key, e in (marked or {}).items():
         if key[:10] in days and isinstance(e, dict) and isinstance(e.get("video"), str):
-            found[key] = {"video": e["video"]}
+            found[key] = {"video": e["video"], "src": "admin"}
+    return found
+
+
+def pending(league: dict | None, marked: dict, store: dict, today: date) -> list[tuple[str, str]]:
+    """Какие матчи разобрать: (ключ, ролик), свежие первыми. Сыгранные с SINCE с записью (recordings). Уже разобранный
+    ролик не трогаем; новый ролик у матча — разбираем заново; упавший — до TRIES раз; матч без разметки табло —
+    заново, как только табло клуба появилось в boards.json."""
+    found = recordings(league, marked, season_days(today), store)
     out = []
     for key in sorted(found, key=lambda k: (k[:10], k), reverse=True):
         video = found[key]["video"]
         was = store.get(key) or {}
         if replay.same_video(was.get("video"), video) and was.get("v", 1) >= VERSION:
             marked_now = was.get("status") == "no_board" and key.split("|")[1] in sb.BOARDS   # табло разметили
-            if not marked_now and (was.get("status") in ("ok", "no_board") or was.get("tries", 0) >= TRIES):
+            if not marked_now and (was.get("status") in ("ok", "no_board", "short") or was.get("tries", 0) >= TRIES):
                 continue
         out.append((key, video))
     return out
@@ -207,10 +237,22 @@ def video_info(path: Path) -> dict:
         return {}
 
 
-def add_previews(key: str, video: str, goals: dict[str, dict], length: float | None, out: Path) -> None:
-    """Превью голам, у которых табло знает смену счёта, но не секунду: файл и моменты остановки часов (`ask`). Гол
-    в окне наверняка: оператор меняет счёт через 0–90 с после гола, окно — PREVIEW_BEFORE с до смены."""
-    need = {s: g for s, g in goals.items() if g.get("t") is None and g.get("change") is not None}
+def run_window(win: list[int], length: float | None = None) -> tuple[int, int]:
+    """Окно превью по счёту хода часов (ADR-031): гол — в окне [от, до], плюс немного до и после."""
+    start = max(0, int(win[0]) - 20)
+    end = int(win[1]) + 10
+    if length:
+        end = min(end, int(length))
+    return start, max(1, end - start)
+
+
+def add_previews(key: str, video: str, goals: dict[str, dict], length: float | None, out: Path,
+                 only: set[str] | None = None) -> None:
+    """Превью голам без секунды: файл и моменты остановки часов (`ask`). Гол в окне наверняка: по счёту хода часов —
+    окно `win` (ADR-031), иначе PREVIEW_BEFORE с до смены счёта на табло: оператор меняет счёт через 0–90 с после
+    гола. only — только эти голы (счёт хода пересчитал окно)."""
+    need = {s: g for s, g in goals.items() if g.get("t") is None and (g.get("win") or g.get("change") is not None)
+            and (only is None or s in only)}
     if not need:
         return
     club = key.split("|")[1]
@@ -218,10 +260,13 @@ def add_previews(key: str, video: str, goals: dict[str, dict], length: float | N
     src480, h480, _ = sb.stream_of(video)
     src360, h360, _ = sb.stream_of(video, PREVIEW_FORMAT)
     for score, g in need.items():
-        start, span = preview_window(g["change"], length)
+        win = g.get("win")
+        start, span = run_window(win, length) if win else preview_window(g["change"], length)
         path = out / f"preview_{score.replace(':', '-')}.mp4"
         cand: list[int] = []
-        if board.get("clock"):
+        if win:
+            cand = [round(t - start) for t in (g.get("wcand") or [])][-CANDIDATES:]
+        elif board.get("clock"):
             dense = sb.safe_scan(src480, h480, sb.BOXES[club], start, start + span)
             model = sb.name_model([f for _, f in dense], board["name"]) if dense else None
             vis = [(t, f) for t, f in dense if not model or sb.on_screen(f, model)]
@@ -254,17 +299,22 @@ def protocol_order(league: dict | None, key: str) -> list[tuple[str, str, str]]:
             if isinstance(x, dict) and x.get("period") != "РБ" and isinstance(x.get("score"), str)]
 
 
-def scan_match(key: str, video: str, anchors: dict, order: list[tuple[str, str, str]] | None = None) -> dict:
-    """Один матч: проход по записи и голы по табло. Исключения (VK не отдал, ffmpeg упал) — наверх."""
+def scan_match(key: str, video: str, anchors: dict, order: list[tuple[str, str, str]] | None = None,
+               kind: str = "league") -> dict:
+    """Один матч: проход по записи и голы по табло. Исключения (VK не отдал, ffmpeg упал) — наверх. kind — чья запись
+    (recordings): ролик клуба короче CLUB_MIN — не запись матча, его не разбираем и кадр табло с него не берём."""
     club = key.split("|")[1]
     src, headers, length = stream(video)
+    if kind == "club" and length and length < CLUB_MIN:
+        log.info("%s: ролик клуба %s — %d с, не запись матча", key, video, length)
+        return {"status": "short", "goals": {}, "length": round(length)}
     out = WORK / safe_name(key)
     out.mkdir(parents=True, exist_ok=True)
     if club not in sb.BOARDS:
         sb.grid_sheet(src, headers, length, out / "grid.png")
         keep_grid(club, out / "grid.png")
         log.info("%s: табло клуба %s не размечено — grid.png для разметки в boards.json", key, club)
-        return {"status": "no_board", "goals": {}}
+        return {"status": "no_board", "goals": {}, **({"length": round(length)} if length else {})}
     args = SimpleNamespace(out=WORK, step=sb.STEP, start=0, end=None, rescan=False,
                            order=[(score, team) for score, team, _ in order or []])
     truth = {s: t for s, t in (anchors or {}).items() if isinstance(t, int)}
@@ -273,11 +323,13 @@ def scan_match(key: str, video: str, anchors: dict, order: list[tuple[str, str, 
     board = read_json(out / "goals.json").get("goals") or []
     live = live_goals(key) or {score: {"team": team, "period": per} for score, team, per in order or []}
     goals = found_goals(board, live)
+    rejected = read_json(out / "goals.json").get("rejected") or {}
     try:
         add_previews(key, video, goals, length, out)
     except Exception as err:   # без превью голы всё равно записываем: секунды табло уже есть
         log.warning("%s: превью не сделали — %s: %s", key, type(err).__name__, err)
-    return {"status": "ok", "goals": goals}
+    return {"status": "ok", "goals": goals, **({"rejected": rejected} if rejected else {}),
+            **({"length": round(length)} if length else {})}
 
 
 def keep_grid(club: str, grid: Path, root: Path | None = None) -> None:
@@ -335,28 +387,76 @@ def drop_guesses(games: dict) -> bool:
     return changed
 
 
+def side_digit(score: str, team: str | None) -> tuple[str, int] | None:
+    """Чей гол и какой он у команды по счёту: «2:1» хозяев → ("home", 2)."""
+    if team not in ("home", "away") or not replay.SCORE_RE.fullmatch(score or ""):
+        return None
+    h, a = (int(x) for x in score.split(":"))
+    return team, h if team == "home" else a
+
+
+def apply_admin(games: dict, marked: dict, league: dict | None = None) -> bool:
+    """Пометки админа (ADR-031): гола в записи нет (`absent`) или табло сбилось (`wrong` — повтор или превью не того
+    гола). У такого гола секунды, смены табло и превью больше нет; у «табло сбилось» — и у следующих голов той же
+    команды: их сопоставили по тому же порядку, значит, сбились и они (05.10 «Калуга», «Факел Ямал»). Опора админа у
+    гола главнее пометки. Что-то сняли — True."""
+    changed = False
+    for key, game in games.items():
+        e = (marked or {}).get(key)
+        if not (isinstance(game, dict) and isinstance(e, dict)
+                and replay.same_video(e.get("video"), game.get("video"))):
+            continue
+        goals = game.get("goals") or {}
+        protocol = league_goals(league, key) if league else {}
+        team = lambda s: (protocol.get(s) or {}).get("team") or (goals.get(s) or {}).get("team")   # noqa: E731
+        off = {s: "absent" for s in e.get("absent") or []}
+        for s in e.get("wrong") or []:
+            sd = side_digit(s, team(s))
+            for other, g in goals.items():
+                od = side_digit(other, team(other))
+                if other == s or sd and od and od[0] == sd[0] and od[1] >= sd[1]:
+                    off.setdefault(other, "wrong")
+        for s, why in off.items():
+            g = goals.get(s)
+            if not isinstance(g, dict) or s in (e.get("anchors") or {}) or g.get("off") == why:
+                continue
+            for k in ("t", "src", "change", "ask", "win", "wcand"):
+                g.pop(k, None)
+            g.update(t=None, off=why)
+            changed = True
+    return changed
+
+
 def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan=scan_match,
              track: "admin.Tracker | None" = None) -> tuple[int, int]:
     """Один проход: разбирает до SCAN_MAX ждущих матчей по одному и после каждого пишет clips.json и пульс.
     Возвращает (сколько разобрано, сколько ещё ждёт)."""
     games = store.setdefault("games", {})
     guessed = drop_guesses(games)
+    flagged = apply_admin(games, marked, league)
     todo = pending(league, marked, games, now.date())
+    kinds = recordings(league, marked, season_days(now.date()), games)
     for key, video in todo[:SCAN_MAX]:
         was = games.get(key) or {}
         same = replay.same_video(was.get("video"), video) and was.get("v", 1) >= VERSION
         tries = (was.get("tries", 0) if same else 0) + 1
-        log.info("%s: разбираю %s (попытка %d)", key, video, tries)
+        kind = (kinds.get(key) or {}).get("src") or "league"
+        log.info("%s: разбираю %s (%s, попытка %d)", key, video, kind, tries)
         try:
-            got = scan(key, video, ((marked or {}).get(key) or {}).get("anchors") or {}, protocol_order(league, key))
+            got = scan(key, video, ((marked or {}).get(key) or {}).get("anchors") or {}, protocol_order(league, key),
+                       kind)
             vk_note(track, None)
         except Exception as err:   # VK не отдал, ffmpeg упал — дальше не ломимся (ADR-012), попробуем в другой проход
             log.warning("%s: не разобрали — %s: %s", key, type(err).__name__, err)
             got = {"status": "error", "error": f"{type(err).__name__}: {err}"[:300], "goals": was.get("goals") or {}}
             if isinstance(err, VkError):
                 vk_note(track, err)
-        games[key] = {"video": video, "v": VERSION, "tries": tries, "scanned": now_msk().isoformat(timespec="seconds"),
-                      **got, "clips": was.get("clips") or {}}   # выложенные клипы остаются: нарезка сверит их сама
+        short = list(was.get("short") or []) + ([video] if got.get("status") == "short" else [])
+        games[key] = {"video": video, "src": kind, "v": VERSION, "tries": tries,
+                      "scanned": now_msk().isoformat(timespec="seconds"), **got,
+                      "clips": was.get("clips") or {},   # выложенные клипы остаются: нарезка сверит их сама
+                      **({"short": short} if short else {})}
+        apply_admin({key: games[key]}, marked, league)
         timed = sum(1 for g in games[key]["goals"].values() if g.get("t") is not None)
         log.info("%s: %s, голов по табло %d, с секундой %d", key, got["status"], len(games[key]["goals"]), timed)
         store["boards"] = boards_todo(games)
@@ -367,12 +467,157 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
     for key in [k for k in games if k[:10] < SINCE.isoformat()]:
         games.pop(key)
     boards = boards_todo(games)
-    if boards != store.get("boards") or guessed:   # клуб разметили, кадр появился — бот должен узнать и без разбора
+    if boards != store.get("boards") or guessed or flagged:   # клуб разметили, кадр появился — бот узнает и без разбора
         store["boards"] = boards
         store["updated"] = now_msk().isoformat(timespec="seconds")
         write_atomic(LIVE_DIR / "clips.json", store)
     done = min(len(todo), SCAN_MAX)
     return done, len(todo) - done
+
+
+# ---------- счёт хода часов (ADR-031) ----------
+# Между голами периода часы на табло идут ровно столько, сколько между ними по протоколу. От гола с точной секундой
+# служба идёт по записи кадр в секунду и находит соседние голы: точно, окном для превью или никак (clockrun.py).
+# Пересчёт — когда у матча поменялись опоры (админ ответил на превью), протокол или разбор табло (`sig`).
+
+
+class Dense:
+    """Клетки табло кадр в секунду по требованию, кусками по CHUNK с записи. Кадр без табло на экране — None."""
+    CHUNK = 300
+
+    def __init__(self, src: str, headers: dict | None, club: str, model: dict | None, length: float | None = None):
+        self.src, self.headers, self.box, self.model, self.length = src, headers, sb.BOXES[club], model, length
+        self.clock = sb.cell_pixels(sb.BOARDS[club]["clock"])
+        self.frames: dict[int, bytes | None] = {}
+        self.loaded: set[int] = set()
+
+    def frame(self, t: int) -> bytes | None:
+        if t < 0 or (self.length and t > self.length):
+            return None
+        part = t // self.CHUNK
+        if part not in self.loaded:
+            self.loaded.add(part)
+            for at, f in sb.safe_scan(self.src, self.headers, self.box, part * self.CHUNK, (part + 1) * self.CHUNK - 1):
+                self.frames[int(at)] = f if self.model is None or sb.on_screen(f, self.model) else None
+        return self.frames.get(t)
+
+    def state(self, t: int) -> str | None:
+        a, b = self.frame(t), self.frame(t + 1)
+        if a is None or b is None:
+            return None
+        return "run" if len(sb.moved(a, b, self.clock)) >= sb.CLOCK_MOVED else "stop"
+
+
+def clock_goals(game: dict, protocol: dict[str, dict], admin_e: dict | None) -> list[dict]:
+    """Голы для счёта хода: время и период — из протокола, точная секунда — отметка админа (её ролик тот же) или
+    табло (часы, задержка); секунды прошлого счёта хода (`run`) опорой не бывают."""
+    anchors = (admin_e or {}).get("anchors") or {} if replay.same_video((admin_e or {}).get("video"),
+                                                                         game.get("video")) else {}
+    goals = game.get("goals") or {}
+    out = []
+    for score, x in sorted(protocol.items(), key=lambda kv: sb.goal_rank(kv[0])):
+        b = goals.get(score) or {}
+        if b.get("off"):
+            continue
+        if isinstance(anchors.get(score), int):
+            t, src = anchors[score], "admin"
+        elif isinstance(b.get("t"), (int, float)) and b.get("src") != "run":
+            t, src = b["t"], b.get("src")
+        else:
+            t, src = None, None
+        out.append({"score": score, "period": str(x.get("period") or ""), "time": x.get("time"), "t": t, "src": src,
+                    "change": b.get("change"), "team": x.get("team")})
+    return out
+
+
+def clock_sig(goals: list[dict]) -> str:
+    return hashlib.sha1(json.dumps([[g["score"], g["time"], g["t"], g["src"], g["change"]] for g in goals],
+                                   ensure_ascii=False).encode()).hexdigest()[:12]
+
+
+def name_model_of(key: str, club: str) -> dict | None:
+    """Как выглядит табло клуба в этой записи — по кадрам первого прохода из кэша пробника."""
+    cache = sb.cache_file(WORK / safe_name(key), sb.BOXES[club], sb.STEP, 0, None)
+    try:
+        samples, _ = sb.load_cache(cache)
+    except (OSError, ValueError, SystemExit):
+        return None
+    return sb.name_model([f for _, f in samples], sb.BOARDS[club]["name"]) if samples else None
+
+
+def clock_pass(store: dict, league: dict | None, marked: dict, track: "admin.Tracker | None" = None,
+               dense=None) -> int:
+    """Счёт хода часов по разобранным матчам, у которых поменялись опоры, протокол или разбор табло: точные секунды
+    (`src: run`), окна для превью (`win`, `wcand`) и самопроверка (`run` у матча: сошлось пар, несошедшиеся периоды,
+    снятые секунды табло). Не больше CLOCK_MAX матчей за проход. Возвращает, сколько матчей пересчитано."""
+    games = store.get("games") or {}
+    n = 0
+    for key, game in sorted(games.items(), reverse=True):
+        club = key.split("|")[1] if key.count("|") == 2 else ""
+        if n >= CLOCK_MAX or not isinstance(game, dict) or game.get("status") != "ok" \
+                or not (sb.BOARDS.get(club) or {}).get("clock"):
+            continue
+        protocol = league_goals(league, key)
+        goals = clock_goals(game, protocol, (marked or {}).get(key))
+        sig = clock_sig(goals)
+        if (game.get("run") or {}).get("sig") == sig:
+            continue
+        n += 1
+        info: dict = {"sig": sig, "at": now_msk().isoformat(timespec="seconds")}
+        if not any(g["t"] is not None for g in goals) or all(g["t"] is not None for g in goals):
+            game["run"] = info   # опор нет или искать нечего
+            continue
+        try:
+            src, headers, length = stream(game["video"])
+            frames = dense(key, game) if dense else Dense(src, headers, club, name_model_of(key, club), length)
+            got = clockrun.solve(goals, frames.state)
+            vk_note(track, None)
+        except Exception as err:   # VK не отдал или кадры не скачались — в другой проход
+            log.warning("%s: счёт хода часов не вышел — %s: %s", key, type(err).__name__, err)
+            if isinstance(err, VkError):
+                vk_note(track, err)
+            game["run"] = {**info, "sig": None, "error": f"{type(err).__name__}: {err}"[:200]}
+            continue
+        board = game.setdefault("goals", {})
+        for g in board.values():   # прошлый счёт хода — заново
+            if g.get("src") == "run":
+                g.update(t=None, src=None)
+            g.pop("win", None)
+            g.pop("wcand", None)
+        renew = set()
+        for score in got["drop"]:
+            g = board.get(score) or {}
+            if g.get("t") is not None:
+                g.update(t=None, src=None, dropped="часы не сошлись с протоколом")
+                log.info("%s %s: секунда табло снята — часы между голами не сходятся с протоколом", key, score)
+                if g.get("change") is not None:
+                    renew.add(score)   # секунды больше нет — превью админу по смене счёта
+        for score, res in got["found"].items():
+            x = protocol.get(score) or {}
+            g = board.setdefault(score, {"team": x.get("team"), "period": x.get("period"), "change": None, "t": None,
+                                         "src": None})
+            g["win"], g["wcand"] = res["win"], res["cand"]
+            if "t" in res:
+                g.update(t=res["t"], src="run")
+                g.pop("ask", None)
+            elif (g.get("ask") or {}).get("from") != run_window(res["win"], length)[0]:
+                renew.add(score)
+        exact = sorted(s for s, r in got["found"].items() if "t" in r)
+        log.info("%s: счёт хода часов — пар сошлось %d, точных %d (%s), окон %d, не сошлись периоды %s", key,
+                 got["checked"], len(exact), ", ".join(exact) or "—", len(got["found"]) - len(exact),
+                 ", ".join(got["fail"]) or "—")
+        if renew and not dense:
+            try:
+                add_previews(key, game["video"], board, length, WORK / safe_name(key), only=renew)
+            except Exception as err:
+                log.warning("%s: превью по счёту хода не сделали — %s: %s", key, type(err).__name__, err)
+        game["run"] = {**info, "checked": got["checked"], "fail": got["fail"], "drop": got["drop"], "exact": exact,
+                       "windows": sorted(set(got["found"]) - set(exact))}
+        store["updated"] = now_msk().isoformat(timespec="seconds")
+        write_atomic(LIVE_DIR / "clips.json", store)
+        if track is not None:
+            track.flush()
+    return n
 
 
 # ---------- клипы (шаг 6) ----------
@@ -396,10 +641,13 @@ def hidden_goal(x: dict) -> bool:
 
 
 def goal_seconds(game: dict, admin: dict | None) -> dict[str, tuple[int, str]]:
-    """Точная секунда каждого гола в ролике службы: отметка админа (если ролик тот же) главнее часов и табло."""
+    """Точная секунда каждого гола в ролике службы: отметка админа (если ролик тот же) главнее часов и табло; гол,
+    которого, по словам админа, в записи нет или у которого табло сбилось (ADR-031), — без секунды."""
     out = {s: (int(g["t"]), g.get("src") or "board") for s, g in (game.get("goals") or {}).items()
-           if isinstance(g, dict) and isinstance(g.get("t"), (int, float))}
+           if isinstance(g, dict) and isinstance(g.get("t"), (int, float)) and not g.get("off")}
     if admin and replay.same_video(admin.get("video"), game.get("video")):
+        for s in list(admin.get("absent") or []) + list(admin.get("wrong") or []):
+            out.pop(s, None)
         out.update({s: (int(t), "admin") for s, t in (admin.get("anchors") or {}).items() if isinstance(t, int)})
     return out
 
@@ -411,7 +659,7 @@ def clip_plan(game: dict, admin: dict | None, protocol: dict[str, dict]) -> tupl
     нет (разбор поправили: 05.10 клип 4:0 вырезали на секунде гола 1:0)."""
     have = game.get("clips") or {}
     cut, drop = [], []
-    seconds = goal_seconds(game, admin)
+    seconds = goal_seconds(game, admin) if game.get("src") != "club" else {}   # запись клуба — только повтор
     for score, (t, src) in sorted(seconds.items(), key=lambda x: x[1][0]):
         x = protocol.get(score)
         if not x or hidden_goal(x):
@@ -521,15 +769,14 @@ def catalog(store: dict, league: dict | None, marked: dict, today: date) -> dict
     нет — голы, найденные табло), из них `timed` с точной секундой (`timed_admin` — от админа, `timed_auto` — часы и
     табло), `clips` с клипом, `ask` ждут ответа на превью и `mismatch` — табло нашло гол, которого нет в протоколе
     (лига отменила гол или поправила счёт). `no_board` — матчей с записью, где табло клуба-хозяина не размечено (ни
-    секунд, ни превью, пока не разметят), `boards` — сколько таких клубов (ADR-030, дополнение 06.10)."""
+    секунд, ни превью, пока не разметят), `boards` — сколько таких клубов (ADR-030, дополнение 06.10). Покрытие
+    повторами (ADR-031, по coverage): `m_total` сыгранных матчей, `m_full` — повтор у каждого гола, `m_none` — ни у
+    одного, `g_replay` голов с повтором, `run` — точных по ходу часов."""
     days = season_days(today)
-    found = sb.recorded(league, days)
-    for key, e in (marked or {}).items():
-        if key[:10] in days and isinstance(e, dict) and isinstance(e.get("video"), str):
-            found.setdefault(key, {"video": e["video"]})
+    games = store.get("games") or {}
+    found = recordings(league, marked, days, games)
     out = dict.fromkeys(admin.CLIPS_GAUGES, 0)
     unmarked: set = set()
-    games = store.get("games") or {}
     for g in (league or {}).get("games") or []:
         if not (isinstance(g, dict) and g.get("date") in days and g.get("score")):
             continue
@@ -558,10 +805,91 @@ def catalog(store: dict, league: dict | None, marked: dict, today: date) -> dict
                 out["ask"] += 1
             if score in have:
                 out["clips"] += 1
+            if seconds.get(score, (0, ""))[1] == "run":
+                out["run"] += 1
         if protocol:
             out["mismatch"] += sum(1 for s in board if s not in protocol)
     out["boards"] = len(unmarked)
+    for e in coverage(store, league, marked, today).values():
+        out["m_total"] += 1
+        out["g_replay"] += e["replays"]
+        out["m_full"] += e["why"] == "ok"
+        out["m_none"] += bool(e["goals"]) and not e["replays"] and e["why"] != "ok"
     return out
+
+
+WHY = ("no_video", "pending", "error", "no_board", "not_found")   # причины, по которым у гола нет повтора (ADR-031)
+
+
+def coverage(store: dict, league: dict | None, marked: dict, today: date) -> dict[str, dict]:
+    """Разбор покрытия повторами (ADR-031): по каждому сыгранному с SINCE матчу — сколько голов (протокол без
+    буллитов; нет протокола — найденные табло или счёт матча), у скольких есть повтор (как его поставит сборка:
+    replay.with_board — клип, точная секунда или примерная), и если не у всех — одна причина на матч (`why`):
+    `no_video` — записи нет ни у лиги, ни у клуба, ни у админа; `pending` — запись есть, служба ещё не разобрала;
+    `error` — VK не отдал или упал ffmpeg (`error` — текст); `no_board` — табло клуба-хозяина не размечено;
+    `not_found` — табло разобрано, а этих голов не нашло ни оно, ни счёт хода. Голы, которых, по словам админа, в
+    записи нет (`absent`), повтора не ждут. Голы без повтора — `missing`, почему табло их не взяло — `rejected`."""
+    days = season_days(today)
+    games = store.get("games") or {}
+    found = recordings(league, marked, days, games)
+    out = {}
+    for g in (league or {}).get("games") or []:
+        if not (isinstance(g, dict) and g.get("date") in days and g.get("score")):
+            continue
+        key = f"{g['date']}|{g.get('home')}|{g.get('away')}"
+        game = games.get(key) if isinstance(games.get(key), dict) else {}
+        admin_e = (marked or {}).get(key) if isinstance((marked or {}).get(key), dict) else None
+        protocol = league_goals(league, key)
+        scores = set(protocol) or {s for s in game.get("goals") or {} if replay.SCORE_RE.fullmatch(s)}
+        sc = g.get("score") or {}
+        total = len(scores) or sum(int(sc.get(k) or 0) for k in ("home", "away") if str(sc.get(k) or 0).isdigit())
+        entry = replay.with_board(admin_e, game) if game else admin_e
+        links = replay.by_score(entry or {})
+        absent = set((admin_e or {}).get("absent") or [])
+        have = scores & set(links)
+        missing = sorted(scores - have - absent, key=sb.goal_rank) if scores else []
+        e = {"goals": total, "replays": len(have)}
+        rec = found.get(key)
+        if rec:
+            e["src"] = rec["src"]
+        if absent & scores:
+            e["absent"] = sorted(absent & scores, key=sb.goal_rank)
+        if not missing and (scores or not total):
+            e["why"] = "ok"
+        elif not rec:
+            e["why"] = "no_video"
+        elif not game or not replay.same_video(game.get("video"), rec["video"]):
+            e["why"] = "pending"
+        elif game.get("status") == "error":
+            e.update(why="error" if game.get("tries", 0) >= TRIES else "pending", error=game.get("error"))
+        elif game.get("status") == "no_board":
+            e["why"] = "no_board"
+        else:
+            e["why"] = "not_found"
+        if missing:
+            e["missing"] = missing
+            why = {s: r for s, r in (game.get("rejected") or {}).items() if s in missing}
+            why.update({s: "админ: табло сбилось" for s in missing if (game.get("goals") or {}).get(s, {}).get("off")
+                        == "wrong"})
+            if why:
+                e["rejected"] = why
+        out[key] = e
+    return out
+
+
+def write_coverage(store: dict, league: dict | None, marked: dict, now: datetime) -> bool:
+    """Разбор покрытия — в clips.json (`coverage`): по нему бот пишет админам, почему у матчей нет повторов."""
+    try:
+        got = coverage(store, league, marked, now.date())
+    except Exception:   # разбор не должен ронять службу
+        log.exception("разбор покрытия не посчитался")
+        return False
+    if got == store.get("coverage"):
+        return False
+    store["coverage"] = got
+    store["updated"] = now_msk().isoformat(timespec="seconds")
+    write_atomic(LIVE_DIR / "clips.json", store)
+    return True
 
 
 def report(track: "admin.Tracker", store: dict, league: dict | None, marked: dict, now: datetime) -> None:
@@ -609,7 +937,11 @@ def main() -> None:
             n, left = run_pass(store, league, marked, now, track=track)
             if n:
                 log.info("проход: разобрано матчей %d, ждут разбора %d", n, left)
+            counted = clock_pass(store, league, marked, track=track)
+            left = left or counted >= CLOCK_MAX   # счёт хода ждёт ещё матчей — следующий проход через минуту
+            if n or counted:
                 cut += cut_pass(store, league, marked, bucket, track=track)
+            write_coverage(store, league, marked, now)
             if cut:
                 log.info("проход: новых клипов %d", cut)
             clean_work(now)

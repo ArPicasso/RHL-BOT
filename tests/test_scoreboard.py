@@ -297,6 +297,57 @@ class Cells(unittest.TestCase):
         self.assertEqual(got, {"0:1": 1530, "0:2": 3450, "0:3": 3580, "0:4": 4840, "1:4": 6210, "2:4": 6950})
 
 
+class Digits(unittest.TestCase):
+    """05.10 «Калуга — Динамо 576»: повтор 1:0 открывался, когда на табло уже 3:0. Гол берём, только если цифры в
+    клетке идут цепочкой от «0»."""
+
+    def found(self, goals, start=0, until=1200):
+        s = [(t, scoreboard(t, goals)) for t in range(start, until, 10)]
+        visible, found = sb.analyse(s, CELL_BOARD)
+        return s, visible, found
+
+    def test_unbroken_chain_kept(self):
+        s, visible, found = self.found(GOALS)
+        hi = {c["zone"] + str(k): c["hi"] for k, c in enumerate(found)}
+        picked = {"1:0": hi["home0"], "1:1": hi["away1"], "2:1": hi["home2"]}
+        kept, bad = sb.verify_digits(picked, found, CELL_BOARD, s, visible, (2, 1))
+        self.assertEqual((kept, bad), (picked, {}))
+
+    def test_recording_started_after_first_goal(self):
+        # запись началась при 1:0: первая смена хозяев — это 2:1, а по порядку её сочли бы голом 1:0
+        s, visible, found = self.found(GOALS, start=300)
+        home = next(c["hi"] for c in found if c["zone"] == "home")
+        away = next(c["hi"] for c in found if c["zone"] == "away")
+        kept, bad = sb.verify_digits({"1:0": home, "1:1": away}, found, CELL_BOARD, s, visible, (2, 1))
+        self.assertNotIn("1:0", kept)
+        self.assertIn("не «0»", bad["1:0"])
+
+    def test_missed_change_breaks_chain(self):
+        goals = GOALS + [(1106, "home")]
+        s, visible, found = self.found(goals, until=1400)
+        home = [c for c in found if c["zone"] == "home"]
+        away = next(c["hi"] for c in found if c["zone"] == "away")
+        found = [c for c in found if c is not home[1]]                 # смену 2:1 табло «не увидело»
+        picked = {"1:0": home[0]["hi"], "1:1": away, "2:1": home[2]["hi"]}   # по порядку — смена 3:1 стала 2:1
+        kept, bad = sb.verify_digits(picked, found, CELL_BOARD, s, visible, (3, 1))
+        self.assertEqual(set(kept), {"1:0", "1:1"})
+        self.assertIn("сменилась ещё раз", bad["2:1"])
+
+    def test_wrong_digit_after_change(self):
+        # «Факел Ямал — Ахмат-Гранит» 05.10: превью 1:3, а на табло 0:2 — клетка хозяев «сменилась» не на «1»
+        goals = [(206, "away"), (476, "home"), (476, "home")]           # в клетке хозяев 0 → 2 вместо 0 → 1
+        s, visible, found = self.found(goals)
+        home = next(c["hi"] for c in found if c["zone"] == "home")
+        away = next(c["hi"] for c in found if c["zone"] == "away")
+        kept, bad = sb.verify_digits({"0:1": away, "1:1": home}, found, CELL_BOARD, s, visible, (1, 1))
+        self.assertEqual(set(kept), {"0:1"})
+        self.assertIn("не та цифра", bad["1:1"])
+
+    def test_cells_of_other_size_not_compared(self):
+        self.assertIsNone(sb.cell_same(bytes(W * H), bytes(W * H), (0, 0, 10, 10), (20, 0, 31, 10)))
+        self.assertTrue(sb.cell_same(bytes(W * H), bytes(W * H), (0, 0, 10, 10), (20, 0, 30, 10)))
+
+
 class Align(unittest.TestCase):
     def test_period_shift_and_extra_changes(self):
         # запись начата в 1000 по часам; во 2-м периоде трансляцию прервали — сдвиг на 300 с. Сайт лиги запаздывает

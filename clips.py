@@ -258,7 +258,9 @@ def alive_pass(store: dict, now: datetime, check=stream, track: "admin.Tracker |
     todo = [(k, e) for k, e in games.items()
             if isinstance(e, dict) and isinstance(e.get("video"), str) and e.get("status") not in ("wait", "gone")
             and (e.get("status") != "error" or e.get("tries", 0) >= TRIES) and alive_due(e, k, now)]
-    todo.sort(key=lambda x: (x[1].get("alive") or x[1].get("scanned") or "", x[0]))
+    # сначала те, по кому VK уже раз сказал «записи нет»: иначе подтверждение ждёт своей очереди за всем сезоном
+    # (три записи за проход), и мёртвый «Повтор» живёт лишний час вместо одного прохода
+    todo.sort(key=lambda x: (not x[1].get("gone_tries"), x[1].get("alive") or x[1].get("scanned") or "", x[0]))
     n = 0
     for key, e in todo[:ALIVE_MAX]:
         e["alive"] = now.isoformat(timespec="seconds")

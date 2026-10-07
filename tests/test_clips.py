@@ -925,6 +925,20 @@ class Gone(unittest.TestCase):
             saved = json.loads((Path(tmp) / "clips.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["games"][KEY]["status"], "gone")
 
+    def test_refused_once_goes_first_in_queue(self):
+        """Подтверждение не должно ждать очереди за всем сезоном: иначе мёртвый «Повтор» живёт лишний час."""
+        old = {"video": "https://vk.com/video-9_9", "status": "ok", "goals": {},
+               "scanned": "2026-10-03T12:00:00+03:00"}
+        store = {"games": {f"2026-10-03|a{i}|b": dict(old) for i in range(5)}}
+        store["games"][KEY] = {"video": VIDEO, "status": "ok", "goals": {}, "gone_tries": 1,
+                               "alive": "2026-10-07T11:00:00+03:00"}   # проверяли позже всех, но VK уже отказал
+        check = mock.Mock(side_effect=clips.VkError("видео удалено"))
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)), \
+                self.assertLogs(level="WARNING"):
+            clips.alive_pass(store, self.now, check=check)
+        self.assertEqual(check.call_args_list[0].args[0], VIDEO)
+        self.assertEqual(store["games"][KEY]["status"], "gone")
+
     def test_recheck_not_too_often_for_old_matches(self):
         now = datetime(2026, 10, 20, 12, 0, tzinfo=TZ)
         e = {"video": VIDEO, "status": "ok", "goals": {}, "scanned": "2026-10-05T12:00:00+03:00",

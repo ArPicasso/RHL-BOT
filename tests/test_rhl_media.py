@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -177,6 +178,45 @@ class Loading(unittest.TestCase):
         self.assertEqual(games["5"]["video_asked"], now.isoformat(timespec="seconds"))
         self.assertTrue(rhl_media.need_video(games["9"], now))
         self.assertFalse(rhl_media.need_video(games["5"], now + timedelta(hours=1)))
+
+    def test_deleted_recording_asked_again_and_dropped(self):
+        """Запись удалили из VK (служба clips): вкладку «Видео» спрашиваем заново и дольше (этап 0.3 плана)."""
+        g = {"id": 5, "t": 1432, "start": "2026-10-04T17:00:00+03:00", "status": "final",
+             "video": "https://vk.com/video-100_200", "video_kind": "VK Видео"}
+        now = msk("2026-10-06T12:00:00")
+        gone = {"https://vkvideo.ru/video-100_200"}                 # тот же ролик, другой адрес
+        self.assertFalse(rhl_media.need_video(g, now))
+        self.assertTrue(rhl_media.need_video(g, now, gone))
+        self.assertTrue(rhl_media.need_video(g, msk("2026-10-14T12:00:00"), gone))   # дольше VIDEO_DAYS
+        self.assertFalse(rhl_media.need_video(g, msk("2026-10-25T12:00:00"), gone))  # но не бесконечно
+        self.assertFalse(rhl_media.need_video(g, now, {"https://vk.com/video-9_9"}))
+        games = {"5": dict(g)}
+        session = FakeSession({f"{SITE}/translations/": "<html></html>",
+                               f"{SITE}/matchcenter/1432/5/video/": "<html>плеера нет</html>"})
+        with mock.patch.object(rhl_site, "PAUSE", 0):
+            asyncio.run(rhl_site.update_media(session, {"games": games}, SITE, now, gone))
+        self.assertIn(f"{SITE}/matchcenter/1432/5/video/", session.asked)
+        self.assertNotIn("video", games["5"])                       # мёртвую ссылку не держим
+        self.assertNotIn("video_kind", games["5"])
+        # но номер ролика помним: иначе срок схлопнулся бы до VIDEO_DAYS и новую запись мы бы не заметили
+        self.assertEqual(games["5"]["video_gone"], "https://vk.com/video-100_200")
+        self.assertTrue(rhl_media.need_video(games["5"], msk("2026-10-14T12:00:00"), gone))
+        found = FakeSession({f"{SITE}/translations/": "<html></html>",
+                             f"{SITE}/matchcenter/1432/5/video/": page("rhl_video_905111.html")})
+        with mock.patch.object(rhl_site, "PAUSE", 0):
+            asyncio.run(rhl_site.update_media(found, {"games": games}, SITE, msk("2026-10-14T12:00:00"), gone))
+        self.assertEqual(games["5"]["video"], "https://vk.com/video-187307324_456239889")   # лига выложила заново
+        self.assertNotIn("video_gone", games["5"])
+
+    def test_gone_videos_from_clips_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "clips.json"
+            self.assertEqual(rhl_site.gone_videos(path), set())
+            path.write_text(json.dumps({"games": {
+                "2026-10-05|kaluga|dinamo-576": {"video": "https://vk.com/video-1_2", "status": "gone"},
+                "2026-10-04|proton|kristall": {"video": "https://vk.com/video-3_4", "status": "ok"},
+                "2026-10-03|a|b": {"status": "gone"}}}), encoding="utf-8")
+            self.assertEqual(rhl_site.gone_videos(path), {"https://vk.com/video-1_2"})
 
     def test_translations_page_down(self):
         s = store()

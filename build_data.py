@@ -228,6 +228,31 @@ def apply_clips(games: list[dict], clips: dict | None) -> int:
     return n
 
 
+def gone_videos(clips: dict | None) -> set[str]:
+    """Ролики, которых больше нет в VK: у матча `status: gone` у службы clips (этап 0.3 плана). По ним не ставим ни
+    «Повтор» (это делает replay.with_board), ни кнопку «Смотреть»: ссылка никуда не ведёт."""
+    return {e["video"] for e in (clips or {}).values()
+            if isinstance(e, dict) and e.get("status") == "gone" and isinstance(e.get("video"), str)}
+
+
+def drop_gone(games: list[dict], clips: dict | None) -> int:
+    """Убрать из «Смотреть» ролики, удалённые из VK. Сколько кнопок убрали."""
+    gone = gone_videos(clips)
+    if not gone:
+        return 0
+    n = 0
+    for g in games:
+        watch = g.get("watch") or []
+        left = [w for w in watch
+                if not (isinstance(w, dict) and any(replay.same_video(w.get("url"), v) for v in gone))]
+        if len(left) != len(watch):
+            n += len(watch) - len(left)
+            g["watch"] = left
+            if not left:
+                g.pop("watch")
+    return n
+
+
 def apply_replays(games: list[dict], replays: dict, clips: dict | None = None) -> int:
     """Ссылка на повтор (`replay`) у гола матча: ключ «<дата>|<хозяева>|<гости>», гол — по счёту после него.
     Счёт уникален в матче и одинаков у службы live и у протокола. Матч без голов протокола (протокол ещё не
@@ -1101,6 +1126,7 @@ def build(teams: Teams, raw: list[rhockey.RawGame], results: league.Results,
     apply_media(games, site or {})                         # «Смотреть» от лиги — первой кнопкой
     apply_channel_events(games, teams, list(channels), posts or {}, events, datetime.now(TZ))
     apply_goal_authors(games, protocols, list(channels), hidden)   # авторы голов по ходу из постов (ADR-026)
+    drop_gone(games, clips)                                # запись удалили из VK — убираем «Смотреть» (этап 0.3)
     apply_replays(games, replays or {}, clips)             # последним: голы уже на месте (ADR-027, ADR-030)
     apply_clips(games, clips)                              # свои клипы голов — после протокола (ADR-030, шаг 6)
     names = {t["id"]: t["name"] for t in teams.all}

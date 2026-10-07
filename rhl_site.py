@@ -39,6 +39,8 @@ BASE = Path(__file__).parent
 TZ = ZoneInfo("Europe/Moscow")
 SITE = "https://rhl.fhr.ru"
 STORE = BASE / "rhl_site.json"
+CLIPS = BASE / "clips.json"   # голы по табло от службы clips (ADR-030), кладёт шаг Pages. Нужен один ключ: какие
+                              # записи VK удалены, чтобы спросить вкладку «Видео» заново (этап 0.3 плана)
 MAX_PAGES = 24          # страниц матч-центра за запуск, не больше: остальные — в следующий час
 MAX_VIDEO = 12          # вкладок «Видео» за запуск (rhl_media.py, ADR-019, раздел 7)
 REPORT_EVERY = timedelta(hours=3)   # протокол перечитываем не чаще, пока лига может его поправить (SETTLE_DAYS)
@@ -354,8 +356,21 @@ async def fetch_leaders(s: aiohttp.ClientSession, site: str, store: dict, now: d
                             "updated": now.isoformat(timespec="minutes"), "categories": cats}
 
 
+def gone_videos(path: Path = CLIPS) -> set[str]:
+    """Ролики, которых больше нет в VK: у матча `status: gone` у службы clips (этап 0.3 плана). Нет файла —
+    пусто: сборка без службы работает как раньше."""
+    try:
+        games = json.loads(path.read_text(encoding="utf-8"))["games"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return set()
+    if not isinstance(games, dict):
+        return set()
+    return {e["video"] for e in games.values()
+            if isinstance(e, dict) and e.get("status") == "gone" and isinstance(e.get("video"), str)}
+
+
 async def update(path: Path = STORE, site: str = SITE, now: datetime | None = None,
-                 leaders_path: Path | None = LEADERS_FILE) -> dict:
+                 leaders_path: Path | None = LEADERS_FILE, clips_path: Path | None = CLIPS) -> dict:
     now = now or datetime.now(TZ)
     store = load_store(path)
     headers = {"User-Agent": USER_AGENT}
@@ -377,7 +392,7 @@ async def update(path: Path = STORE, site: str = SITE, now: datetime | None = No
         # протоколы — в остаток лимита страниц: счёт и «идёт» важнее
         fresh = await fetch_reports(s, site, store, now, MAX_PAGES - len(pages))
         await fetch_leaders(s, site, store, now, fresh)
-        await update_media(s, store, site, now)
+        await update_media(s, store, site, now, gone_videos(clips_path) if clips_path else set())
     store["updated"] = now.isoformat(timespec="minutes")
     save_store(store, path)
     if leaders_path:
@@ -385,9 +400,10 @@ async def update(path: Path = STORE, site: str = SITE, now: datetime | None = No
     return store
 
 
-async def update_media(s: aiohttp.ClientSession, store: dict, site: str, now: datetime) -> None:
+async def update_media(s: aiohttp.ClientSession, store: dict, site: str, now: datetime, gone=()) -> None:
     """«Смотреть» от лиги (rhl_media.py): страница «Трансляции» — раз за запуск, вкладка «Видео» — у матчей
-    сегодня и завтра и у только что сыгранных, пока ссылка не найдётся. По одному запросу с паузой."""
+    сегодня и завтра и у только что сыгранных, пока ссылка не найдётся. По одному запросу с паузой.
+    gone — записи, удалённые из VK: их вкладку спрашиваем заново, лига могла выложить запись второй раз."""
     games = store["games"]
     await asyncio.sleep(PAUSE)
     try:
@@ -398,7 +414,7 @@ async def update_media(s: aiohttp.ClientSession, store: dict, site: str, now: da
     for c in cards:
         if str(c["id"]) in games:
             games[str(c["id"])]["translation"] = True
-    todo = [g for g in games.values() if rhl_media.need_video(g, now)]
+    todo = [g for g in games.values() if rhl_media.need_video(g, now, gone)]
     # сначала сегодняшние и завтрашние (нужна ссылка на эфир), потом сыгранные — кого дольше не спрашивали
     first = sorted((g for g in todo if g.get("status") != "final"), key=lambda g: g.get("start") or "")
     later = sorted((g for g in todo if g.get("status") == "final"), key=lambda g: g.get("video_asked") or "")
@@ -414,6 +430,12 @@ async def update_media(s: aiohttp.ClientSession, store: dict, site: str, now: da
             continue
         if v:
             g["video"], g["video_kind"] = v["url"], v["kind"]
+            g.pop("video_gone", None)
+        elif g.get("video") and any(rhl_media.same_video(g["video"], x) for x in gone or ()):
+            # ту запись удалили, а новой лига ещё не выложила: мёртвую ссылку не держим, но номер помним —
+            # по нему need_video спрашивает вкладку ещё GONE_DAYS дней (этап 0.3 плана)
+            g["video_gone"] = g.pop("video")
+            g.pop("video_kind", None)
 
 
 def main() -> None:

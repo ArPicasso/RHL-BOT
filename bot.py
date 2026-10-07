@@ -1592,23 +1592,13 @@ def league_match(league: dict | None, g: dict) -> dict | None:
 
 
 def protocol_of(league: dict | None, g: dict) -> list[dict] | None:
-    """Голы протокола этого матча из league.json без буллитов: счёт, команда, период, автор. Нет — None."""
-    m = league_match(league, g)
-    goals = [{"score": x.get("score"), "team": x.get("team"), "period": x.get("period"), "author": x.get("author"),
-              "time": x.get("time")}
-             for x in (m or {}).get("goals") or [] if isinstance(x, dict) and x.get("period") != "РБ"]
-    return goals or None
+    """Голы протокола этого матча из league.json без буллитов — правило общее с пультом (goalplan.protocol_of)."""
+    return goalplan.protocol_of(league_match(league, g))
 
 
 def league_video(league: dict | None, g: dict) -> str | None:
-    """Запись трансляции лиги для разметки (ADR-028): ролик VK из «Смотреть» от rhl.fhr.ru в league.json
-    (rhl_media.py, ADR-019, раздел 7). Вкладка «Видео» на сайте лиги без ролика и ссылки клубов — не запись лиги."""
-    for w in (league_match(league, g) or {}).get("watch") or []:
-        if isinstance(w, dict) and w.get("src") == SITE and isinstance(w.get("url"), str):
-            got = replay.parse_link(w["url"])
-            if got:
-                return got[0]
-    return None
+    """Запись трансляции лиги для разметки (ADR-028) — правило общее с пультом (goalplan.league_video)."""
+    return goalplan.league_video(league_match(league, g))
 
 
 def replay_goals(g: dict, protocol: list[dict] | None = None) -> list[dict]:
@@ -2696,11 +2686,6 @@ def clips_game(key: str) -> dict:
 
 
 # что показать о голе — общее с пультом (goalplan.py, ADR-036): одно правило, одно окно, одно задание службы cuts
-goal_estimate = goalplan.goal_estimate
-known_second = goalplan.known_second
-CANDIDATE_MAX = goalplan.CANDIDATE_MAX
-
-
 def goal_plan(key: str, score: str, protocol: list[dict] | None = None, video: str | None = None) -> dict | None:
     """План видео гола (goalplan.plan) по отметкам из replays.json и разбору службы clips."""
     return goalplan.plan(key, score, load_replays()["games"].get(key), clips_game(key), protocol, video)

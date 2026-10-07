@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import cutjobs  # noqa: E402
+import goalplan  # noqa: E402
 from test_replay import GAME, VIDEO  # noqa: E402
 
 TZ = ZoneInfo("Europe/Moscow")
@@ -86,7 +87,7 @@ class Plan(Base):
         # от 1:1 (12:00; счёт сменился на 3500 — гол около 3455) до 2:1 (25:00, 2-й период): 13 минут игры с
         # остановками и перерыв
         self.assertEqual((search["kind"], search["windows"][0][:2]), ("search", (5479, 180)))
-        self.assertEqual(self.bot.goal_estimate("2:1", {"1:0": 2600}, PROTOCOL), 2600 + round(1200 * 1.3) + 1100)
+        self.assertEqual(goalplan.goal_estimate("2:1", {"1:0": 2600}, PROTOCOL), 2600 + round(1200 * 1.3) + 1100)
 
     def test_dispute_shows_both_versions(self):
         self.mark("1:0", 2700)

@@ -1,5 +1,6 @@
 {
  "kind": "approx",
+ "base": "approx",
  "shift": 0,
  "src": null,
  "t": null,

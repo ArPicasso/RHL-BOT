@@ -139,6 +139,7 @@ body.locked { overflow: hidden; }
 .sheet-back { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 10; }
 .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 11; max-width: 640px; max-height: 92vh; margin: 0 auto; overflow-y: auto; background: var(--paper); border: var(--line); border-bottom: 0; border-radius: 20px 20px 0 0; padding: 16px 16px calc(20px + env(safe-area-inset-bottom)); }
 .sheet[hidden], .sheet-back[hidden] { display: none; }
+.sheet .handle { width: 40px; height: 4px; margin: -6px auto 12px; border-radius: 9999px; background: var(--edge-strong, var(--muted)); }
 .sheet-head { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: start; }
 .sheet h2 { margin: 0; font: 700 17px/1.25 var(--ui); }
 .sheet-sub { margin-top: 6px; font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }

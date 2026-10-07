@@ -404,7 +404,7 @@ function goalsTab(gd, now) {
 const CUT_POLL_MS = 2000;
 const CUT_WAIT_MS = 4 * 60e3;
 const SRC_WORDS = { clock: "⏱ встали часы", board: "📺 задержка табло клуба", run: "🕐 ход часов от соседнего гола", admin: "✅ отметка человека" };
-const card = { key: "", score: "", shift: 0, plan: null, error: "", vids: {}, token: 0, back: null };
+const card = { key: "", score: "", shift: 0, plan: null, error: "", note: "", vids: {}, token: 0, back: null };
 
 function clock(sec) {
   sec = Math.max(0, Math.floor(sec || 0));
@@ -462,7 +462,7 @@ function renderCard() {
   }
   const info = goalOf(card.key, card.score);
   const p = card.plan;
-  let html = `<div class="sheet-head"><div><h2 id="card-title">${esc(info.title)}, ${esc(dm(info.date))}</h2>
+  let html = `<div class="handle" aria-hidden="true"></div><div class="sheet-head"><div><h2 id="card-title">${esc(info.title)}, ${esc(dm(info.date))}</h2>
     <div class="sheet-sub">${info.goal.state ? sticker(info.goal.state) : ""} ${goalLine(info.goal)}</div></div>
     <button type="button" class="btn-round" data-close aria-label="Закрыть">✕</button></div>`;
   if (card.error) html += `<div class="vid-wait">${esc(card.error)}</div>`;
@@ -470,14 +470,19 @@ function renderCard() {
   else {
     html += `<p class="plan">${esc(planText(p))}</p>` + (p.windows || []).map(vidBlock).join("");
     if (p.kind === "approx" || p.kind === "search") {
+      if (card.note) html += `<div class="card-title">${esc(card.note)}</div>`;
       html += `<div class="nav"><button type="button" class="pill" data-shift="-1">⏪ 3 мин раньше</button><button type="button" class="pill" data-shift="1">⏩ 3 мин позже</button></div>`;
-      if (card.shift) html += `<button type="button" class="more" data-shift="0">Вернуться к ${p.kind === "approx" ? "примерному месту" : "оценке"}</button>`;
+      if (card.shift) html += `<button type="button" class="more" data-shift="0">Вернуться к ${p.base === "approx" ? "примерному месту" : "оценке"}</button>`;
     }
   }
   html += `<div class="card-title sheet-foot">Время записи — для бота: ${state.role === "helper" ? "ответь им на превью в чате" : "пришли его в /replay → матч → гол"}. Отмечать прямо в пульте можно будет следующим шагом.</div>`;
+  // фокус с клавиатуры переживает перерисовку: та же кнопка или ✕
+  const f = document.activeElement && el.contains(document.activeElement) ? document.activeElement : null;
+  const again = f && (f.dataset.shift !== undefined ? `[data-shift="${f.dataset.shift}"]` : f.dataset.close !== undefined ? "[data-close]" : "");
   el.innerHTML = html;
   el.hidden = false;
   $("#card-back").hidden = false;
+  if (again) { const x = el.querySelector(again); if (x) x.focus(); }
 }
 
 async function api(path, opts = {}) {
@@ -533,25 +538,39 @@ async function waitCut(job, token) {
   if (token === card.token) renderVid(job);
 }
 
-async function loadCard() {
+async function loadCard(prevShift) {
   const token = ++card.token;
-  dropVideos();
-  card.plan = null;
-  card.error = "";
-  renderCard();
+  const prev = card.plan;
+  card.note = "";
+  if (prevShift === undefined) {   // открыли гол — всё заново; листаем — прежнее видео остаётся, пока не придёт новое
+    dropVideos();
+    card.plan = null;
+    card.error = "";
+    renderCard();
+  }
+  let plan;
   try {
     if (mock) {
       const r = await fetch("data/admin/mock/goal-video.json", { cache: "no-store" });
-      card.plan = { ...(await r.json()), shift: card.shift };
-      for (const w of card.plan.windows) card.vids[w.job] = { error: "в моке видео не режется" };
+      plan = { ...(await r.json()), shift: card.shift };
     } else {
-      card.plan = await api("goal/video", { body: { key: card.key, score: card.score, shift: card.shift } });
+      plan = await api("goal/video", { body: { key: card.key, score: card.score, shift: card.shift } });
     }
   } catch (e) {
-    if (token === card.token) { card.error = e.message; renderCard(); }
+    if (token !== card.token) return;
+    if (prev && prevShift !== undefined) {   // дальше записи нет — остаёмся где были, кнопки на месте
+      card.shift = prevShift;
+      card.note = e.message;
+    } else {
+      card.error = e.message;
+    }
+    renderCard();
     return;
   }
   if (token !== card.token) return;
+  dropVideos();   // прежнее видео играло, пока ждали новый план
+  card.plan = plan;
+  if (mock) for (const w of plan.windows) card.vids[w.job] = { error: "в моке видео не режется" };
   renderCard();
   if (!mock) for (const w of card.plan.windows) waitCut(w.job, token);
 }
@@ -702,8 +721,9 @@ document.addEventListener("click", (e) => {
   }
   const shift = e.target.closest("[data-shift]");
   if (shift) {
+    const was = card.shift;
     card.shift = shift.dataset.shift === "0" ? 0 : card.shift + Number(shift.dataset.shift);
-    loadCard();
+    loadCard(was);
     return;
   }
   const goal = e.target.closest(".goal-open");

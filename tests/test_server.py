@@ -561,10 +561,10 @@ class AdminPanel(Base):
         await self.call("GET", f"/api/admin/cut/{job}.mp4", fan(2), status=403)
         # примерное место листается окнами поиска, точная секунда — нет
         d = await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "2:0", "shift": -1})
-        self.assertEqual((d["kind"], d["shift"], d["windows"][0]["len"]), ("approx", -1, 180))
+        self.assertEqual((d["kind"], d["base"], d["shift"], d["windows"][0]["len"]), ("search", "approx", -1, 180))
         self.assertIn("раньше", d["windows"][0]["what"])
         d = await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "1:0", "shift": 2})
-        self.assertEqual(d["windows"][0]["start"], 2580)
+        self.assertEqual((d["windows"][0]["start"], d["kind"], d["shift"]), (2580, "exact", 0))
         await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "2:0", "shift": 6},
                         status=404)                                          # запись кончилась
         await self.call("POST", "/api/admin/goal/video", fan(1), {"key": f"{D1}|polet|sokol", "score": "1:0"},

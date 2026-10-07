@@ -894,7 +894,9 @@ class Api:
         if moved is None:
             raise Fail(404, "Дальше записи нет.")
         jobs = goalplan.jobs_for(self.cuts, moved, self.now())
-        return reply({"kind": plan["kind"], "shift": shift, "src": plan.get("src"), "t": plan.get("t"),
+        # kind и shift — того, что показано; base — что известно о голе (у сдвинутого — к чему возвращаться)
+        return reply({"kind": moved["kind"], "base": plan["kind"], "shift": shift if moved is not plan else 0,
+                      "src": plan.get("src"), "t": plan.get("t"),
                       "tb": plan.get("tb"), "why": plan.get("why") or "", "cand": moved.get("cand") or [],
                       "length": moved.get("length"),
                       "windows": [{"start": w[0], "len": w[1], "what": w[2], "job": j}

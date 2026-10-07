@@ -382,7 +382,9 @@ class GoalsTab(unittest.TestCase):
                                            "rejected": {"2:1": "табло убирали"}},
             "2026-10-06|rostov|krasnodar": {"goals": 2, "replays": 2, "why": "ok", "src": "league",
                                             "state": {"1:0": "approx", "1:1": "dispute"}},
-            "2026-09-20|arktika|ermak": {"goals": 1, "replays": 1, "why": "ok", "state": {"1:0": "clip"}},
+            "2026-09-20|arktika|ermak": {"goals": 1, "replays": 1, "why": "ok", "src": "league",
+                                         "state": {"1:0": "clip"}},
+            "2026-09-21|rostov|ermak": {"goals": 0, "replays": 0, "why": "ok"},   # 0:0 без записи
             "2026-10-05|arktika|ermak": {"goals": 1, "replays": 0, "why": "no_video", "state": {"0:1": "stuck"}},
         }
         league = {"2026-10-04|proton|kristall": {"score": {"home": 2, "away": 1}, "goals": [
@@ -397,7 +399,7 @@ class GoalsTab(unittest.TestCase):
     def test_pipeline_and_waiting_order(self):
         got = self.build()
         p = got["pipeline"]
-        self.assertEqual((p["played"], p["video"], p["parsed"], p["goals"], p["replays"], p["full"]), (4, 3, 3, 7, 5, 2))
+        self.assertEqual((p["played"], p["video"], p["parsed"], p["goals"], p["replays"], p["full"]), (5, 3, 3, 7, 5, 3))
         self.assertEqual((p["states"]["clip"], p["states"]["stuck"], p["boards"][0]["name"]), (2, 1, "Протон"))
         # спор → примерно → подтвердить → поиск, внутри — свежие матчи первыми
         self.assertEqual([(w["state"], w["score"]) for w in got["wait"]["items"]],

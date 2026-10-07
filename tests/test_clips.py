@@ -767,6 +767,8 @@ class GoalStates(unittest.TestCase):
         protocol = clips.league_goals(self.league, KEY)
         got = clips.goal_states(game, None, protocol, {"0:1", "0:2"}, None, "ok")
         self.assertEqual(got, {"0:1": "confirm", "0:2": "done"})            # два свидетеля, а клипа не будет
+        got = clips.goal_states({**game, "src": "league"}, None, {}, {"0:2"}, None, "ok")
+        self.assertEqual(got, {"0:2": "done"})                              # протокола нет — резать нечего
         protocol["0:2"] = {**protocol["0:2"], "author": clips.pc.HIDDEN_NAME}
         got = clips.goal_states({**game, "src": "league"}, None, protocol, {"0:2"}, None, "ok")
         self.assertEqual(got, {"0:2": "done"})

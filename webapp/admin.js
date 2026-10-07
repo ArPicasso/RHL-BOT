@@ -270,8 +270,8 @@ function games(st) {
 const GOAL_WORDS = { clip: "клип", ready: "к клипу", done: "точно", confirm: "подтвердить", dispute: "спор", approx: "примерно", search: "поиск", absent: "нет в записи", stuck: "стоит" };
 const GOAL_HINTS = {
   clip: "клип у болельщиков",
-  ready: "два свидетеля — клип режется",
-  done: "секунда точная, клипа не будет: запись клуба или игрок скрыт",
+  ready: "два свидетеля — клип будет",
+  done: "секунда точная, клипа нет: запись клуба, игрок скрыт или протокола ещё нет",
   confirm: "точная секунда одного свидетеля — нужно «✅ Гол виден»",
   dispute: "отметка человека и табло не сошлись",
   approx: "известно окно в пару минут — найти секунду",
@@ -279,16 +279,18 @@ const GOAL_HINTS = {
   absent: "человек сказал: в записи гола нет",
   stuck: "матч застрял раньше голов",
 };
-// почему матч не дошёл до повтора у каждого гола — как в /replay и вечерней сводке бота (COVER_WHY)
+// почему матч не дошёл до повтора у каждого гола — как в /replay и вечерней сводке бота (COVER_WHY).
+// Что сделать — только админу: /replay помощнику бот не открывает
 const WHY_WORDS = {
   ok: "повтор у каждого гола",
-  no_video: "нет записи ни лиги, ни клуба — пришли ссылку в /replay",
-  gone: "запись удалили из VK — нужна новая ссылка в /replay",
+  no_video: "нет записи ни лиги, ни клуба",
+  gone: "запись удалили из VK",
   pending: "ждёт разбора службой",
   error: "VK не отдал запись",
   no_board: "табло клуба не размечено — служба голы не ищет",
   not_found: "табло нашло не все голы",
 };
+const WHY_TODO = { no_video: "пришли ссылку в /replay", gone: "нужна новая ссылка в /replay" };
 const WHY_LEVEL = { ok: "ok", pending: "", no_video: "bad", gone: "bad", error: "bad", no_board: "warn", not_found: "warn" };
 const CUT_KINDS = { preview: "превью", review: "30 с гола", search: "окно поиска", clip: "клип" };
 const PIPE_STATES = ["clip", "ready", "done", "confirm", "dispute", "approx", "search", "absent", "stuck"];
@@ -332,8 +334,11 @@ function work(gd, now) {
     const wait = typeof c.waiting === "number" ? ` · ждут разбора ${num(c.waiting)}` : "";
     html += row(minsAgo(c.beat, now) > 60 ? "bad" : "ok", "Служба клипов", esc(sub + wait), esc(ago(c.beat, now)));
     const vkBad = toDate(c.vk_fail) && (!toDate(c.vk_ok) || toDate(c.vk_fail) > toDate(c.vk_ok));
-    html += row(vkBad ? "warn" : c.vk_ok ? "ok" : "", "VK отдаёт записи", esc(vkBad ? c.vk_error || "последний раз отказал" : "последняя запись скачалась"), esc(ago(vkBad ? c.vk_fail : c.vk_ok, now)));
-    html += row(c.cut === "off" ? "warn" : "ok", "Клипы болельщикам", esc(c.cut === "off" ? "нарезка на паузе: CLIPS_CUT=off в bot.env" : "режутся у голов с двумя свидетелями"), "");
+    const vkSub = vkBad ? c.vk_error || "последний раз отказал" : c.vk_ok ? "последняя запись скачалась" : "с запуска службы записей не качали";
+    html += row(vkBad ? "warn" : c.vk_ok ? "ok" : "", "VK отдаёт записи", esc(vkSub), c.vk_ok || c.vk_fail ? esc(ago(vkBad ? c.vk_fail : c.vk_ok, now)) : "");
+    const cutOff = c.cut === "off" || c.bucket === false;
+    html += row(cutOff ? "warn" : "ok", "Клипы болельщикам", esc(c.cut === "off" ? "нарезка на паузе: CLIPS_CUT=off в bot.env"
+      : c.bucket === false ? "не режутся: нет ключей хранилища CLIPS_S3_* в bot.env" : "режутся у голов с двумя свидетелями"), "");
   } else {
     html += row("bad", "Служба клипов", "status/clips.json нет: служба не запущена", "");
   }
@@ -358,7 +363,7 @@ function waiting(gd) {
   }
   if (items.length > 8) html += `<button type="button" class="more" data-more="wait">${all ? "Свернуть" : `Все ${items.length}`}</button>`;
   if (w.total > items.length) html += `<div class="card-title">Показаны первые ${num(items.length)} из ${num(w.total)}</div>`;
-  html += `<div class="card-title">Видео гола — в боте: /replay → матч → гол. В пульте видео появится следующим шагом.</div>`;
+  html += `<div class="card-title">${state.role === "helper" ? "Видео голов без секунды бот присылает тебе в чат — превью с кнопками." : "Видео гола — в боте: /replay → матч → гол."} В пульте видео появится следующим шагом.</div>`;
   return html + `</section>`;
 }
 
@@ -366,7 +371,8 @@ function matchCard(m) {
   const id = `m:${m.key}`;
   const open = !!state.open[id];
   const counts = PIPE_STATES.filter((st) => m.states && m.states[st]).map((st) => `${GOAL_WORDS[st]} ${m.states[st]}`).join(" · ");
-  const why = WHY_WORDS[m.why] || m.why || "";
+  const todo = state.role === "admin" && WHY_TODO[m.why] ? ` — ${WHY_TODO[m.why]}` : "";
+  const why = (WHY_WORDS[m.why] || m.why || "") + todo;
   const sub = [why + (m.why === "error" && m.error ? `: ${m.error}` : ""), counts].filter(Boolean).map(esc).join("<br>");
   const title = m.score ? `${dm(m.date)} ${m.title.replace(" — ", ` ${m.score} `)}` : `${dm(m.date)} ${m.title}`;
   let html = `<div class="row match" role="button" tabindex="0" data-open="${esc(id)}" aria-expanded="${open}">
@@ -388,7 +394,7 @@ function matchList(gd) {
 
 function goalsTab(gd, now) {
   return pipeline(gd) + work(gd, now) + waiting(gd) + matchList(gd) +
-    `<div class="foot">«Голы» только показывают: отметить гол — в боте, /replay. Обновляется раз в минуту, пока открыто.</div>`;
+    `<div class="foot">«Голы» только показывают: отметить гол — в боте, ${state.role === "helper" ? "кнопкой под превью" : "/replay"}. Обновляется раз в минуту, пока открыто.</div>`;
 }
 
 // ---------- загрузка ----------

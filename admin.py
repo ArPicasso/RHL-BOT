@@ -521,8 +521,8 @@ def build_goals(*, now: datetime, teams: dict[str, str], clips_store: dict | Non
     for key in sorted(cov, key=lambda k: (k[:10], k), reverse=True):
         e = cov[key]
         why = e.get("why")
-        pipe["video"] += why != "no_video"
-        pipe["parsed"] += why not in ("no_video", "pending")
+        pipe["video"] += bool(e.get("src"))   # src у разбора покрытия есть, только когда запись нашлась
+        pipe["parsed"] += bool(e.get("src")) and why != "pending"
         pipe["goals"] += int(e.get("goals") or 0)
         pipe["replays"] += int(e.get("replays") or 0)
         pipe["full"] += why == "ok"
@@ -572,7 +572,7 @@ def build_goals(*, now: datetime, teams: dict[str, str], clips_store: dict | Non
         "work": {
             "clips": {"beat": clips.get("beat"), "started": clips.get("started"),
                       "scan": {**scan, "title": match_title(str(scan.get("key") or ""), teams)} if scan else None,
-                      "waiting": info.get("waiting"), "cut": info.get("cut"),
+                      "waiting": info.get("waiting"), "cut": info.get("cut"), "bucket": info.get("bucket"),
                       "vk_ok": info.get("vk_ok"), "vk_fail": info.get("vk_fail"),
                       "vk_error": info.get("vk_error")} if clips else None,
             "cuts": {"beat": cuts.get("beat"), "job": cinfo.get("job"), "queue": cinfo.get("queue"),

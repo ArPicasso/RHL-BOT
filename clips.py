@@ -1219,14 +1219,13 @@ def goal_states(game: dict, admin_e: dict | None, protocol: dict[str, dict], sco
         x = protocol.get(s) or {}
         if s in absent:
             out[s] = "absent"
-        elif why == "gone" or (game or {}).get("status") == "gone":
+        elif why == "gone":
             # повторов по удалённой записи нет, что бы ни помнил разбор; отметил человек после удаления — его повтор
             out[s] = ("confirm" if links[s].get("exact") else "approx") if s in links else "stuck"
         elif s in have:
             out[s] = "clip"
-        elif s in two:
-            out[s] = "done" if (game or {}).get("src") == "club" or hidden_goal(x) or (protocol and not x) \
-                else "ready"
+        elif s in two:   # клип режут только голу протокола (clip_plan): протокола нет — пока «точно»
+            out[s] = "done" if (game or {}).get("src") == "club" or hidden_goal(x) or not x else "ready"
         elif s in spor:
             out[s] = "dispute"
         elif s in seconds or (links.get(s) or {}).get("exact"):   # точная секунда одного свидетеля
@@ -1486,7 +1485,8 @@ def main() -> None:
         store = read_json(LIVE_DIR / "clips.json")
         marked = read_json(LIVE_DIR / "replays.json").get("games") or {}
         league = sb.league_json(None)
-        track.info(cut="on" if CUT else "off")   # нарезка на паузе — видно в status/clips.json
+        # нарезка на паузе или без ключей хранилища — видно в status/clips.json и на вкладке «Голы»
+        track.info(cut="on" if CUT else "off", bucket=bucket.ok)
         try:
             gone = wipe(store, bucket)
             if gone is not None:
@@ -1517,6 +1517,7 @@ def main() -> None:
                 track.add("clips_cut", cut)
         except Exception:   # служба не падает из-за одного прохода: следующий через EVERY
             log.exception("проход упал")
+            track.info(scan=None)   # «Сейчас» на пульте не должно показывать разбор, которого уже нет
             left = 0
         report(track, store, league, marked, now_msk())
         if args.once:

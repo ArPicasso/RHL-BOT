@@ -102,8 +102,8 @@ VERSION = 9         # разбор поменялся — матчи разби�
                     # вечер: «табло на экране» — по самой частой картинке названия, «Протон» 04.10 табло не видел)
 CLOCK_MAX = 2       # матчей за проход со счётом хода часов (ADR-031): кадр в секунду — минуты записи на гол
 CLUB_MIN = 3000     # с: ролик клуба короче — не запись матча (пресс-конференция, обзор), берём следующий
-PREVIEW_BEFORE = 120   # с записи до смены счёта на табло в превью: оператор меняет счёт через 0–90 с после гола
-PREVIEW_AFTER = 5      # и после смены
+PREVIEW_BEFORE = cutjobs.CHANGE_BEFORE   # с записи до смены счёта на табло в превью: окна — общие с ботом (cutjobs)
+PREVIEW_AFTER = cutjobs.CHANGE_AFTER     # и после смены
 CANDIDATES = 3         # кнопок «Гол на …» под превью — последние остановки часов перед сменой счёта
 # Клипы стёрты 06.10 и нарезка на паузе, пока не выбрана новая схема секунды гола (ADR-030, дополнение 06.10, ночь):
 # служба дорезала бы те же клипы, в том числе по ошибочным временам людей. Разбор табло, превью и счёт хода идут.
@@ -349,22 +349,10 @@ def clock_stops(vis: list[tuple[float, bytes]], clock: list[int], gap: float = 2
     return out
 
 
-def preview_window(change: float, length: float | None = None) -> tuple[int, int]:
-    """Окно превью: (начало, длина) в секундах записи — до смены счёта на табло и чуть после."""
-    start = max(0, int(change) - PREVIEW_BEFORE)
-    end = int(change) + PREVIEW_AFTER
-    if length:
-        end = min(end, int(length))
-    return start, max(1, end - start)
+preview_window = cutjobs.change_window   # окно превью: до смены счёта на табло и чуть после
 
 
-def run_window(win: list[int], length: float | None = None) -> tuple[int, int]:
-    """Окно превью по счёту хода часов (ADR-031): гол — в окне [от, до], плюс немного до и после."""
-    start = max(0, int(win[0]) - 20)
-    end = int(win[1]) + 10
-    if length:
-        end = min(end, int(length))
-    return start, max(1, end - start)
+run_window = cutjobs.run_window   # окно превью по счёту хода часов (ADR-031)
 
 
 _jobs: tuple | None = None

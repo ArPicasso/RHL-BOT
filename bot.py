@@ -1636,7 +1636,7 @@ def replay_text(day: str, g: dict, entry: dict | None, protocol: list[dict] | No
         lines.append(f'Запись: {html.escape(entry["video"])}')
     elif video:
         lines.append(f"Запись лиги: {html.escape(video)} — ссылку можно не присылать, только времена. "
-                     "Не тот ролик — пришли свою ссылку вместе с временами.")
+                     "Не тот ролик — пришли свою ссылку, времена к ней не обязательны.")
     seen = board_state(board, (entry or {}).get("video") or video)
     if seen:
         lines.append(seen)
@@ -1719,6 +1719,10 @@ def replay_kb(day: str, i: int, g: dict, entry: dict | None, protocol: list[dict
             row = []
     if row:
         rows.append(row)
+    vm = video_mark(match_key(g)) if entry else None
+    if vm:   # ссылку прислали без времён — её можно отозвать, не сбрасывая верные времена голов (этап 0.4)
+        rows.append([InlineKeyboardButton(text=f"↩️ Отозвать: {mark_word(vm)}",
+                                          callback_data=f"rp:r:{day}:{i}:{vm['id']}")])
     if entry:
         rows.append([InlineKeyboardButton(text="Сбросить повторы матча", callback_data=f"rp:x:{day}:{i}")])
     back = "rp:list" if day in replay_days(datetime.now(TZ)) else f"rp:d:{day}"
@@ -1772,6 +1776,9 @@ def replay_parse(day: str, i: int, score: str, text: str, key: str | None = None
         return "", g, video, [(score, t)]
     goals = replay_goals(g, protocol)
     if not times:
+        if got and link_t is not None:   # ссылка «с текущим временем», а гол не выбран: чей это гол — не знаем
+            return ("В ссылке есть время, но не сказано, чей это гол: нажми на гол и пришли её ещё раз. Или пришли "
+                    "ссылку без времени — тогда голы в записи найдёт служба.", g, video, [])
         if got:   # в сообщении ссылка и ничего больше: записываем запись, а голы в ней найдёт служба (этап 0.4)
             return "", g, video, []
         return (f"Пришли времена всех {len(goals)} голов в записи по порядку, по строке на гол: 1:08:03. "
@@ -1863,11 +1870,23 @@ def replay_issues(key: str, g: dict, video: str, picked: list[tuple[str, int]],
     info = {x["score"]: x for x in replay_goals(g, protocol)}
     times = {x.get("score"): clockrun.game_sec(x.get("time")) for x in protocol or []}
     issues = list(dict.fromkeys(i for s, t in picked for i in mark_issues(s, t, anchors, info, times)))
+    if not picked and not same:   # ссылка без времён на другую запись (этап 0.4): прежние отметки перестанут действовать
+        lost = sorted((st.get("anchors") or {})) + sorted(st.get("absent") or []) + sorted(st.get("wrong") or [])
+        if lost:
+            issues.append(f"это другая запись матча: отметки голов {', '.join(lost)} к ней не подходят и действовать "
+                          "перестанут (из журнала они не исчезнут — старую ссылку можно прислать снова)")
     cands = []
     if issues and len(picked) == 1:
         s, t = picked[0]
         cands = [v for v in typo_variants(t) if not mark_issues(s, v, {**anchors, s: v}, info, times)][:TYPO_MAX]
     return issues, cands
+
+
+def video_mark(key: str) -> dict | None:
+    """Действующая отметка «вот запись матча» — ссылка без времён (этап 0.4 плана): её отзывают отдельно, не трогая
+    верные времена голов."""
+    return next((r for r in reversed(marks.active(goal_marks().of(key)))
+                 if r["kind"] == "time" and not r["score"] and r.get("video")), None)
 
 
 def replay_drop(day: str, i: int, now: datetime, who: int | None = None) -> None:

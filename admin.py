@@ -44,6 +44,7 @@ VK_FAILS = 3        # столько раз за день VK не отдал з�
 CUTS_STALE = timedelta(minutes=20)   # служба cuts пишет пульс раз в минуту, перед и после каждого видео (ADR-036);
                                      # одно видео — до двух заходов по cuts.TIMEOUT (5 мин) и ffprobe
 CUT_FAILS = 3       # столько видео за день не вырезалось, и после них ни одно не вышло — тревога
+INV_SHOW = 3        # сломанных инвариантов прохода в тревоге (ADR-034): остальные — в журнале службы clips
 GONE_SHOW = 8       # удалённых записей в тревоге: о каждой — своя причина, чтобы «починилось» пришло по своей.
                     # Не меньше, чем служба их присылает (clips.GONE_MAX): отрезанная причина исчезла бы из тревог
                     # как починенная, а потом пришла бы снова как новая поломка
@@ -448,7 +449,9 @@ def build_status(*, now: datetime, teams: dict[str, str], services: dict | None,
             "clips": {"beat": clips.get("beat"), "started": clips.get("started"),
                       "vk_ok": clip_today.get("vk_ok", 0), "vk_fail": clip_today.get("vk_fail", 0),
                       "vk_error": clip_info.get("vk_error"), "vk_last_ok": clip_info.get("vk_ok"),
-                      "gone": clip_info.get("gone")} if clips else None,
+                      "gone": clip_info.get("gone"),
+                      # сторожа службы (ADR-034): жив ли yt-dlp вне матчей и что в проходе не сошлось
+                      "canary": clip_info.get("canary"), "invariants": clip_info.get("invariants")} if clips else None,
             # видео для админов (ADR-036): сколько вырезано и не вышло за день, очередь заданий
             "cuts": {"beat": cuts.get("beat"), "started": cuts.get("started"), "done": cut_today.get("cuts", 0),
                      "fail": cut_today.get("cut_fail", 0), "error": cut_info.get("cut_error"),
@@ -612,6 +615,19 @@ def problems(status: dict, now: datetime) -> list[dict]:
             bad("clips:vk", f"VK сегодня не отдал ни одной записи трансляции ({n} {word}): "
                 f"{c.get('vk_error') or 'ошибка не записана'}. Обычно лечит новый yt-dlp: "
                 "sudo -u rhl /opt/rhl/venv/bin/pip install -U yt-dlp и systemctl restart clips")
+        # «канарейка» yt-dlp (ADR-034): VK не отдал запись и вне матчей — похоже, сменился плеер, и повторов не
+        # будет уже у следующего матча
+        can = c.get("canary")
+        if isinstance(can, dict) and can.get("ok") is False:
+            why = str(can.get("error") or "ошибка не записана")[:200]
+            bad("clips:canary", f"«Канарейка»: VK не отдаёт запись и когда матчей нет — {why}. Похоже, VK сменил "
+                "плеер: sudo -u rhl /opt/rhl/venv/bin/pip install -U yt-dlp, потом systemctl restart clips cuts")
+        # инварианты прохода (ADR-034): то, чего не может быть, — повод смотреть разбор, а не ждать жалоб
+        for p in (c.get("invariants") or [])[:INV_SHOW]:
+            key = str((p or {}).get("key") or "")[:60] if isinstance(p, dict) else ""
+            text = str((p or {}).get("text") or "").strip()[:300] if isinstance(p, dict) else ""
+            if key and text:
+                bad(f"clips:inv:{key}", f"Разбор голов: {text}")
         # запись удалили из VK: повторов у матча нет, пока человек не пришлёт другую (этап 0.3 плана). Говорим раз
         # на матч (`warn`), ключ — с матчем: запись заменили — придёт «починилось»
         for e in (c.get("gone") or [])[:GONE_SHOW]:

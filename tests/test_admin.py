@@ -283,6 +283,31 @@ class BuildStatusTest(unittest.TestCase):
                                              "DownloadError: HTTP Error 403. Обычно лечит новый yt-dlp"), got)
         self.assertEqual(self.texts(clips={**vk, "days": {"2026-10-03": {"vk_fail": 2}}}), [])   # рано
 
+    def test_canary_and_pass_invariants(self):
+        """ADR-034: «канарейка» yt-dlp (VK не отдаёт запись и вне матчей) и инварианты прохода службы clips."""
+        base = {"beat": ago(minutes=2), "days": {"2026-10-03": {"vk_ok": 1}}}
+        live = {**base, "info": {"canary": {"at": ago(hours=3), "ok": True}}}
+        st = healthy(clips=live)
+        self.assertEqual(st["problems"], [])
+        self.assertEqual(st["system"]["clips"]["canary"]["ok"], True)
+        dead = {**base, "info": {"canary": {"at": ago(hours=2), "ok": False,
+                                            "error": "DownloadError: Unable to extract player"}}}
+        got = self.texts(clips=dead)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0][0], "bad")
+        self.assertIn("Unable to extract player", got[0][1])
+        self.assertIn("pip install -U yt-dlp", got[0][1])
+        inv = [{"key": "order:2026-10-05|kaluga|dinamo-576", "text": "05.10 Калужские Ракеты — Динамо: гол 0:2 на "
+                "43m20s раньше гола 0:1 на 50m00s — секунды не в порядке протокола"},
+               {"key": "cover", "text": "Повторов стало меньше (05.10 Калуга: было 5, стало 3)"}]
+        st = healthy(clips={**base, "info": {"invariants": inv}})
+        got = [(p["level"], p["key"]) for p in st["problems"]]
+        self.assertEqual(got, [("bad", "clips:inv:order:2026-10-05|kaluga|dinamo-576"), ("bad", "clips:inv:cover")])
+        self.assertTrue(st["problems"][0]["text"].startswith("Разбор голов: 05.10"))
+        many = [{"key": f"order:{i}", "text": f"матч {i}: секунды не в порядке"} for i in range(6)]
+        self.assertEqual(len(self.texts(clips={**base, "info": {"invariants": many}})), admin.INV_SHOW)
+        self.assertEqual(self.texts(clips={**base, "info": {"invariants": [{"key": "x"}, None, {"text": "y"}]}}), [])
+
     def test_cuts_service_silent_or_failing(self):
         """ADR-036: служба cuts режет превью и видео для админов — молчит дольше 20 минут или видео подряд не
         вырезаются (после неудач ни одной удачи) — тревога."""

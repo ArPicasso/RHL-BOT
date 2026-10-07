@@ -95,29 +95,33 @@ def font_file() -> str:
     return "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 
-def mark_filter(mark_file: Path, source_file: Path, font: str) -> str:
-    """Кадр — к 720p; справа снизу эмблема 56 px, слева от неё «Навигатор РХЛ» и под ним «Источник: РХЛ». Текст —
-    из файлов: в drawtext двоеточие в тексте пришлось бы экранировать."""
-    pad, icon = 20, 56
-    text_x = f"w-tw-{pad + icon + 12}"
-    return (f"[0:v]scale=-2:720,setsar=1[v];[1:v]scale={icon}:{icon},format=rgba,colorchannelmixer=aa=0.9[logo];"
+def mark_filter(mark_file: Path, source_file: Path, font: str, height: int = 720) -> str:
+    """Кадр — к height (720p у клипа); справа снизу эмблема 56 px, слева от неё «Навигатор РХЛ» и под ним «Источник:
+    РХЛ» — размеры для 720p, у другой высоты — в той же доле кадра (видео для админов — 480p, ADR-036). Текст — из
+    файлов: в drawtext двоеточие в тексте пришлось бы экранировать."""
+    k = height / 720
+    pad, icon, gap, big, small = (round(v * k) for v in (20, 56, 12, 28, 20))
+    text_x = f"w-tw-{pad + icon + gap}"
+    return (f"[0:v]scale=-2:{height},setsar=1[v];[1:v]scale={icon}:{icon},format=rgba,colorchannelmixer=aa=0.9[logo];"
             f"[v][logo]overlay=W-w-{pad}:H-h-{pad}[vl];"
-            f"[vl]drawtext=fontfile='{font}':textfile='{mark_file}':fontsize=28:fontcolor=white:"
+            f"[vl]drawtext=fontfile='{font}':textfile='{mark_file}':fontsize={big}:fontcolor=white:"
             f"shadowcolor=black@0.6:shadowx=2:shadowy=2:x={text_x}:y=h-{pad + icon}-2,"
-            f"drawtext=fontfile='{font}':textfile='{source_file}':fontsize=20:fontcolor=white@0.85:"
-            f"shadowcolor=black@0.6:shadowx=1:shadowy=1:x={text_x}:y=h-{pad}-22[out]")
+            f"drawtext=fontfile='{font}':textfile='{source_file}':fontsize={small}:fontcolor=white@0.85:"
+            f"shadowcolor=black@0.6:shadowx=1:shadowy=1:x={text_x}:y=h-{pad}-{small + 2}[out]")
 
 
-def cut_cmd(src: str, headers: dict | None, start: int, length: int, path: Path, mark: tuple | None = None) -> list[str]:
+def cut_cmd(src: str, headers: dict | None, start: int, length: int, path: Path, mark: tuple | None = None,
+            height: int = 720, crf: int = 23) -> list[str]:
     """ffmpeg: окно записи в mp4. -ss до -i — качается только окно. mark=None — без перекодирования (2А); mark —
-    (файл «Навигатор РХЛ», файл «Источник: РХЛ», шрифт): знак поверх, перекодирование 720p (2Б).
-    faststart — клип начинает играть, не докачавшись."""
+    (файл «Навигатор РХЛ», файл «Источник: РХЛ», шрифт): знак поверх, перекодирование в height (2Б). С перекодированием
+    нулевая секунда файла — ровно start: кнопки «Гол на 0:47» считают от неё. faststart — клип начинает играть, не
+    докачавшись."""
     head = [ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", *header_args(headers), "-ss", str(start), "-i", src]
     if mark is None:
         return [*head, "-t", str(length), "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-bsf:a", "aac_adtstoasc",
                 "-movflags", "+faststart", str(path)]
-    return [*head, "-i", str(ICON), "-t", str(length), "-filter_complex", mark_filter(*mark), "-map", "[out]",
-            "-map", "0:a:0?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+    return [*head, "-i", str(ICON), "-t", str(length), "-filter_complex", mark_filter(*mark, height=height), "-map",
+            "[out]", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf), "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(path)]
 
 

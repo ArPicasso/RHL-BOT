@@ -145,6 +145,15 @@ function system(st, now) {
       esc([`сегодня отдал ${v(c, "vk_ok")}, отказал ${v(c, "vk_fail")}`, v(c, "vk_fail") && c.vk_error ? c.vk_error : ""].filter(Boolean).join(" · ")),
       c.vk_last_ok ? esc(ago(c.vk_last_ok, now)) : "");
   }
+  const k = s.cuts;
+  if (k) {
+    const q = k.queue || {};
+    const failing = v(k, "fail") >= 3 && k.fail_at && (!k.ok_at || toDate(k.fail_at) > toDate(k.ok_at));
+    html += row(minsAgo(k.beat, now) > 10 ? "bad" : "ok", "Пульс службы нарезки", k.started ? esc(`запущена ${ago(k.started, now)}`) : "", esc(ago(k.beat, now)));
+    html += row(failing ? "bad" : v(k, "fail") ? "warn" : v(k, "done") ? "ok" : "", "Видео для админов",
+      esc([`сегодня вырезано ${v(k, "done")}, не вышло ${v(k, "fail")}`, `в очереди ${v(q, "queued")}`, v(k, "fail") && k.error ? k.error : ""].filter(Boolean).join(" · ")),
+      k.ok_at ? esc(ago(k.ok_at, now)) : "");
+  }
   const d = s.disk;
   if (d) html += row(d.free < 1 << 30 ? "bad" : d.free < 3 * (1 << 30) ? "warn" : "ok", "Диск", esc(`свободно ${bytes(d.free)} из ${bytes(d.total)} · state.db ${bytes(d.db)}`), "");
   return html + `</section>`;

@@ -27,7 +27,7 @@ WEEK = 7                # дней на пульте
 
 # службы systemd на сервере (deploy/) и как их называть на пульте
 UNITS = {"bot": "Бот", "live": "Живое", "api": "API", "pages": "Сборка Pages", "clips": "Клипы голов",
-         "tg-tunnel": "Туннель в Telegram", "caddy": "HTTPS (Caddy)"}
+         "cuts": "Нарезка видео", "tg-tunnel": "Туннель в Telegram", "caddy": "HTTPS (Caddy)"}
 # задания GitHub Actions, за которыми следит служба pages
 WORKFLOWS = {"pages.yml": "Мини-апп", "deploy.yml": "Выложить бота", "tests.yml": "Тесты"}
 
@@ -41,6 +41,8 @@ UNBLOCK = {"online.khl.ru": "письмо на access_deny@khl.ru"}   # адре
 DISK_LOW = 1 << 30
 CLIPS_STALE = timedelta(hours=1)   # служба clips пишет пульс после каждого матча и прохода (ADR-030, раздел 7)
 VK_FAILS = 3        # столько раз за день VK не отдал запись и ни разу не отдал — тревога: обычно чинит новый yt-dlp
+CUTS_STALE = timedelta(minutes=10)   # служба cuts пишет пульс раз в минуту и после каждого видео (ADR-036)
+CUT_FAILS = 3       # столько видео за день не вырезалось, и после них ни одно не вышло — тревога
 GONE_SHOW = 8       # удалённых записей в тревоге: о каждой — своя причина, чтобы «починилось» пришло по своей.
                     # Не меньше, чем служба их присылает (clips.GONE_MAX): отрезанная причина исчезла бы из тревог
                     # как починенная, а потом пришла бы снова как новая поломка
@@ -378,7 +380,7 @@ def build_status(*, now: datetime, teams: dict[str, str], services: dict | None,
                  bot: dict | None, pages: dict | None, league_updated: str | None, live_today: dict | None,
                  sources: dict | None, raskat: dict, disk: dict | None, subs, app_counts: dict[str, dict],
                  games: dict, retention: dict | None = None, clips: dict | None = None,
-                 my_players: int | None = None) -> dict:
+                 my_players: int | None = None, cuts: dict | None = None) -> dict:
     """Один ответ пульта. Дни — последние WEEK, новые сверху: счётчики бота, открытия и игры вместе."""
     bot = bot if isinstance(bot, dict) else None
     pages = pages if isinstance(pages, dict) else None
@@ -419,6 +421,10 @@ def build_status(*, now: datetime, teams: dict[str, str], services: dict | None,
     clip_last = next((clip_days[d] for d in sorted(clip_days, reverse=True)
                       if isinstance(clip_days[d], dict) and isinstance(clip_days[d].get("goals"), int)), {})
     clip_info = (clips or {}).get("info") or {}
+    cuts = cuts if isinstance(cuts, dict) else None
+    cut_today = ((cuts or {}).get("days") or {}).get(dates[0])
+    cut_today = cut_today if isinstance(cut_today, dict) else {}
+    cut_info = (cuts or {}).get("info") or {}
     status = {
         "now": iso(now),
         "system": {
@@ -442,6 +448,11 @@ def build_status(*, now: datetime, teams: dict[str, str], services: dict | None,
                       "vk_ok": clip_today.get("vk_ok", 0), "vk_fail": clip_today.get("vk_fail", 0),
                       "vk_error": clip_info.get("vk_error"), "vk_last_ok": clip_info.get("vk_ok"),
                       "gone": clip_info.get("gone")} if clips else None,
+            # видео для админов (ADR-036): сколько вырезано и не вышло за день, очередь заданий
+            "cuts": {"beat": cuts.get("beat"), "started": cuts.get("started"), "done": cut_today.get("cuts", 0),
+                     "fail": cut_today.get("cut_fail", 0), "error": cut_info.get("cut_error"),
+                     "ok_at": cut_info.get("cut_ok"), "fail_at": cut_info.get("cut_fail"),
+                     "queue": cut_info.get("queue")} if cuts else None,
         },
         "audience": {
             "subscribers": total,
@@ -609,6 +620,17 @@ def problems(status: dict, now: datetime) -> list[dict]:
             what = str(e.get("title") or key)[:80]
             warn(f"clips:gone:{key}", f"Записи матча {what} больше нет в VK ({e.get('video') or 'ссылка не записана'}): "
                  "повторов у его голов не будет. Найди другую запись (канал клуба) и пришли ссылку в /replay")
+    k = sysm.get("cuts")
+    if k is not None:
+        age = _ago(k.get("beat"), now)
+        if age is None or age > CUTS_STALE:
+            bad("cuts:beat", f"Служба нарезки видео молчит {_mins(age) if age else 'неизвестно сколько'}: превью голов "
+                "админам не режутся. Проверь systemctl status cuts")
+        ok, fail, n = parse_iso(k.get("ok_at")), parse_iso(k.get("fail_at")), k.get("fail") or 0
+        if n >= CUT_FAILS and fail and (not ok or fail > ok):
+            bad("cuts:fail", f"Нарезка видео не выходит: сегодня не вырезалось {n} видео, после них — ни одного. "
+                f"Последняя ошибка: {k.get('error') or 'не записана'}. Если отказывает VK — обычно лечит новый yt-dlp: "
+                "sudo -u rhl /opt/rhl/venv/bin/pip install -U yt-dlp и systemctl restart cuts")
     d = sysm.get("disk") or {}
     if d.get("free") is not None and d["free"] < DISK_LOW:
         bad("disk", f"На диске меньше 1 ГБ: {d['free'] // (1 << 20)} МБ")

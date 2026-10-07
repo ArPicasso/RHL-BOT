@@ -1,0 +1,36 @@
+# Служба cuts (cuts.py, ADR-036): вырезает кусок записи матча в mp4 для админов и помощников — превью голов и видео
+# по запросу бота. Задания — таблица cut_jobs в /opt/rhl/state.db, файлы — /opt/rhl/media/cuts/.
+# Качает окно записи и перекодирует (ffmpeg, yt-dlp): приоритет ниже бота, live и api, но выше clips — видео ждёт
+# человек, а разбор записи подождёт. Ставит и перезапускает rhl-update (deploy/update.sh).
+[Unit]
+Description=RHL U21 video cuts for admins (cuts.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rhl
+Group=rhl
+WorkingDirectory=/opt/rhl
+EnvironmentFile=/etc/rhl/bot.env
+ExecStart=/opt/rhl/venv/bin/python cuts.py
+Restart=always
+RestartSec=30
+UMask=0027
+Nice=10
+CPUQuota=100%
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/rhl
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

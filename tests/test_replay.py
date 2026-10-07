@@ -574,6 +574,31 @@ class Previews(unittest.TestCase):
         kw = bot.send_video.call_args_list[0].kwargs
         self.assertEqual((kw["duration"], kw["width"], kw["height"]), (125, 640, 360))   # без них в чате «0:01»
 
+    def test_preview_from_cut_job(self):
+        """07.10 (ADR-036): превью режет служба cuts — бот ждёт готовое задание и шлёт его файл с его размерами."""
+        import asyncio
+        import sqlite3
+        import cutjobs
+        conn = sqlite3.connect(self.dir / "state.db", isolation_level=None)
+        self.addCleanup(conn.close)
+        jobs = cutjobs.CutJobs(conn, self.dir)
+        job = jobs.want(self.now, VIDEO, 1500, 125, "preview", prio=cutjobs.SEND)
+        self.ask.pop("file")
+        self.ask["job"] = job
+        (self.dir / "clips.json").write_text(json.dumps(self.clips), encoding="utf-8")
+        bot = mock.Mock()
+        bot.send_video = mock.AsyncMock(return_value=mock.Mock(message_id=5, video=mock.Mock(file_id="F")))
+        with mock.patch.object(self.bot.asyncio, "sleep", mock.AsyncMock()):
+            self.assertEqual(asyncio.run(self.bot.preview_step(bot, self.now)), 0)   # ещё режется
+            jobs.take(self.now)
+            (self.dir / "media" / "cuts").mkdir(parents=True)
+            (self.dir / "media" / "cuts" / f"{job}.mp4").write_bytes(b"video")
+            jobs.done(job, self.now, f"media/cuts/{job}.mp4", 854, 480, 125)
+            self.assertEqual(asyncio.run(self.bot.preview_step(bot, self.now)), 1)
+        kw = bot.send_video.call_args_list[0].kwargs
+        self.assertEqual((kw["duration"], kw["width"], kw["height"]), (125, 854, 480))
+        self.assertEqual(Path(bot.send_video.call_args_list[0].args[1].path), self.dir / "media" / "cuts" / f"{job}.mp4")
+
     def test_old_preview_replaced(self):
         import asyncio
         (self.dir / "previews.json").write_text(json.dumps({f"{GAME['key']}|1:0": {

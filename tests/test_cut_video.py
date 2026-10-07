@@ -341,6 +341,30 @@ class Answers(Base):
         g = next(x for x in board["goals"] if x["score"] == "1:0")
         self.assertEqual((g["exact"], g["src"]), (False, "change"))
 
+    def test_own_second_has_no_confirm_button(self):
+        """Ревью PR #140: 30 с сразу после своей отметки — «✅ Гол виден» там не кнопка: своя же секунда даёт одного
+        свидетеля, а не двух. Остаются «⏪ / ⏩» и «🚫»."""
+        plan = {"kind": "exact", "video": VIDEO, "length": 9000, "key": KEY, "score": "1:0", "t": 2600,
+                "src": "admin", "own": True, "windows": [(*cutjobs.review_window(2600, 9000), "гол")]}
+        texts = [b.text for row in self.bot.cut_kb(plan, [1]).inline_keyboard for b in row]
+        self.assertEqual(texts, ["⏪ Гол раньше", "⏩ Гол позже", "🚫 Гола нет в записи"])
+        self.assertIn("подтверждает кто-то другой", self.bot.cut_caption(plan, PROTOCOL)[0])
+        shared = {**plan, "own": False}
+        self.assertIn("✅ Гол виден", [b.text for row in self.bot.cut_kb(shared, [1]).inline_keyboard for b in row])
+
+    def test_replay_text_notes(self):
+        """Ревью PR #140: секунде возразили — в /replay у неё «гола тут нет», а не вечное «не проверено»; пометка у
+        гола без повтора начинается с тире, а не с точки."""
+        self.clips({**BOARD, "clips": {"2:1": {"t": 4000, "team": "home"}}})
+        self.mark("1:0", 2600)
+        self.bot.add_mark(KEY, "1:0", "reject", self.now, 761, "video", PROTOCOL, video=VIDEO, sec=2600)
+        self.bot.marks_apply(KEY, GAME, self.now, PROTOCOL)
+        lines = self.bot.replay_text("2026-10-03", GAME, self.bot.load_replays()["games"][KEY], PROTOCOL).split("\n")
+        first = next(x for x in lines if x.startswith("1. "))
+        self.assertIn("❌ гола тут нет", first)
+        self.assertNotIn("не проверено", first)
+        self.assertTrue(next(x for x in lines if x.startswith("3. ")).endswith(" — 🎬 клип"))
+
     def test_old_recording_button_refused(self):
         """Ревью PR #139: видео из прежней записи — кнопка под ним не переключает матч обратно на неё."""
         job = self.job("1:1")

@@ -476,9 +476,10 @@ class Cutting(unittest.TestCase):
         self.assertEqual(clips.clip_witnesses(checked, admin)["0:1"], (2590, "admin", "admin+board"))
         unknown = {**one, "checks": {"0:1": {"t": 2590, "status": "unknown"}}}
         self.assertEqual(clips.clip_witnesses(unknown, admin), {})       # нечем проверить — один человек
-        seen = {**admin, "confirm": {"0:1": [2590]}}                     # посмотрел 30 с — «✅ Гол виден»
+        seen = {**admin, "confirm": {"0:1": [2590]}}                     # 30 с посмотрел другой — «✅ Гол виден»
         self.assertEqual(clips.clip_witnesses(unknown, seen)["0:1"][2], "seen")
         self.assertEqual(clips.clip_witnesses(one, {"video": VIDEO, "confirm": {"0:1": [2600]}})["0:1"][2], "seen")
+        # «✅» от того, кто сам поставил эту секунду, в confirm не попадает (marks.own_confirm) — тест в test_marks
 
     def test_objection_takes_clip_down(self):
         """Свидетель возразил уже выложенному клипу — клип снимается сразу (ADR-033, раздел 4)."""
@@ -1019,6 +1020,16 @@ class Prepared(unittest.TestCase):
         other = {**admin, "video": "https://vk.com/video-9_9"}               # отметки к другому ролику
         self.assertEqual(clips.cut_wants(game, other), [(2580, 30, "1:0", "review"), (3480, 30, "1:1", "review"),
                                                          (5580, 30, "2:2", "review")])
+
+    def test_two_witnesses_wait_only_for_the_clip(self):
+        """1.3 плана: у гола два свидетеля — людям смотреть его не надо, окно в очередь cuts не ставим."""
+        game = {"video": VIDEO, "status": "ok", "length": 9000, "run": {"confirmed": ["2:0"]}, "goals": {
+            "1:0": {"t": 2600, "src": "run", "change": 2620},       # часы встали там, где по протоколу — двое
+            "2:0": {"t": 3500, "src": "clock", "change": 3520},     # табло и ход часов сошлись — двое
+            "3:0": {"t": 4400, "src": "clock", "change": 4420}}}    # табло одно — свидетель один
+        self.assertEqual(clips.cut_wants(game, None), [(4380, 30, "3:0", "review")])
+        seen = {"video": VIDEO, "confirm": {"3:0": [4400]}}          # человек посмотрел 30 с: «✅ Гол виден»
+        self.assertEqual(clips.cut_wants(game, seen), [])
 
     def test_recent_matches_only_once(self):
         goals = {"1:0": {"t": 2600, "src": "clock", "change": 2620}}

@@ -292,6 +292,8 @@ def with_board(entry: dict | None, board: dict | None) -> dict | None:
     секунды табло к нему не подходят, остаётся запись админа.
     Спор (ADR-033): отметка человека не сошлась с табло или ходом часов (`checks` службы) — точной секунды у гола нет
     ни от человека, ни от табло: повтор примерный, по окну или смене счёта, нет их — с отметки человека, но «≈».
+    Опора, которой человек возразил на её 30 с («⏪ / ⏩ гола тут нет», ADR-033, раздел 4), — как спор: сама не точная,
+    а секунда табло у этого гола, если она другая, повтору годится.
     Записи больше нет в VK (`status: gone` у службы, этап 0.3 плана) — повторов у матча нет совсем: ссылка на удалённый
     ролик никуда не ведёт. Запись админа — другой ролик: его повторы остаются. Человек отметил гол после того, как
     служба сказала «записи нет» (`updated` отметок позже `scanned` разбора), — значит у него запись открывается:
@@ -306,10 +308,12 @@ def with_board(entry: dict | None, board: dict | None) -> dict | None:
     if not goals or not video or (entry and not same_video(entry.get("video"), video)):
         return entry
     spor = disputed(entry, board)
-    admin = {s: t for s, t in ((entry or {}).get("anchors") or {}).items() if s not in spor}
+    anchors = (entry or {}).get("anchors") or {}
+    nope = {s for s, t in anchors.items() if objected((entry or {}).get("reject"), s, t)}
+    admin = {s: t for s, t in anchors.items() if s not in spor and s not in nope}
     off = board_off(entry, goals)
     out = {g["score"]: g for g in (entry or {}).get("goals") or [] if isinstance(g, dict) and g.get("score")}
-    for s in spor:
+    for s in spor | nope:
         if s in out:
             out[s] = {**out[s], "exact": False, "src": "dispute"}
     for score, b in goals.items():

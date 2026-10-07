@@ -847,9 +847,12 @@ def cut_wants(game: dict, admin_e: dict | None) -> list[tuple[int, int, str, str
             out.append((*cutjobs.review_window(int(b["t"]), length), score, "review"))
         elif isinstance(b.get("change"), (int, float)):
             out.append((*preview_window(b["change"], length), score, "preview"))
+    witnesses = clip_witnesses(game, admin_e)
     for score, (t, src) in sorted(goal_seconds(game, admin_e).items()):
+        if score in witnesses:
+            continue   # два свидетеля — гол ждёт только клипа, смотреть его людям уже не надо
         if src == "admin" and (checks.get(score) or {}).get("status") != "unknown":
-            continue   # проверена — два свидетеля; спор — выше; проверка впереди — подождём вердикта
+            continue   # спор — выше; проверка впереди — подождём вердикта
         out.append((*cutjobs.review_window(t, length), score, "review"))
     return out
 
@@ -932,7 +935,8 @@ def clip_witnesses(game: dict, admin: dict | None) -> dict[str, tuple[int, str, 
     - секунда по ходу часов (`run`): часы встали ровно там, где по протоколу от другого точного гола;
     - секунда табло (часы, задержка) и ход часов от другого точного гола периода — пара сошлась в самопроверке;
     - человек посмотрел 30 с вокруг этой секунды и нажал «✅ Гол виден», а ни один свидетель не возражает (спор,
-      «нет в записи», «табло сбилось» и «гола тут нет» goal_seconds уже убрал)."""
+      «нет в записи», «табло сбилось» и «гола тут нет» goal_seconds уже убрал). Свидетели независимы: подтверждения
+      своей же секунды в `confirm` нет — их не пускает журнал отметок (`marks.own_confirm`)."""
     seconds = goal_seconds(game, admin)
     mine = bool(admin) and replay.same_video(admin.get("video"), game.get("video"))
     checks = game.get("checks") or {}

@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import admin  # noqa: E402
+import clips  # noqa: E402
 import predict  # noqa: E402
 from raskat_store import RaskatStore  # noqa: E402
 
@@ -304,8 +305,10 @@ class BuildStatusTest(unittest.TestCase):
         got = [(p["level"], p["key"]) for p in st["problems"]]
         self.assertEqual(got, [("bad", "clips:inv:order:2026-10-05|kaluga|dinamo-576"), ("bad", "clips:inv:cover")])
         self.assertTrue(st["problems"][0]["text"].startswith("Разбор голов: 05.10"))
-        many = [{"key": f"order:{i}", "text": f"матч {i}: секунды не в порядке"} for i in range(6)]
+        many = [{"key": f"order:{i}", "text": f"матч {i}: секунды не в порядке"} for i in range(8)]
         self.assertEqual(len(self.texts(clips={**base, "info": {"invariants": many}})), admin.INV_SHOW)
+        # ревью PR #141: показываем не меньше, чем служба присылает, — иначе отрезанный пришёл бы как починенный
+        self.assertGreaterEqual(admin.INV_SHOW, clips.INV_MAX)
         self.assertEqual(self.texts(clips={**base, "info": {"invariants": [{"key": "x"}, None, {"text": "y"}]}}), [])
 
     def test_cuts_service_silent_or_failing(self):

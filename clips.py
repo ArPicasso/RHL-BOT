@@ -1249,10 +1249,14 @@ def cover_drop(store: dict, now: datetime) -> list[dict]:
     day = now.date().isoformat()
     top = store.get("cover_top") if isinstance(store.get("cover_top"), dict) else {}
     was = top.get("games") if top.get("day") == day and isinstance(top.get("games"), dict) else {}
-    have = {k: (e.get("replays") or 0) for k, e in cover.items()
+    was = {k: v for k, v in was.items() if isinstance(v, list) and len(v) == 2}
+    have = {k: [e.get("replays") or 0, e.get("goals") or 0] for k, e in cover.items()
             if isinstance(e, dict) and e.get("why") != "gone"}
-    fell = {k: (was[k], n) for k, n in have.items() if isinstance(was.get(k), int) and n < was[k]}
-    store["cover_top"] = {"day": day, "games": {k: max(n, was.get(k) or 0) for k, n in have.items()}}
+    # голов у матча стало другое число — лига поправила протокол (гол отменили, счета сдвинулись): это не потеря
+    fell = {k: (was[k][0], n) for k, (n, goals) in have.items()
+            if k in was and goals == was[k][1] and n < was[k][0]}
+    store["cover_top"] = {"day": day, "games": {k: [max(n, was[k][0]) if k in was and goals == was[k][1] else n, goals]
+                                                for k, (n, goals) in have.items()}}
     if not fell:
         return []
     what = ", ".join(f"{k}: было {a}, стало {b}" for k, (a, b) in sorted(fell.items()))
@@ -1326,12 +1330,14 @@ def canary_pass(store: dict, now: datetime, check=stream, track: "admin.Tracker 
     """«Канарейка» yt-dlp (ADR-034): раз в сутки спрашиваем VK об одной уже разобранной записи — даже когда
     разбирать нечего. VK меняет плеер, yt-dlp перестаёт отдавать записи, и в день без матчей об этом некому
     сказать: проход ничего не качает, счётчики пульта пустые, а на следующем матче повторов уже не будет.
-    Записи больше нет в VK — это ответ по делу, значит yt-dlp жив. None — не пора или спрашивать нечего."""
+    Записи больше нет в VK — это ответ по делу, значит yt-dlp жив. None — не пора или спрашивать нечего.
+    Спрашиваем только о записи, которую служба уже разобрала (`ok`, `no_board`): запись, которая и раньше не
+    скачивалась (`error` — приватная, не для этой страны), каждый день давала бы одну и ту же тревогу не о том."""
     if not canary_due(store, now):
         return None
     pick = next(((k, e) for k, e in sorted((store.get("games") or {}).items(), reverse=True)
                  if isinstance(e, dict) and isinstance(e.get("video"), str)
-                 and e.get("status") not in ("wait", "gone")), None)
+                 and e.get("status") in ("ok", "no_board")), None)
     if pick is None:
         return None
     key, game = pick
@@ -1345,10 +1351,10 @@ def canary_pass(store: dict, now: datetime, check=stream, track: "admin.Tracker 
         else:
             got.update(ok=False, error=f"{type(err).__name__}: {err}"[:200])
             log.warning("канарейка: VK не отдал запись %s — %s", game["video"], got["error"])
-            vk_note(track, err)
     else:
         log.info("канарейка: VK отдал запись %s", game["video"])
-        vk_note(track, None)
+    # счётчики дня (`vk_ok`, `vk_fail`) канарейка не трогает: это запрос о старой записи, а по ним считается
+    # тревога «VK сегодня не отдал ни одной записи» — удачная канарейка глушила бы её на весь день
     store["canary"] = got
     store["updated"] = now_msk().isoformat(timespec="seconds")
     write_atomic(LIVE_DIR / "clips.json", store)

@@ -1111,17 +1111,27 @@ class Watchdogs(unittest.TestCase):
         self.assertIn("раньше смены счёта", got[0]["text"])
 
     def test_coverage_must_not_drop(self):
-        store = {"coverage": {KEY: {"replays": 5, "why": "ok"}}}
+        store = {"coverage": {KEY: {"replays": 5, "goals": 5, "why": "ok"}}}
         self.assertEqual(clips.cover_drop(store, self.now), [])        # первый счёт — он и максимум
-        self.assertEqual(store["cover_top"], {"day": "2026-10-08", "games": {KEY: 5}})
+        self.assertEqual(store["cover_top"], {"day": "2026-10-08", "games": {KEY: [5, 5]}})
         store["coverage"][KEY]["replays"] = 3
         got = clips.cover_drop(store, self.now)
         self.assertEqual([p["key"] for p in got], ["cover"])
         self.assertIn("было 5, стало 3", got[0]["text"])
         self.assertEqual(clips.cover_drop(store, self.now + timedelta(days=1)), [])   # новый день — счёт заново
-        store["coverage"][KEY] = {"replays": 0, "why": "gone"}         # запись удалили — об этом своя тревога
+        store["coverage"][KEY] = {"replays": 0, "goals": 5, "why": "gone"}   # запись удалили — об этом своя тревога
         self.assertEqual(clips.cover_drop(store, self.now + timedelta(days=1)), [])
         self.assertNotIn(KEY, store["cover_top"]["games"])              # вернётся запись — потерей это не будет
+
+    def test_protocol_fix_is_not_a_loss(self):
+        """Ревью PR #141: лига отменила гол — голов у матча стало меньше, и повторов тоже. Это не потеря разбора."""
+        store = {"coverage": {KEY: {"replays": 5, "goals": 5, "why": "ok"}}}
+        self.assertEqual(clips.cover_drop(store, self.now), [])
+        store["coverage"][KEY] = {"replays": 4, "goals": 4, "why": "ok"}   # гол отменили, счета сдвинулись
+        self.assertEqual(clips.cover_drop(store, self.now), [])
+        self.assertEqual(store["cover_top"]["games"][KEY], [4, 4])         # считаем от нового протокола
+        store["coverage"][KEY] = {"replays": 2, "goals": 4, "why": "ok"}   # голов столько же, повторов меньше
+        self.assertEqual([p["key"] for p in clips.cover_drop(store, self.now)], ["cover"])
 
     def test_pass_writes_invariants_to_the_pult(self):
         store = {"games": {KEY: {"video": VIDEO, "status": "ok", "goals": {
@@ -1150,7 +1160,23 @@ class Watchdogs(unittest.TestCase):
             said = json.loads((Path(tmp) / "clips.json").read_text(encoding="utf-8"))
         self.assertIn("Unable to extract", store["canary"]["error"])
         self.assertEqual(said["info"]["canary"]["ok"], False)
-        self.assertEqual(said["days"]["2026-10-08"]["vk_fail"], 1)   # отказ VK — в счётчик дня, как у разбора
+        # ревью PR #141: счётчики дня канарейка не трогает — по ним считается «VK сегодня не отдал ни одной записи»
+        self.assertEqual(said["days"], {})
+
+    def test_canary_asks_only_about_a_parsed_recording(self):
+        """Ревью PR #141: запись, которая и раньше не скачивалась (приватная, не для этой страны), каждый день
+        давала бы одну и ту же тревогу не о том — канарейка спрашивает о разобранной."""
+        store = {"games": {
+            "2026-10-07|kaluga|dinamo-576": {"video": "https://vk.com/video-7_7", "status": "error", "tries": 3},
+            KEY: {"video": VIDEO, "status": "no_board", "goals": {}}}}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            check = mock.Mock(return_value=("http://x", {}, 7200))
+            self.assertIs(clips.canary_pass(store, self.now, check=check), True)
+        self.assertEqual(check.call_args.args[0], VIDEO)
+        only_bad = {"games": {"2026-10-07|kaluga|dinamo-576": {"video": "https://vk.com/video-7_7",
+                                                               "status": "error", "tries": 3}}}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            self.assertIsNone(clips.canary_pass(only_bad, self.now, check=mock.Mock()))
 
     def test_canary_counts_a_deleted_recording_as_an_answer(self):
         store = {"games": {KEY: {"video": VIDEO, "status": "ok", "goals": {}}}}

@@ -131,6 +131,19 @@ class Letters(unittest.TestCase):
         self.assertIn("🔴 <b>Сломалось</b>", self.sent[0])
         self.assertIn("(с 03:00)", self.sent[0])                # ночь не потеряна: лежит с трёх
 
+    def test_undelivered_letter_is_not_remembered(self):
+        """Ревью PR #141: письмо не дошло ни до кого (Telegram молчит) — не помним, что сказали, иначе поломка
+        потеряется: следующий обход считал бы её уже рассказанной."""
+        def dead(url, data):
+            raise RuntimeError("Connection reset by peer")
+        state = guard.run(api=API, pages="", token="", chats=[1001], bot_token="тк", now=NOW,
+                          state_file=self.dir / "state.json", fetch=answers(), post=dead)
+        self.assertEqual(state["said"], {})
+        (self.dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+        self.run_once(NOW + timedelta(minutes=15), answers())
+        self.assertEqual(len(self.sent), 1)                     # дошло со второго раза — и как «Сломалось»
+        self.assertIn("🔴 <b>Сломалось</b>", self.sent[0])
+
     def test_nobody_to_write_to(self):
         state = guard.run(api=API, pages="", token="", chats=[], bot_token="", now=NOW,
                              state_file=self.dir / "state.json", fetch=answers(),
@@ -146,6 +159,27 @@ class Letters(unittest.TestCase):
             self.sent.append(data["text"])
         self.assertEqual(guard.send("тк", [1, 2], "текст", post=post), 1)
         self.assertEqual(self.sent, ["текст"])
+
+
+class BigFile(unittest.TestCase):
+    """Ревью PR #141: данные мини-аппа больше, чем сторож читает, — он говорит об этом, а не молчит."""
+
+    def setUp(self):
+        p = mock.patch.object(guard.time, "sleep")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_truncated_or_alien_file(self):
+        cut = {"code": 200, "body": "{\"updated\": \"2026-10", "cut": True}
+        got = guard.look("", PAGES, NOW, fetch=answers(**{LEAGUE: cut}))
+        self.assertEqual([p["key"] for p in got], ["pages:updated"])
+        self.assertIn("больше 8 МБ", got[0]["text"])
+        alien = {"code": 200, "body": "<html>не наша сборка</html>"}
+        got = guard.look("", PAGES, NOW, fetch=answers(**{LEAGUE: alien}))
+        self.assertIn("это не JSON нашей сборки", got[0]["text"])
+        empty = {"code": 200, "body": json.dumps({"games": []})}
+        got = guard.look("", PAGES, NOW, fetch=answers(**{LEAGUE: empty}))
+        self.assertIn("нет времени сборки", got[0]["text"])
 
 
 class Chats(unittest.TestCase):

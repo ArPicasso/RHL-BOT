@@ -35,6 +35,7 @@ log = logging.getLogger("guard")
 TRIES = 3                                  # промах бывает: спрашиваем трижды, прежде чем звать на помощь
 PAUSE = 10                                 # с между попытками
 TIMEOUT = 20                               # с на запрос
+LIMIT = 8 << 20                            # байт тела ответа: league.json сезона — четверть мегабайта, с запасом
 STATE_FILE = Path(os.environ.get("GUARD_STATE") or "guard_state.json")
 HEADS = {"broke": "🔴 <b>Сломалось</b>", "still": "🔴 <b>Не починилось</b>",
          "watch": "🟡 <b>Посмотреть</b>", "fixed": "✅ <b>Починилось</b>"}
@@ -44,13 +45,16 @@ TG_API = "https://api.telegram.org"
 
 
 def get(url: str, token: str = "", timeout: int = TIMEOUT) -> dict:
-    """Запрос GET: {"code", "body"} или {"error"}. Токен — заголовком Bearer (пульт агента)."""
+    """Запрос GET: {"code", "body"} или {"error"}. Тело длиннее LIMIT — `cut`: по обрезанному JSON ничего не скажем,
+    и сторож говорит об этом, а не молчит. Токен — заголовком Bearer (пульт агента)."""
     req = urllib.request.Request(url, headers={"User-Agent": "rhl-guard"})
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return {"code": r.status, "body": r.read(1 << 20).decode("utf-8", "replace")}
+            body = r.read(LIMIT + 1)
+            return {"code": r.status, "body": body[:LIMIT].decode("utf-8", "replace"),
+                    **({"cut": True} if len(body) > LIMIT else {})}
     except urllib.error.HTTPError as err:
         return {"code": err.code, "body": "", "error": f"ответ {err.code}"}
     except Exception as err:   # таймаут, DNS, оборванное соединение
@@ -112,8 +116,11 @@ def league_problems(url: str, got: dict, now: datetime) -> list[dict]:
     data = body_json(got)
     at = admin.parse_iso((data or {}).get("updated")) if isinstance(data, dict) else None
     if at is None:
+        why = (f"файл больше {LIMIT >> 20} МБ — сторож его не читает" if got.get("cut")
+               else "это не JSON нашей сборки" if not isinstance(data, dict) else "в нём нет времени сборки")
         return [{"level": "warn", "key": "pages:updated",
-                 "text": f"В данных мини-аппа ({url}) нет времени сборки — файл собран не нашей сборкой"}]
+                 "text": f"По данным мини-аппа ({url}) не видно, когда их собрали: {why}. Пока так, сторож не "
+                         "скажет, что мини-апп встал"}]
     age = now - at
     if age > admin.LEAGUE_STALE and not quiet(now):
         return [{"level": "bad", "key": "pages:stale",
@@ -206,6 +213,9 @@ def run(api: str, pages: str, token: str, chats: list[int], bot_token: str, now:
     if groups and not quiet(now) and bot_token and chats:
         got = send(bot_token, chats, message(groups), post=post)
         log.info("письмо ушло: получили %d из %d", got, len(chats))
+        if not got:   # не дошло ни до кого — не помним, что сказали: скажем в следующий обход (как bot.alerts_step)
+            log.error("письмо не дошло ни до кого — повторим через 15 минут")
+            return {"said": was.get("said") if isinstance(was.get("said"), dict) else {}, "seen": seen}
     elif groups and quiet(now):
         log.info("ночь (2:00–7:00 МСК) — не пишем, скажем утром: %s", ", ".join(sorted(p["key"] for p in found)))
         return {"said": was.get("said") if isinstance(was.get("said"), dict) else {}, "seen": seen}

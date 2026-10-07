@@ -33,6 +33,7 @@ CHANGE_BEFORE = 120  # с записи до смены счёта на табл�
 CHANGE_AFTER = 5     # и после смены
 RUN_BEFORE, RUN_AFTER = 20, 10   # вокруг окна счёта хода часов (ADR-031)
 SEARCH = 180         # с: окно поиска гола и шаг «⏪ 3 мин раньше / ⏩ позже» (ADR-036, раздел 1)
+STEP_EXACT = 120     # с: «⏪ Гол раньше / ⏩ позже» под 30 с точной секунды — 2 минуты до или после клипа
 DIR = "media/cuts"   # файлы — от корня проекта, по номеру задания
 
 _VIDEO_RE = re.compile(r"(?:video|live)(-?\d{1,12})_(\d{1,12})")   # как replay._VIDEO_RE
@@ -108,12 +109,13 @@ def search_window(est: float, length: float | None = None) -> tuple[int, int]:
     return _clamp(start, start + SEARCH, length)
 
 
-def neighbour(start: int, length_: int, step: int, length: float | None = None) -> tuple[int, int] | None:
-    """Соседнее окно поиска: step −1 — SEARCH секунд до начала окна, +1 — SEARCH после его конца. Дальше записи — None."""
+def neighbour(start: int, length_: int, step: int, length: float | None = None,
+              span: int = SEARCH) -> tuple[int, int] | None:
+    """Соседнее окно поиска: step −1 — span секунд до начала окна, +1 — span после его конца. Дальше записи — None."""
     if step < 0:
-        return None if start <= 0 else _clamp(start - SEARCH, start, length)
+        return None if start <= 0 else _clamp(start - span, start, length)
     end = start + length_
-    return None if length and end >= length else _clamp(end, end + SEARCH, length)
+    return None if length and end >= length else _clamp(end, end + span, length)
 
 
 def _iso(dt: datetime) -> str:

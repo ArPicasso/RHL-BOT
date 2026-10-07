@@ -2624,7 +2624,7 @@ async def preview_answer(bot: Bot, cid: int, key: str, score: str, ask: dict, vi
     await preview_done(bot, key, score, sec, video)
     # 30 с результата (ADR-036): ответ на превью сразу виден тем, что увидят болельщики. Отметка уже записана —
     # видео не вышло, ответ от этого не теряется
-    length = clips_game(key).get("length")
+    length = video_length(key, video)
     try:
         await goal_video(bot, cid, {"kind": "exact", "video": video, "length": length, "key": key, "score": score,
                                     "t": sec, "src": "admin", "windows": [(*cutjobs.review_window(sec, length), "гол")]},
@@ -2683,6 +2683,13 @@ def clips_game(key: str) -> dict:
     return ((read_live("clips.json") or {}).get("games") or {}).get(key) or {}
 
 
+def video_length(key: str, video: str) -> int | None:
+    """Длина записи — от службы clips, если она разбирала этот самый ролик: у ссылки админа на другую запись длины
+    не знаем, и окна по чужой длине обрезались бы."""
+    board = clips_game(key)
+    return board.get("length") if replay.same_video(board.get("video"), video) else None
+
+
 def goal_estimate(score: str, known: dict[str, int], protocol: list[dict] | None,
                   length: float | None = None) -> int | None:
     """Где гол в записи, если ни табло, ни люди его не нашли: от ближайшего по часам гола с известной секундой —
@@ -2694,10 +2701,6 @@ def goal_estimate(score: str, known: dict[str, int], protocol: list[dict] | None
     gs = clockrun.game_sec(me.get("time"))
     if gs is None:
         return None
-    if not known:
-        per = int(me["period"]) if str(me.get("period") or "").isdigit() else gs // 1200 + 1
-        est = PRE_SHOW + round(gs * SEARCH_STRETCH) + (per - 1) * PERIOD_GAP
-        return min(est, int(length)) if length else est
     best = None
     for s, t in known.items():
         o = info.get(s) or {}
@@ -2711,7 +2714,11 @@ def goal_estimate(score: str, known: dict[str, int], protocol: list[dict] | None
             if not same and str(me.get("period")).isdigit() and str(o.get("period")).isdigit():
                 gap = (int(me["period"]) - int(o["period"])) * PERIOD_GAP
             best = (cost, t + round((gs - go) * SEARCH_STRETCH) + gap)
-    return max(0, best[1]) if best else None
+    if best:
+        return max(0, best[1])
+    per = int(me["period"]) if str(me.get("period") or "").isdigit() else gs // 1200 + 1
+    est = PRE_SHOW + round(gs * SEARCH_STRETCH) + (per - 1) * PERIOD_GAP
+    return min(est, int(length)) if length else est
 
 
 def goal_plan(key: str, score: str, protocol: list[dict] | None = None, video: str | None = None) -> dict | None:
@@ -2766,7 +2773,7 @@ def goal_plan(key: str, score: str, protocol: list[dict] | None = None, video: s
         else:   # расчёт от отметки того же периода по времени сайта лиги
             w, how = cutjobs.search_window(r["t"] + replay.GUESS_LEAD, length), "по времени сайта лиги от соседнего гола"
         return {**base, "kind": "approx", "windows": [(*w, how)], "cand": cand[-CANDIDATE_MAX:]}
-    known = {x["score"]: x["t"] + (replay.EXACT_LEAD if x.get("exact") else replay.GUESS_LEAD)
+    known = {x["score"]: known_second(x, ((board.get("goals") or {}).get(x["score"]) or {}) if same else {})
              for x in entry.get("goals") or [] if num(x.get("t"))}
     est = goal_estimate(score, known, protocol, length)
     if est is None:
@@ -2775,6 +2782,18 @@ def goal_plan(key: str, score: str, protocol: list[dict] | None = None, video: s
 
 
 CANDIDATE_MAX = 3   # кнопок «Гол на …» под видео
+
+
+def known_second(x: dict, bg: dict) -> int:
+    """Где в записи гол с повтором, для оценки соседних: точный — его секунда; по ходу часов — середина окна; по смене
+    счёта — за 45 с до неё (оператор меняет счёт через 0–90 с); расчётный — без запаса GUESS_LEAD."""
+    if x.get("exact"):
+        return x["t"] + replay.EXACT_LEAD
+    if x.get("src") == "win" and isinstance(bg.get("win"), list) and len(bg["win"]) == 2:
+        return (int(bg["win"][0]) + int(bg["win"][1])) // 2
+    if x.get("src") == "change" and isinstance(bg.get("change"), (int, float)):
+        return max(0, int(bg["change"]) - 45)
+    return x["t"] + replay.GUESS_LEAD
 
 
 def goal_head(key: str, score: str, protocol: list[dict] | None = None) -> str:
@@ -2788,10 +2807,20 @@ def goal_head(key: str, score: str, protocol: list[dict] | None = None) -> str:
             f"<b>{html.escape(score)}</b>{per}{who}")
 
 
+def cv_data(job: int, act: str, arg: int | None, score: str) -> str:
+    """Кнопка под видео: задание, действие, секунда и гол. Гол — в кнопке, а не из задания: одно окно записи бывает у
+    двух голов (одна смена табло на два гола подряд, ADR-031), а задание помнит того, кто попросил окно первым."""
+    return f"cv:{job}:{act}:{'' if arg is None else arg}:{score.replace(':', '-')}"
+
+
 def cut_kb(plan: dict, jobs: list[int]) -> InlineKeyboardMarkup:
     """Кнопки под видео гола: ответ человека по таблице ADR-036, раздел 1."""
     j = jobs[0]
-    b = lambda text, data: InlineKeyboardButton(text=text, callback_data=f"cv:{data}")   # noqa: E731
+    sc = plan["score"]
+
+    def b(text: str, data: str) -> InlineKeyboardButton:
+        job, act, *arg = data.split(":")
+        return InlineKeyboardButton(text=text, callback_data=cv_data(int(job), act, int(arg[0]) if arg else None, sc))
     kind = plan["kind"]
     if kind == "exact":
         rows = [[b("✅ Гол виден", f"{j}:y:{plan['t']}")],
@@ -2856,19 +2885,30 @@ def cut_jobs_for(plan: dict, now: datetime, prio: int = cutjobs.URGENT) -> list[
     return jobs
 
 
-def cut_state(ids: list[int]) -> tuple[list[dict] | None, str]:
-    """Готовы ли задания: (задания с файлами, «») — все готовы; (None, ошибка) — какое-то не вырежется; (None, «»)
-    — ещё режутся."""
+def cut_split(ids: list[int]) -> tuple[list[dict], list[str], int]:
+    """Задания по состоянию: (готовые с файлами, ошибки тех, что не вырежутся, сколько ещё режется)."""
     store = cut_store()
-    jobs = [store.get(i) for i in ids] if store else []
-    if not jobs or any(j is None for j in jobs):
-        return None, "задание пропало из очереди"
-    for j in jobs:
-        if j["status"] == "error" and j["tries"] >= cutjobs.TRIES:
-            return None, j.get("error") or "ошибка не записана"
-    if all(j["status"] == "done" and store.path(j) for j in jobs):
-        return jobs, ""
-    return None, ""
+    done, errs, left = [], [], 0
+    for i in ids:
+        j = store.get(i) if store else None
+        if j is None:
+            errs.append("задание пропало из очереди")
+        elif j["status"] == "error" and j["tries"] >= cutjobs.TRIES:
+            errs.append(j.get("error") or "ошибка не записана")
+        elif j["status"] == "done" and store.path(j):
+            done.append(j)
+        else:
+            left += 1
+    return done, errs, left
+
+
+def cut_state(ids: list[int]) -> tuple[list[dict] | None, str]:
+    """Готовы ли все задания: (задания с файлами, «») — все готовы; (None, ошибка) — какое-то не вырежется;
+    (None, «») — ещё режутся."""
+    done, errs, left = cut_split(ids)
+    if errs:
+        return None, errs[0]
+    return (done, "") if not left else (None, "")
 
 
 def video_of(job: dict) -> dict:
@@ -2889,44 +2929,72 @@ async def cut_send(bot: Bot, cid: int, jobs: list[dict], captions: list[str], kb
                              parse_mode=ParseMode.HTML, **video_of(j)) for k, j in enumerate(jobs[:ALBUM_MAX])]
     await sending(lambda: bot.send_media_group(cid, media))
     if note or kb:
-        await sending(lambda: bot.send_message(cid, note or "Ответ — кнопкой:", reply_markup=kb))
+        try:   # альбом уже ушёл: без кнопок хуже, но второй раз его не шлём
+            await sending(lambda: bot.send_message(cid, note or "Ответ — кнопкой:", reply_markup=kb))
+        except Exception:
+            logging.exception("video buttons to %s failed", cid)
+
+
+def cut_ready(ids: list[int], partial: bool) -> tuple[list[dict] | None, str]:
+    """Что слать: (видео, «») — пора; (None, ошибка) — не выйдет; (None, «») — ждём. partial — альбом голов матча:
+    не вырезанные не держат готовые, когда резать больше нечего."""
+    if not partial:
+        return cut_state(ids)
+    done, errs, left = cut_split(ids)
+    if left:
+        return None, ""
+    return (done, "") if done else (None, errs[0] if errs else "видео нет")
+
+
+def cut_forget(cid: int, ids: list[int]) -> None:
+    """Видео не пришло — время текстом больше не считаем временем в нём: админ пришлёт время записи по ссылке."""
+    if (CUT_ASK.get(cid) or (None,))[0] in ids:
+        CUT_ASK.pop(cid, None)
 
 
 async def cut_show(bot: Bot, cid: int, ids: list[int], captions: list[str], kb: InlineKeyboardMarkup | None,
-                   fallback, note: str = "") -> None:
+                   fallback, note: str = "", partial: bool = False) -> None:
     """Видео из заданий службы cuts: готовы — сразу; нет — «⏳ Режу видео…», а когда готовы — видео вместо него.
     Не вырезались — fallback(ошибка): текст со ссылкой VK."""
-    jobs, err = cut_state(ids)
+    jobs, err = cut_ready(ids, partial)
     if jobs:
-        await cut_send(bot, cid, jobs, captions, kb, note)
+        await cut_send(bot, cid, jobs, [captions[ids.index(j["id"])] for j in jobs], kb, note)
         return
     if err:
+        cut_forget(cid, ids)
         await bot.send_message(cid, fallback(err), disable_web_page_preview=True)
         return
     wait = await bot.send_message(cid, "⏳ Режу видео…" if len(ids) == 1 else f"⏳ Режу видео: {len(ids)}…")
-    task = asyncio.create_task(cut_wait(bot, cid, wait.message_id, ids, captions, kb, fallback, note))
+    task = asyncio.create_task(cut_wait(bot, cid, wait.message_id, ids, captions, kb, fallback, note, partial))
     _cut_tasks.add(task)
     task.add_done_callback(_cut_tasks.discard)
 
 
 async def cut_wait(bot: Bot, cid: int, wait_id: int, ids: list[int], captions: list[str],
-                   kb: InlineKeyboardMarkup | None, fallback, note: str = "") -> None:
-    """Ждём, пока служба cuts вырежет видео, и присылаем его вместо «⏳ Режу видео…»."""
+                   kb: InlineKeyboardMarkup | None, fallback, note: str = "", partial: bool = False) -> None:
+    """Ждём, пока служба cuts вырежет видео, и присылаем его вместо «⏳ Режу видео…». База занята или Telegram не
+    принял видео — ссылка VK, а «⏳» всё равно убираем."""
     deadline = datetime.now(TZ) + CUT_WAIT
-    jobs, err = cut_state(ids)
-    while not jobs and not err and datetime.now(TZ) < deadline:
-        await asyncio.sleep(CUT_POLL)
-        jobs, err = cut_state(ids)
+    jobs, err = None, ""
     try:
+        jobs, err = cut_ready(ids, partial)
+        while not jobs and not err and datetime.now(TZ) < deadline:
+            await asyncio.sleep(CUT_POLL)
+            jobs, err = cut_ready(ids, partial)
         if jobs:
-            await cut_send(bot, cid, jobs, captions, kb, note)
+            await cut_send(bot, cid, jobs, [captions[ids.index(j["id"])] for j in jobs], kb, note)
             TRACK.add("cuts_shown")
         else:
-            TRACK.add("cuts_failed")
-            await bot.send_message(cid, fallback(err or f"служба cuts не успела за {CUT_WAIT.seconds // 60} мин"),
-                                   disable_web_page_preview=True)
-    except Exception:
-        logging.exception("video to %s failed", cid)
+            raise RuntimeError(err or f"служба cuts не успела за {CUT_WAIT.seconds // 60} мин")
+    except Exception as e:
+        if not isinstance(e, RuntimeError):
+            logging.exception("video to %s failed", cid)
+        TRACK.add("cuts_failed")
+        cut_forget(cid, ids)
+        try:
+            await bot.send_message(cid, fallback(str(e)), disable_web_page_preview=True)
+        except Exception:
+            logging.exception("video fallback to %s failed", cid)
     try:
         await bot.delete_message(cid, wait_id)
     except Exception:   # уже удалено — не важно
@@ -2937,11 +3005,12 @@ async def goal_video(bot: Bot, cid: int, plan: dict, protocol: list[dict] | None
                      prio: int = cutjobs.URGENT) -> list[int]:
     """Видео гола по плану: задания, подписи, кнопки. После него время, присланное текстом, — время в этом видео."""
     ids = cut_jobs_for(plan, datetime.now(TZ), prio)
-    if plan["kind"] != "dispute":
-        CUT_ASK[cid] = (ids[0], datetime.now(TZ))
-        PREVIEW_ASK.pop(cid, None)
-    await cut_show(bot, cid, ids, cut_caption(plan, protocol), cut_kb(plan, ids),
-                   lambda err: cut_fallback(plan, err), note="Какое видео верно?" if plan["kind"] == "dispute" else "")
+    # время текстом — в этом видео; у спора — во втором: первое — сама отметка
+    CUT_ASK[cid] = (ids[-1], datetime.now(TZ), plan["score"])
+    PREVIEW_ASK.pop(cid, None)
+    await cut_show(bot, cid, ids, cut_caption(plan, protocol), cut_kb(plan, ids), lambda err: cut_fallback(plan, err),
+                   note="Какое видео верно? Гол в другом месте второго видео — пришли время в нём, например 1:05."
+                   if plan["kind"] == "dispute" else "")
     return ids
 
 
@@ -2970,33 +3039,41 @@ async def match_videos(bot: Bot, cid: int, day: str, i: int, g: dict, protocol: 
     url = replay.at_link(plans[0]["video"], plans[0]["windows"][0][0])
     await cut_show(bot, cid, ids, caps, InlineKeyboardMarkup(inline_keyboard=rows),
                    lambda err: f"Видео голов не вырезались: {html.escape(err[:200])}."
-                   + (f' Запись в VK: <a href="{html.escape(url)}">ссылка</a>.' if url else ""), note=note)
+                   + (f' Запись в VK: <a href="{html.escape(url)}">ссылка</a>.' if url else ""), note=note,
+                   partial=True)
 
 
-def window_plan(job: dict, start: int, span: int, kind: str = "search", what: str = "") -> dict:
+def window_plan(job: dict, score: str, start: int, span: int, what: str = "") -> dict:
     """План окна поиска от видео, которое человек уже смотрел: ⏪, ⏩, «Ни то ни другое — искать»."""
-    length = clips_game(job["match"]).get("length")
-    return {"kind": kind, "video": job["video"], "length": length, "key": job["match"], "score": job["score"],
-            "windows": [(start, span, what or f"с {replay.fmt_clock(start)}")], "cand": []}
+    return {"kind": "search", "video": job["video"], "length": video_length(job["match"], job["video"]),
+            "key": job["match"], "score": score, "windows": [(start, span, what or f"с {replay.fmt_clock(start)}")],
+            "cand": []}
 
 
-def video_save(job: dict, sec: int, now: datetime, who: int | None, protocol: list[dict] | None, kind: str = "time",
-               pick: int | None = None) -> str:
+def video_save(job: dict, score: str, sec: int, now: datetime, who: int | None, protocol: list[dict] | None,
+               kind: str = "time") -> str:
     """Ответ по видео → строка журнала (ADR-033): в `seen` — какое окно человек смотрел и что выбрал. Ошибка или пусто."""
     g = live_by_key(job["match"])
     if not g:
         return "Матч пропал из файла службы live — отметку не записал."
-    seen = {"job": job["id"], "from": job["start"], "len": job["len"], "pick": pick if pick is not None else sec - job["start"]}
-    add_mark(job["match"], job["score"], kind, now, who, "video", protocol, video=job["video"], sec=sec, seen=seen)
+    seen = {"job": job["id"], "from": job["start"], "len": job["len"], "pick": sec - job["start"]}
+    add_mark(job["match"], score, kind, now, who, "video", protocol, video=job["video"], sec=sec, seen=seen)
     marks_apply(job["match"], g, now, protocol)
     return ""
 
 
-async def video_answered(bot: Bot, cid: int, job: dict, sec: int, protocol: list[dict] | None) -> None:
+def other_video(job: dict) -> bool:
+    """Видео вырезано из записи, которая у матча уже не действует (админ прислал другую ссылку): отметка по нему
+    переключила бы матч обратно на старую запись, и все опоры новой перестали бы действовать."""
+    cur = (goal_marks().state(job["match"]) or {}).get("video")
+    return bool(cur) and not replay.same_video(cur, job["video"])
+
+
+async def video_answered(bot: Bot, cid: int, job: dict, score: str, sec: int, protocol: list[dict] | None) -> None:
     """Время записано — 30 с результата: ответ человека сразу становится тем, что увидят болельщики, и его видно."""
-    plan = {"kind": "exact", "video": job["video"], "length": clips_game(job["match"]).get("length"),
-            "key": job["match"], "score": job["score"], "t": sec, "src": "admin",
-            "windows": [(*cutjobs.review_window(sec, clips_game(job["match"]).get("length")), "гол")]}
+    length = video_length(job["match"], job["video"])
+    plan = {"kind": "exact", "video": job["video"], "length": length, "key": job["match"], "score": score, "t": sec,
+            "src": "admin", "windows": [(*cutjobs.review_window(sec, length), "гол")]}
     await goal_video(bot, cid, plan, protocol)
 
 
@@ -3005,54 +3082,59 @@ async def cb_cut(c: CallbackQuery):
     if not c.from_user or c.from_user.id not in preview_people() or not c.message:
         await c.answer()
         return
-    parts = c.data.split(":")
+    _, job_s, act, arg_s, sc = (c.data.split(":") + [""] * 5)[:5]
     try:
-        job = cut_store().get(int(parts[1]))
-    except (sqlite3.Error, ValueError, IndexError, AttributeError):
+        job = cut_store().get(int(job_s))
+    except (sqlite3.Error, ValueError, AttributeError):
         job = None
-    if not job or not job.get("match") or not job.get("score") or len(parts) < 3:
+    score = sc.replace("-", ":") if replay.SCORE_RE.fullmatch(sc.replace("-", ":")) else (job or {}).get("score")
+    if not job or not job.get("match") or not score or not act:
         await c.answer("Это видео уже не действует — открой гол заново в /replay", show_alert=True)
         return
-    now, cid, act = datetime.now(TZ), c.message.chat.id, parts[2]
-    arg = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else None
+    now, cid = datetime.now(TZ), c.message.chat.id
+    arg = int(arg_s) if arg_s.isdigit() else None
+    if act in ("t", "y", "n", "w") and other_video(job):
+        await c.answer("Это видео из прежней записи матча — открой гол заново в /replay", show_alert=True)
+        return
     g = live_by_key(job["match"])
     league = await published_league()
     protocol = protocol_of(league, g) if g else None
     done = lambda: c.message.edit_reply_markup(reply_markup=None)   # noqa: E731 — ответ дан: кнопки убираем
     if act in ("t", "y") and arg is not None:
-        err = video_save(job, arg, now, c.from_user.id, protocol, kind="time" if act == "t" else "confirm")
+        err = video_save(job, score, arg, now, c.from_user.id, protocol, kind="time" if act == "t" else "confirm")
         if err:
             await c.answer(err, show_alert=True)
             return
         TRACK.add("video_answers" if act == "t" else "video_confirms")
-        await c.answer(f"Записал: гол {job['score']} на {replay.fmt_clock(arg)} записи" if act == "t"
+        await c.answer(f"Записал: гол {score} на {replay.fmt_clock(arg)} записи" if act == "t"
                        else "Записал: гол виден")
         await safe_markup(done)
         if act == "t":
-            await video_answered(c.bot, cid, job, arg, protocol)
+            await video_answered(c.bot, cid, job, score, arg, protocol)
         return
     if act in ("e", "l", "s"):
-        length = clips_game(job["match"]).get("length")
+        length = video_length(job["match"], job["video"])
         if act == "s":   # «Ни то ни другое — искать»: 3 минуты вокруг отметки
             w = cutjobs.search_window(job["start"] + job["len"] // 2, length)
-        else:
-            w = cutjobs.neighbour(job["start"], job["len"], -1 if act == "e" else 1, length)
+        else:   # у точной секунды — 2 минуты до или после клипа (ADR-036, раздел 1), у поиска — шаг 3 минуты
+            span = cutjobs.STEP_EXACT if job["len"] <= cutjobs.REVIEW_BEFORE + cutjobs.REVIEW_AFTER else cutjobs.SEARCH
+            w = cutjobs.neighbour(job["start"], job["len"], -1 if act == "e" else 1, length, span)
         if not w:
             await c.answer("Дальше записи нет", show_alert=True)
             return
         await c.answer()
         TRACK.add("video_steps")
-        await goal_video(c.bot, cid, window_plan(job, *w), protocol)
+        await goal_video(c.bot, cid, window_plan(job, score, *w), protocol)
         return
     if act == "x":
-        CUT_ASK[cid] = (job["id"], now)
+        CUT_ASK[cid] = (job["id"], now, score)
         PREVIEW_ASK.pop(cid, None)
         await c.answer()
-        await c.message.answer(f"Гол <b>{html.escape(job['score'])}</b>: пришли, на какой секунде этого видео гол, — "
+        await c.message.answer(f"Гол <b>{html.escape(score)}</b>: пришли, на какой секунде этого видео гол, — "
                                f"например 1:05 (видео — {replay.fmt_clock(job['len'])}).")
         return
     if act in ("n", "w"):
-        err = replay_mark(job["match"], job["score"], "absent" if act == "n" else "wrong", job["video"], now, protocol,
+        err = replay_mark(job["match"], score, "absent" if act == "n" else "wrong", job["video"], now, protocol,
                           who=c.from_user.id, via="video")
         if err:
             await c.answer(err, show_alert=True)
@@ -3083,10 +3165,10 @@ def cut_waiting(m: Message) -> bool:
 
 
 async def h_cut_time(m: Message):
-    job_id, _ = CUT_ASK[m.chat.id]
+    job_id, _, score = CUT_ASK[m.chat.id]
     store = cut_store()
     job = store.get(job_id) if store else None
-    if not job or not job.get("match"):
+    if not job or not job.get("match") or other_video(job):
         CUT_ASK.pop(m.chat.id, None)
         await m.answer("Это видео уже не действует — открой гол заново в /replay.")
         return
@@ -3098,20 +3180,20 @@ async def h_cut_time(m: Message):
         t = replay.parse_clock(text)
         if t is None or t > job["len"] + 5:
             await m.answer(f"Не понял время. Пришли, на какой секунде видео гол: например 1:05 (видео — "
-                           f"{replay.fmt_clock(job['len'])}).")
+                           f"{replay.fmt_clock(job['len'])}). Время записи — ссылкой VK «с текущим временем».")
             return
         sec = job["start"] + t
     CUT_ASK.pop(m.chat.id, None)
     g = live_by_key(job["match"])
     league = await published_league()
     protocol = protocol_of(league, g) if g else None
-    err = video_save(job, sec, datetime.now(TZ), m.from_user.id, protocol)
+    err = video_save(job, score, sec, datetime.now(TZ), m.from_user.id, protocol)
     if err:
         await m.answer(err)
         return
     TRACK.add("video_answers")
-    await m.answer(f"Записал: гол <b>{html.escape(job['score'])}</b> на {replay.fmt_clock(sec)} записи.")
-    await video_answered(m.bot, m.chat.id, job, sec, protocol)
+    await m.answer(f"Записал: гол <b>{html.escape(score)}</b> на {replay.fmt_clock(sec)} записи.")
+    await video_answered(m.bot, m.chat.id, job, score, sec, protocol)
 
 
 dp.message.register(h_cut_time, cut_waiting)   # раньше h_lost: время в видео — не «непонятое сообщение»
@@ -3207,9 +3289,10 @@ async def dispute_step(bot: Bot, now: datetime) -> int:
         if plan and plan["kind"] == "dispute":
             ids = cut_jobs_for(plan, now, cutjobs.SEND)
             jobs, err = cut_state(ids)
-            first = cut_store().get(ids[0]) or {}
+            wait_key = f"wait|{key}|{score}|{c['t']}"   # с какой минуты спор ждёт видео
+            sent.setdefault(wait_key, admin.iso(now))
             if not jobs and not err:
-                if now - datetime.fromisoformat(first.get("at") or admin.iso(now)) < DISPUTE_CUT_WAIT:
+                if now - datetime.fromisoformat(sent[wait_key]) < DISPUTE_CUT_WAIT:
                     continue   # режется — в следующую минуту
                 err = "служба cuts не вырезала видео"   # служба стоит: спор не должен ждать её вечно
         got = 0
@@ -3230,6 +3313,7 @@ async def dispute_step(bot: Bot, now: datetime) -> int:
             await asyncio.sleep(0.05)
         if got:   # не дошло ни до кого — попробуем через минуту
             sent[f"{key}|{score}|{c['t']}"] = admin.iso(now)
+            sent.pop(f"wait|{key}|{score}|{c['t']}", None)
             n += 1
     if sent != old:
         write_atomic(DISPUTES_FILE, sent)

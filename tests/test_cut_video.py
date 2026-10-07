@@ -83,8 +83,9 @@ class Plan(Base):
         self.assertEqual((approx["kind"], approx["windows"][0][:2], approx["cand"]),
                          ("approx", (3380, 125), [3420, 3450]))          # окно и моменты — как у превью
         search = self.bot.goal_plan(KEY, "2:1", PROTOCOL)
-        # от 1:1 (12:00, ≈3460 записи) до 2:1 (25:00, 2-й период): 13 минут игры с остановками и перерыв
-        self.assertEqual((search["kind"], search["windows"][0][:2]), ("search", (5484, 180)))
+        # от 1:1 (12:00; счёт сменился на 3500 — гол около 3455) до 2:1 (25:00, 2-й период): 13 минут игры с
+        # остановками и перерыв
+        self.assertEqual((search["kind"], search["windows"][0][:2]), ("search", (5479, 180)))
         self.assertEqual(self.bot.goal_estimate("2:1", {"1:0": 2600}, PROTOCOL), 2600 + round(1200 * 1.3) + 1100)
 
     def test_dispute_shows_both_versions(self):
@@ -95,7 +96,7 @@ class Plan(Base):
                          ("dispute", [(2680, 30), (2580, 30)], 2600, "часы идут"))
         kb = self.bot.cut_kb(plan, [5, 6])
         data = [b.callback_data for row in kb.inline_keyboard for b in row]
-        self.assertEqual(data, ["cv:5:y:2700", "cv:6:t:2600", "cv:5:s"])
+        self.assertEqual(data, ["cv:5:y:2700:1-0", "cv:6:t:2600:1-0", "cv:5:s::1-0"])
         self.assertEqual(len(self.bot.cut_caption(plan, PROTOCOL)), 2)
 
     def test_mark_wins_and_absent_or_gone_has_no_video(self):
@@ -119,11 +120,12 @@ class Plan(Base):
     def test_buttons(self):
         exact = self.bot.cut_kb(self.bot.goal_plan(KEY, "1:0", PROTOCOL), [7])
         self.assertEqual([b.callback_data for row in exact.inline_keyboard for b in row],
-                         ["cv:7:y:2600", "cv:7:e", "cv:7:l", "cv:7:n"])
+                         ["cv:7:y:2600:1-0", "cv:7:e::1-0", "cv:7:l::1-0", "cv:7:n::1-0"])
         approx = self.bot.cut_kb(self.bot.goal_plan(KEY, "1:1", PROTOCOL), [8])
         self.assertEqual([(b.text, b.callback_data) for row in approx.inline_keyboard for b in row][:3],
-                         [("Гол на 0:40", "cv:8:t:3420"), ("Гол на 1:10", "cv:8:t:3450"), ("Другое время", "cv:8:x")])
-        self.assertIn("cv:8:w", [b.callback_data for row in approx.inline_keyboard for b in row])   # табло сбилось
+                         [("Гол на 0:40", "cv:8:t:3420:1-1"), ("Гол на 1:10", "cv:8:t:3450:1-1"),
+                          ("Другое время", "cv:8:x::1-1")])
+        self.assertIn("cv:8:w::1-1", [b.callback_data for row in approx.inline_keyboard for b in row])   # табло сбилось
 
     def test_windows_shared_with_clips(self):
         """Окна у бота и службы clips одни (cutjobs): бот попадает в заготовки, вырезанные заранее."""
@@ -172,7 +174,7 @@ class Show(Base):
         bot.delete_message.assert_awaited_once_with(1001, 9)
         # соседние окна поиска — заранее: человек, скорее всего, нажмёт «⏪» или «⏩»
         rows = self.bot.cut_store().conn.execute("SELECT start, len, prio FROM cut_jobs ORDER BY id").fetchall()
-        self.assertEqual(rows, [(5484, 180, cutjobs.URGENT), (5304, 180, cutjobs.SEND), (5664, 180, cutjobs.SEND)])
+        self.assertEqual(rows, [(5479, 180, cutjobs.URGENT), (5299, 180, cutjobs.SEND), (5659, 180, cutjobs.SEND)])
 
     def test_vk_refused_is_text_with_link(self):
         plan = self.bot.goal_plan(KEY, "1:0", PROTOCOL)
@@ -193,6 +195,8 @@ class Show(Base):
         self.assertIn("Видео не вырезалось: VK не отдал запись", text)
         self.assertIn("vkvideo.ru", text)                                   # тут без ссылки никак
         bot.send_video.assert_not_called()
+        # видео не пришло — время текстом больше не «время в видео»: админ пришлёт время записи по ссылке
+        self.assertNotIn(1001, self.bot.CUT_ASK)
 
     def test_all_goals_of_match_as_album(self):
         self.mark("2:1", 5600)
@@ -210,6 +214,26 @@ class Show(Base):
         text_kb = self.bot.replay_kb("2026-10-03", 0, GAME, self.bot.load_replays()["games"].get(KEY), PROTOCOL)
         self.assertIn("rp:all:2026-10-03:0", [b.callback_data for row in text_kb.inline_keyboard for b in row])
 
+    def test_album_without_the_failed_goal(self):
+        """Ревью PR #139: один гол не вырезался — альбом из остальных, а не текст вместо всех."""
+        self.mark("2:1", 5600)
+        ok = self.bot.cut_jobs_for(self.bot.goal_plan(KEY, "1:0", PROTOCOL), self.now)[0]
+        self.finish(ok)
+        bad = self.bot.cut_jobs_for(self.bot.goal_plan(KEY, "2:1", PROTOCOL), self.now)[0]
+        bot = self.tg()
+
+        async def service(_):   # человек попросил — служба пробует снова, и снова не выходит
+            self.bot.cut_store().fail(bad, self.now, "окно за концом записи", final=True)
+
+        async def run():
+            await self.bot.match_videos(bot, 1001, "2026-10-03", 0, GAME, PROTOCOL)
+            await asyncio.gather(*self.bot._cut_tasks)
+
+        with mock.patch.object(self.bot.asyncio, "sleep", side_effect=service):
+            asyncio.run(run())
+        bot.send_video.assert_awaited_once()                                  # один готовый — одним видео
+        self.assertIn("гол <b>1:0</b>", bot.send_video.call_args.kwargs["caption"])
+
 
 class Answers(Base):
     def press(self, data: str, uid: int = 1001):
@@ -226,9 +250,13 @@ class Answers(Base):
         plan = self.bot.goal_plan(KEY, score, PROTOCOL)
         return self.bot.cut_store().get(self.bot.cut_jobs_for(plan, self.now)[0])
 
+    @staticmethod
+    def cv(job: dict, act: str, arg: int | None = None, score: str | None = None) -> str:
+        return f"cv:{job['id']}:{act}:{'' if arg is None else arg}:{(score or job['score']).replace(':', '-')}"
+
     def test_moment_button_records_time_and_shows_result(self):
         job = self.job("1:1")
-        c = self.press(f"cv:{job['id']}:t:3420")
+        c = self.press(self.cv(job, "t", 3420))
         self.assertEqual(self.bot.load_replays()["games"][KEY]["anchors"], {"1:1": 3420})
         r = self.bot.goal_marks().of(KEY)[-1]
         self.assertEqual((r["via"], r["sec"], r["who"]), ("video", 3420, 1001))
@@ -240,7 +268,7 @@ class Answers(Base):
 
     def test_goal_seen_is_a_confirm_mark(self):
         job = self.job("1:0")
-        self.press(f"cv:{job['id']}:y:2600")
+        self.press(self.cv(job, "y", 2600))
         r = self.bot.goal_marks().of(KEY)[-1]
         self.assertEqual((r["kind"], r["sec"], r["via"]), ("confirm", 2600, "video"))
         self.assertEqual(self.bot.goal_marks().state(KEY)["anchors"], {})   # подтверждение — не опора (1.3 плана)
@@ -248,18 +276,18 @@ class Answers(Base):
 
     def test_steps_and_marks(self):
         job = self.job("1:1")
-        c = self.press(f"cv:{job['id']}:e")
+        c = self.press(self.cv(job, "e"))
         prev = self.bot.cut_store().get(self.bot.CUT_ASK[1001][0])
         self.assertEqual((prev["start"], prev["len"]), (3200, 180))
-        self.press(f"cv:{job['id']}:w")
+        self.press(self.cv(job, "w"))
         self.assertEqual(self.bot.load_replays()["games"][KEY]["wrong"], ["1:1"])
-        self.press(f"cv:{job['id']}:n")
+        self.press(self.cv(job, "n"))
         self.assertEqual(self.bot.load_replays()["games"][KEY]["absent"], ["1:1"])
         self.assertEqual(c.answer.await_count, 1)
 
     def test_time_in_video_text(self):
         job = self.job("2:1")
-        self.press(f"cv:{job['id']}:x")
+        self.press(self.cv(job, "x"))
         m = mock.Mock(text="1:05", chat=mock.Mock(id=1001), from_user=mock.Mock(id=1001))
         m.answer = mock.AsyncMock()
         m.bot = self.tg()
@@ -269,31 +297,134 @@ class Answers(Base):
             asyncio.run(self.bot.h_cut_time(m))
         self.assertEqual(self.bot.load_replays()["games"][KEY]["anchors"], {"2:1": job["start"] + 65})
         m.text = "9:59"
-        self.bot.CUT_ASK[1001] = (job["id"], datetime.now(TZ))
+        self.bot.CUT_ASK[1001] = (job["id"], datetime.now(TZ), "2:1")
         with mock.patch.object(self.bot, "published_league", mock.AsyncMock(return_value=None)):
             asyncio.run(self.bot.h_cut_time(m))
         self.assertIn("Не понял время", m.answer.call_args.args[0])         # видео — 3 минуты
 
     def test_replay_opened_later_takes_text(self):
         job = self.job("2:1")
-        self.bot.CUT_ASK[1001] = (job["id"], datetime.now(TZ) - timedelta(minutes=2))
+        self.bot.CUT_ASK[1001] = (job["id"], datetime.now(TZ) - timedelta(minutes=2), "2:1")
         self.bot.REPLAY_ASK[1001] = ("2026-10-03", 0, "", datetime.now(TZ), KEY)
         m = mock.Mock(text="1:05", chat=mock.Mock(id=1001), from_user=mock.Mock(id=1001))
         self.assertFalse(self.bot.cut_waiting(m))
         self.assertTrue(self.bot.replay_waiting(m))
+        # и наоборот: видео прислано после того, как открыли матч, — текст его
+        self.bot.REPLAY_ASK[1001] = ("2026-10-03", 0, "2:1", datetime.now(TZ) - timedelta(minutes=5), KEY)
+        self.assertTrue(self.bot.cut_waiting(m))
+        self.assertFalse(self.bot.replay_waiting(m))
+
+    def test_shared_window_answers_the_pressed_goal(self):
+        """Ревью PR #139: одна смена табло на два гола (ADR-031) — одно окно и одно задание у двух голов. Кнопка под
+        видео гола 2:1 пишет 2:1, а не гол, который попросил окно первым."""
+        self.clips({**BOARD, "goals": {**BOARD["goals"], "2:1": {"t": None, "change": 3500, "team": "home"}}})
+        first = self.job("1:1")
+        second = self.bot.goal_plan(KEY, "2:1", PROTOCOL)
+        ids = self.bot.cut_jobs_for(second, self.now)
+        self.assertEqual(ids[0], first["id"])                               # то же окно — то же задание
+        data = [b.callback_data for row in self.bot.cut_kb(second, ids).inline_keyboard for b in row]
+        self.assertTrue(all(d.endswith(":2-1") for d in data), data)
+        self.press(f"cv:{first['id']}:t:3450:2-1")
+        self.assertEqual(self.bot.load_replays()["games"][KEY]["anchors"], {"2:1": 3450})
+        self.press(f"cv:{first['id']}:x::2-1")
+        self.assertEqual(self.bot.CUT_ASK[1001][2], "2:1")
+
+    def test_exact_steps_are_two_minutes(self):
+        job = self.job("1:0")
+        self.press(self.cv(job, "l"))
+        nxt = self.bot.cut_store().get(self.bot.CUT_ASK[1001][0])
+        self.assertEqual((nxt["start"], nxt["len"]), (2610, 120))         # 2 минуты после клипа (ADR-036, раздел 1)
+
+    def test_old_recording_button_refused(self):
+        """Ревью PR #139: видео из прежней записи — кнопка под ним не переключает матч обратно на неё."""
+        job = self.job("1:1")
+        self.bot.add_mark(KEY, "1:0", "time", self.now, 1001, "replay", PROTOCOL, video="https://vk.com/video-1_2",
+                          sec=600)
+        c = self.press(self.cv(job, "t", 3420))
+        self.assertIn("прежней записи", c.answer.call_args.args[0])
+        self.assertEqual(self.bot.goal_marks().state(KEY)["video"], "https://vk.com/video-1_2")
+
+    def test_length_only_of_the_same_recording(self):
+        """Ревью PR #139: длина записи службы clips — только для её ролика; у ссылки админа на полную запись окна по
+        чужой длине обрезались бы в секунду."""
+        self.assertEqual(self.bot.video_length(KEY, VIDEO), 9000)
+        self.assertIsNone(self.bot.video_length(KEY, "https://vk.com/video-1_2"))
+        job = {"id": 1, "match": KEY, "video": "https://vk.com/video-1_2", "start": 9480, "len": 30}
+        self.assertEqual(self.bot.window_plan(job, "1:0", 9510, 180)["length"], None)
 
     def test_stale_or_foreign_button(self):
         c = self.press("cv:999:t:10")
         self.assertIn("не действует", c.answer.call_args.args[0])
         job = self.job("1:0")
-        c = self.press(f"cv:{job['id']}:y:2600", uid=555)                 # не админ и не помощник
+        c = self.press(self.cv(job, "y", 2600), uid=555)                 # не админ и не помощник
         self.assertEqual(self.bot.goal_marks().of(KEY), [])
 
 
+class ReplayGoal(Base):
+    """Ревью PR #139: нажатие гола в /replay — видео, если запись известна, иначе прежняя просьба о времени."""
+
+    def press(self, data: str):
+        c = mock.Mock(data=data, from_user=mock.Mock(id=1001), message=mock.Mock(chat=mock.Mock(id=1001)))
+        c.answer = mock.AsyncMock()
+        c.message.answer = mock.AsyncMock()
+        c.bot = self.tg()
+        with mock.patch.object(self.bot, "published_league", mock.AsyncMock(return_value=None)):
+            asyncio.run(self.bot.cb_replay(c))
+        return c
+
+    def test_goal_with_recording_gets_video_and_history(self):
+        self.mark("1:0", 2650)
+        c = self.press("rp:g:2026-10-03:0:1:0")
+        self.assertEqual(c.bot.send_message.call_args_list[0].args[1], "⏳ Режу видео…")
+        job = self.bot.cut_store().get(self.bot.CUT_ASK[1001][0])
+        self.assertEqual((job["start"], job["len"], job["prio"]), (2630, 30, cutjobs.URGENT))
+        history = c.message.answer.call_args.args[0]
+        self.assertIn("отметки", history)
+        self.assertNotIn("пришли его время в записи", history)
+
+    def test_goal_without_recording_asks_as_before(self):
+        (self.dir / "clips.json").write_text("{}", encoding="utf-8")
+        c = self.press("rp:g:2026-10-03:0:1:0")
+        c.bot.send_message.assert_not_called()
+        self.assertIn("пришли его время в записи", c.message.answer.call_args.args[0])
+        self.assertEqual(self.bot.REPLAY_ASK[1001][2], "1:0")
+
+
 class Dispute(Base):
-    def test_album_with_buttons(self):
+    def setUp(self):
+        super().setUp()
         self.mark("1:0", 2700)
         self.clips({**BOARD, "checks": {"1:0": {"t": 2700, "status": "conflict", "against": ["часы идут"]}}})
+
+    def step(self, bot, now):
+        with mock.patch.object(self.bot, "DISPUTES_FILE", self.dir / "disputes.json"), \
+                mock.patch.object(self.bot, "published_league", mock.AsyncMock(return_value=None)), \
+                mock.patch.object(self.bot.asyncio, "sleep", mock.AsyncMock()):
+            return asyncio.run(self.bot.dispute_step(bot, now))
+
+    def test_wait_counts_from_dispute_not_from_old_job(self):
+        """Ревью PR #139: окно по отметке вырезали давно (ответ на превью — 30 с результата) — спор всё равно ждёт
+        своё второе видео 15 минут, а не уходит ссылками сразу."""
+        plan = self.bot.goal_plan(KEY, "1:0", PROTOCOL)
+        self.finish(self.bot.cut_jobs_for(plan, self.now - timedelta(hours=1))[0])   # «по отметке» — час назад
+        bot = self.tg()
+        self.assertEqual(self.step(bot, self.now), 0)
+        self.assertEqual(self.step(bot, self.now + timedelta(minutes=10)), 0)
+        bot.send_message.assert_not_called()
+        self.assertEqual(self.step(bot, self.now + self.bot.DISPUTE_CUT_WAIT), 1)   # служба стоит — ссылками
+        self.assertIn("Спор по голу 1:0", bot.send_message.call_args.args[1])
+
+    def test_typed_time_after_dispute_is_second_video(self):
+        """Ревью PR #139: после спора в /replay текст «0:47» — время во втором видео, а не 47-я секунда записи."""
+        plan = self.bot.goal_plan(KEY, "1:0", PROTOCOL)
+        self.bot.REPLAY_ASK[1001] = ("2026-10-03", 0, "1:0", datetime.now(TZ) - timedelta(seconds=1), KEY)
+        ids = asyncio.run(self.bot.goal_video(self.tg(), 1001, plan, PROTOCOL))
+        self.assertEqual(self.bot.CUT_ASK[1001][::2], (ids[1], "1:0"))
+        m = mock.Mock(text="0:47", chat=mock.Mock(id=1001), from_user=mock.Mock(id=1001))
+        self.assertTrue(self.bot.cut_waiting(m))
+        self.assertFalse(self.bot.replay_waiting(m))
+
+    def test_album_with_buttons(self):
         plan = self.bot.goal_plan(KEY, "1:0", PROTOCOL)
         for i in self.bot.cut_jobs_for(plan, self.now, cutjobs.SEND):
             self.finish(i)

@@ -288,6 +288,7 @@ def add_previews(key: str, video: str, goals: dict[str, dict], length: float | N
     board = sb.BOARDS.get(club) or {}
     src480, h480, _ = sb.stream_of(video)
     src360, h360, _ = sb.stream_of(video, PREVIEW_FORMAT)
+    whole = name_model_of(key, club) if board.get("clock") else None   # образец табло по всей записи
     for score, g in need.items():
         win = g.get("win")
         start, span = run_window(win, length) if win else preview_window(g["change"], length)
@@ -297,7 +298,8 @@ def add_previews(key: str, video: str, goals: dict[str, dict], length: float | N
             cand = [round(t - start) for t in (g.get("wcand") or [])][-CANDIDATES:]
         elif board.get("clock"):
             dense = sb.safe_scan(src480, h480, sb.BOXES[club], start, start + span)
-            model = sb.name_model([f for _, f in dense], board["name"]) if dense else None
+            # в двух минутах до смены счёта повторов и крупных планов больше, чем во всей записи
+            model = whole or (sb.name_model([f for _, f in dense], board["name"]) if dense else None)
             vis = [(t, f) for t, f in dense if not model or sb.on_screen(f, model)]
             stops = [t for t in clock_stops(vis, sb.cell_pixels(board["clock"])) if t <= g["change"]]
             cand = [round(t - start) for t in stops[-CANDIDATES:]]

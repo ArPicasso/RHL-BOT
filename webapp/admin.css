@@ -152,5 +152,13 @@ body.locked { overflow: hidden; }
 .cand .card-title { margin: 0 4px 0 0; }
 .pill { min-height: 40px; padding: 0 14px; border: var(--line); border-radius: 9999px; background: var(--paper); font-weight: 700; font-size: 14px; cursor: pointer; font-feature-settings: "tnum"; }
 .sheet-foot { margin-top: 16px; }
+.pill.act { background: var(--act); color: var(--on-act); border-color: var(--act); }
+.pill:disabled { opacity: .5; cursor: default; }
+.sheet .nav + .nav { margin-top: 8px; }
+.done { margin-top: 14px; padding: 10px 14px; border: var(--line); border-radius: 14px; background: var(--ok-bg); color: var(--ok-fg); border-color: var(--ok-edge); font-size: 14px; }
+.hist-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 6px 0; font-size: 13px; }
+.hist-row + .hist-row { border-top: 1px solid var(--mist); }
+.hist-row.off span { color: var(--muted); text-decoration: line-through; }
+.hist-row .more { width: auto; margin: 0; padding: 4px 0; }
 
 @media (hover: hover) { .btn-round:hover, .more:hover, .row.match:hover, .goal-open:hover, .pill:hover, .seg button:not(.on):hover { background: var(--sel); } }

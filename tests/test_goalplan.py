@@ -23,11 +23,18 @@ class GoalPlan(unittest.TestCase):
         self.assertEqual([x["score"] for x in goalplan.protocol_of(game)], ["1:0"])   # буллиты — не голы записи
         self.assertIsNone(goalplan.protocol_of(None))
 
-    def test_shift_only_around_unknown_place(self):
+    def test_shift(self):
+        """Листают как «⏪ / ⏩» в боте: от 30 с точного гола — 2 минуты до или после, дальше и у поиска — по 3."""
         board = {"video": VIDEO, "status": "ok", "length": 9000,
                  "goals": {"1:0": {"t": 2600, "src": "clock"}, "2:0": {"t": None, "change": 4200, "ask": {}}}}
         exact = goalplan.plan(KEY, "1:0", None, board)
-        self.assertIs(goalplan.shifted(exact, 3), exact)                    # точную секунду не листаем
+        self.assertEqual(exact["windows"][0][:2], (2580, 30))
+        self.assertEqual(goalplan.shifted(exact, -1)["windows"][0][:2], (2460, cutjobs.STEP_EXACT))
+        self.assertEqual(goalplan.shifted(exact, 1)["windows"][0][:2], (2610, cutjobs.STEP_EXACT))
+        self.assertEqual(goalplan.shifted(exact, -2)["windows"][0][:2], (2460 - cutjobs.SEARCH, cutjobs.SEARCH))
+        self.assertIn("41:00–43:00 записи", goalplan.shifted(exact, -1)["windows"][0][2])
+        spor = {**exact, "kind": "dispute"}
+        self.assertIs(goalplan.shifted(spor, 1), spor)                      # спор не листаем
         approx = goalplan.plan(KEY, "2:0", None, board)
         self.assertEqual(approx["kind"], "approx")
         s, n, _ = approx["windows"][0]

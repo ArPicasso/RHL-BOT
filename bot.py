@@ -1525,8 +1525,11 @@ def marks_apply(key: str, g: dict, now: datetime, protocol: list[dict] | None = 
 
 
 def mark_word(r: dict) -> str:
-    return replay.fmt_clock(r["sec"]) if r["kind"] == "time" and isinstance(r.get("sec"), int) \
-        else KIND_WORD.get(r["kind"], r["kind"])
+    if r["kind"] == "time" and isinstance(r.get("sec"), int):
+        return replay.fmt_clock(r["sec"])
+    if r["kind"] == "time" and not r.get("score"):   # ссылка на запись без времён (этап 0.4 плана)
+        return "🎥 запись матча"
+    return KIND_WORD.get(r["kind"], r["kind"])
 
 
 def goal_history(key: str, score: str, viewer: int | None) -> tuple[list[str], list[dict]]:
@@ -1671,6 +1674,9 @@ def replay_text(day: str, g: dict, entry: dict | None, protocol: list[dict] | No
     what = "времена" if entry or video else "ссылку на запись и времена"
     lines.append(f"Пришли {what} всех {len(goals)} голов по порядку, по строке на гол: "
                  "1:08:03. Или нажми на гол и пришли время одного.")
+    if not entry:   # этап 0.4 плана: разметка целого матча руками нужна не всегда
+        lines.append("Можно прислать одну ссылку без времён: голы в записи служба найдёт по табло сама, а где не "
+                     "сможет — пришлёт тебе превью с кнопками.")
     return "\n".join(lines)
 
 
@@ -1766,8 +1772,11 @@ def replay_parse(day: str, i: int, score: str, text: str, key: str | None = None
         return "", g, video, [(score, t)]
     goals = replay_goals(g, protocol)
     if not times:
+        if got:   # в сообщении ссылка и ничего больше: записываем запись, а голы в ней найдёт служба (этап 0.4)
+            return "", g, video, []
         return (f"Пришли времена всех {len(goals)} голов в записи по порядку, по строке на гол: 1:08:03. "
-                "Или нажми на гол и пришли время одного.", g, video, [])
+                "Или нажми на гол и пришли время одного. Другая запись — пришли ссылку, времена не обязательны.",
+                g, video, [])
     if len(times) != len(goals):
         return (f"В матче {len(goals)} голов, а времён {len(times)}. Пришли все по порядку "
                 "или нажми на гол и пришли время одного.", g, video, [])
@@ -1788,6 +1797,10 @@ def replay_save(day: str, i: int, score: str, text: str, now: datetime, key: str
     if force_t is not None and score:
         picked = [(score, force_t)]
     key = match_key(g)
+    if not picked:
+        # только ссылка, без времён (этап 0.4 плана): отметка без гола и без секунды — она говорит, какая у матча
+        # запись. Из неё журнал даёт `video`, служба clips разбирает ролик и находит голы по табло сама
+        add_mark(key, "", "time", now, who, "replay", protocol, video=video, seen=text)
     for s, t in picked:
         add_mark(key, s, "time", now, who, "replay", protocol, video=video, sec=t, seen=text)
     return "", marks_apply(key, g, now, protocol)
@@ -2127,7 +2140,7 @@ COVER_WHY = {   # причины, по которым у матча не все 
 }
 COVER_NAMES = 4   # матчей на причину в разборе — дальше «и ещё N»
 COVER_TODO = {   # что сделать, чтобы у матча были повторы всех голов (кнопка «Почему не у всех» в /replay)
-    "no_video": "открой матч и пришли ссылку на запись в VK (из канала клуба) с временами голов",
+    "no_video": "открой матч и пришли ссылку на запись в VK (из канала клуба) — времена голов не обязательны",
     "gone": "записи больше нет в VK: найди другую (канал клуба, вкладка «Видео» на сайте лиги) и пришли ссылку — "
             "по старой ссылке повтор никуда не ведёт",
     "error": "VK не отдал запись трижды: на сервере sudo -u rhl /opt/rhl/venv/bin/pip install -U yt-dlp, "

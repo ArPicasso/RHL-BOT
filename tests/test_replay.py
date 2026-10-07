@@ -226,6 +226,29 @@ class Bot(unittest.TestCase):
         self.assertIn("пропал", self.bot.replay_save("2026-10-03", 0, "1:0", "14:32", self.now, "2026-10-03|a|b")[0])
         self.assertFalse((self.dir / "replays.json").exists())
 
+    def test_link_alone_is_enough(self):
+        """Этап 0.4 плана: ссылку можно прислать без времён — голы в записи служба найдёт по табло сама."""
+        err, e = self.bot.replay_save("2026-10-03", 0, "", f"запись тут {VIDEO}", self.now)
+        self.assertEqual(err, "")
+        self.assertEqual((e["video"], e["anchors"], e["goals"]), (VIDEO, {}, []))
+        self.assertEqual(self.saved()["video"], VIDEO)        # служба clips берёт отсюда ролик и разбирает его
+        rows = self.bot.goal_marks().of(GAME["key"])
+        self.assertEqual([(r["score"], r["kind"], r["sec"]) for r in rows], [("", "time", None)])
+        self.assertEqual(self.bot.mark_word(rows[0]), "🎥 запись матча")
+        # дальше время гола можно прислать без ссылки, как и раньше
+        err, e = self.bot.replay_save("2026-10-03", 0, "1:0", "30:00", self.now)
+        self.assertEqual((err, self.saved()["anchors"]), ("", {"1:0": 1800}))
+        # «Сбросить повторы матча» снимает и ссылку
+        self.bot.replay_drop("2026-10-03", 0, self.now)
+        self.assertIsNone(self.bot.goal_marks().state(GAME["key"]))
+
+    def test_link_alone_is_offered_not_demanded(self):
+        err, _ = self.bot.replay_save("2026-10-03", 0, "", "привет", self.now)
+        self.assertIn("Ролика", err)                           # ни ссылки, ни известного ролика — как раньше
+        err, _ = self.bot.replay_save("2026-10-03", 0, "", "времена забыл", self.now, league_vid=VIDEO)
+        self.assertIn("времена не обязательны", err)           # запись лиги есть, а в сообщении нет ссылки
+        self.assertIn("одну ссылку без времён", self.bot.replay_text("2026-10-03", GAME, None, video=VIDEO))
+
     def test_whole_match_at_once(self):
         # как прислал админ 04.10: ссылка на запись эфира и времена всех голов по порядку
         err, e = self.bot.replay_save("2026-10-03", 0, "", "https://vkvideo.ru/live-1_2\n25:20\n57:04\n59:37\n1:20:40",

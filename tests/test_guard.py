@@ -83,6 +83,16 @@ class Look(unittest.TestCase):
         self.assertEqual([p["key"] for p in got], ["pult:bot:beat"])   # про службы скажет бот, он живой
         self.assertIn("Бот молчит", got[0]["text"])
 
+    def test_token_that_does_not_fit(self):
+        """Секрет сторожа и AGENT_TOKEN на сервере разъехались — сторож говорит об этом, а не молчит про бота."""
+        for code in (401, 403, 404):
+            fetch = answers(**{f"{API}/health": HEALTH, f"{API}/agent/status": {"code": code, "body": ""},
+                               LEAGUE: league_body(NOW)})
+            got = guard.look(API, PAGES, NOW, token="токен-агента-длиной-больше-тридцати-двух", fetch=fetch)
+            self.assertEqual([(p["level"], p["key"]) for p in got], [("warn", "pult:token")], code)
+            self.assertIn(str(code), got[0]["text"])
+            self.assertIn("AGENT_TOKEN", got[0]["text"])
+
     def test_no_token_no_pult(self):
         fetch = answers(**{f"{API}/health": HEALTH, LEAGUE: league_body(NOW)})
         guard.look(API, PAGES, NOW, fetch=fetch)

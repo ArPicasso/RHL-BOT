@@ -1416,18 +1416,25 @@ async def cb_team(c: CallbackQuery):
 
 # ---------- пульт админа (ADR-021) ----------
 
-def admin_url() -> str:
+def admin_url(tab: str = "") -> str:
     p = urlsplit(WEBAPP_URL)
     path = p.path if p.path.endswith("/") else p.path + "/"
-    return urlunsplit((p.scheme, p.netloc, path + "admin.html", "", ""))
+    # вкладка — в запросе: фрагмент адреса Telegram занимает своими tgWebAppData
+    return urlunsplit((p.scheme, p.netloc, path + "admin.html", f"tab={tab}" if tab else "", ""))
 
 
 def admin_reply(chat_id: int, user_id: int | None) -> tuple[str, InlineKeyboardMarkup | None]:
-    """Админу — кнопка пульта. Остальным — их id и куда его вписать: так владелец узнаёт свой."""
+    """Админу — кнопка пульта. Помощнику — пульт сразу на «Голах»: другой вкладки ему не покажут (ADR-036,
+    раздел 4). Остальным — их id и куда его вписать: так владелец узнаёт свой."""
     if user_id in ADMIN_IDS:
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Открыть пульт",
                                                                          web_app=WebAppInfo(url=admin_url()))]])
-        return "Пульт: службы, сборки, аудитория, рассылки и игры. Данные обновляются раз в минуту.", kb
+        return ("Пульт: службы, сборки, аудитория, рассылки и игры, а на вкладке «Голы» — где каждый гол на пути "
+                "к клипу. Данные обновляются раз в минуту.", kb)
+    if user_id in PREVIEW_IDS:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="Открыть «Голы»", web_app=WebAppInfo(url=admin_url("goals")))]])
+        return "«Голы»: где каждый гол на пути к клипу и какие ждут тебя. Данные обновляются раз в минуту.", kb
     return (f"Пульт — только для админов приложения. Твой Telegram id: <code>{user_id or chat_id}</code>.\n"
             "Его вписывают в ADMIN_IDS в /etc/rhl/bot.env на сервере.", None)
 

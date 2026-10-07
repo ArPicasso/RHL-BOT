@@ -507,6 +507,30 @@ class AdminPanel(Base):
         d = await self.call("GET", "/api/admin/status", fan(1), status=403)
         self.assertIn("ADMIN_IDS", d["error"])
 
+    async def test_goals_tab_for_admins_and_helpers(self):
+        """«Голы» (ADR-036, раздел 4): админам и помощникам PREVIEW_IDS, остальным — нет."""
+        self.api.cfg.helpers = frozenset({1005})
+        await self.call("GET", "/api/admin/goals", status=401)
+        d = await self.call("GET", "/api/admin/goals", fan(2), status=403)
+        self.assertIn("PREVIEW_IDS", d["error"])
+        await self.call("GET", "/api/admin/status", fan(5), status=403)   # «Состояние» помощнику не положено
+        (self.live / "clips.json").write_text(json.dumps({"coverage": {
+            f"{D1}|tambov|sokol": {"goals": 1, "replays": 0, "why": "not_found", "state": {"1:0": "search"}}}}),
+            encoding="utf-8")
+        self.pub["data/league.json"] = {"games": [{"date": D1, "home": "tambov", "away": "sokol",
+                                                   "score": {"home": 1, "away": 0},
+                                                   "goals": [{"score": "1:0", "author": "Иванов", "period": "1"}]}]}
+        d = await self.call("GET", "/api/admin/goals", fan(5))
+        self.assertEqual(d["role"], "helper")
+        self.assertEqual((d["wait"]["total"], d["wait"]["items"][0]["author"]), (1, "Иванов"))
+        self.assertEqual(d["matches"][0]["title"], "Тамбов — Сокол")
+        d = await self.call("GET", "/api/admin/goals", fan(1))
+        self.assertEqual(d["role"], "admin")
+
+    def test_helpers_from_env(self):
+        with mock.patch.dict(os.environ, {"PREVIEW_IDS": "5, 6 x"}):
+            self.assertEqual(server.Config.from_env().helpers, frozenset({5, 6}))
+
     async def test_status_for_admin(self):
         (self.status / "bot.json").write_text(json.dumps({
             "beat": "2026-10-03T11:59:30+03:00", "info": {"tg_ok": "2026-10-03T11:59:30+03:00"},

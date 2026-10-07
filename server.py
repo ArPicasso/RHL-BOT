@@ -10,6 +10,8 @@ ADR-019 (раздел 3), ADR-020 (раздел 3), docs/raskat/contract.md (р�
     /api/seen                мини-апп открыли: счётчик людей за день для пульта (ADR-021)
     /api/me/player           «Мой игрок» (ADR-030, раздел 6): чьи голы бот присылает после матча
     /api/admin/status        пульт админа: здоровье, аудитория, рассылки, игры — только ADMIN_IDS
+    /api/admin/goals         вкладка «Голы» пульта (ADR-036, раздел 4): конвейер голов, «Сейчас», «Ждут вас» —
+                             ADMIN_IDS и помощники PREVIEW_IDS, только чтение
     /api/agent/status        то же для агента разбора (Claude Code): пульт и status/*.json, только чтение,
                              по токену AGENT_TOKEN (ADR-030, дополнение 06.10, ночь)
 
@@ -183,7 +185,7 @@ class Config:
                  webapp_url: str = "https://arpicasso.github.io/RHL-BOT/",
                  origins=("https://arpicasso.github.io",), teams_file: Path | str = BASE / "teams.json",
                  admins=(), status_dir: Path | str = admin.STATUS_DIR,
-                 subs_file: Path | str = BASE / "subscribers.json", agent_token: str = ""):
+                 subs_file: Path | str = BASE / "subscribers.json", agent_token: str = "", helpers=()):
         self.token = token
         self.agent_token = agent_token if len(agent_token) >= AGENT_TOKEN_MIN else ""
         self.live_dir = Path(live_dir)
@@ -192,18 +194,19 @@ class Config:
         self.origins = frozenset(o.strip().rstrip("/") for o in origins if o.strip())
         self.teams_file = Path(teams_file)
         self.admins = frozenset(admins)
+        self.helpers = frozenset(helpers)   # помощники (PREVIEW_IDS): на пульте только «Голы» (ADR-036)
         self.status_dir = Path(status_dir)
         self.subs_file = Path(subs_file)
 
     @staticmethod
-    def parse_admins(raw: str) -> frozenset[int]:
-        """ADMIN_IDS — Telegram id через запятую или пробел. Не число — пропускаем с предупреждением."""
+    def parse_admins(raw: str, name: str = "ADMIN_IDS") -> frozenset[int]:
+        """ADMIN_IDS (и PREVIEW_IDS) — Telegram id через запятую или пробел. Не число — пропускаем с предупреждением."""
         out = set()
         for part in re.split(r"[,\s]+", raw or ""):
             if part.isdigit():
                 out.add(int(part))
             elif part:
-                log.warning("ADMIN_IDS: «%s» — не Telegram id, пропускаю", part)
+                log.warning("%s: «%s» — не Telegram id, пропускаю", name, part)
         return frozenset(out)
 
     @classmethod
@@ -215,6 +218,7 @@ class Config:
                    webapp_url=env("WEBAPP_URL") or "https://arpicasso.github.io/RHL-BOT/",
                    origins=(env("PAGES_ORIGIN") or "https://arpicasso.github.io").split(","),
                    admins=cls.parse_admins(env("ADMIN_IDS") or ""),
+                   helpers=cls.parse_admins(env("PREVIEW_IDS") or "", "PREVIEW_IDS"),
                    status_dir=env("STATUS_DIR") or admin.STATUS_DIR,
                    agent_token=(env("AGENT_TOKEN") or "").strip())
 
@@ -838,6 +842,23 @@ class Api:
                             "в ADMIN_IDS на сервере.")
         return user
 
+    def goals_user(self, request) -> str:
+        """Вкладка «Голы»: админы и помощники, которые и так отвечают на превью (ADR-036, раздел 4). → роль."""
+        user = self.user(request)
+        if user["id"] in self.cfg.admins:
+            return "admin"
+        if user["id"] in self.cfg.helpers:
+            return "helper"
+        raise Fail(403, f"«Голы» — для админов и помощников. Твой Telegram id {user['id']} — его вписывают "
+                        "в ADMIN_IDS или PREVIEW_IDS на сервере.")
+
+    async def admin_goals(self, request):
+        role = self.goals_user(request)
+        return reply(admin.build_goals(
+            now=self.now(), teams=self.teams, clips_store=self.live_file("clips"), league=await self.league(),
+            clips=admin.read_json(self.cfg.status_dir / "clips.json"),
+            cuts=admin.read_json(self.cfg.status_dir / "cuts.json"), role=role))
+
     async def services(self) -> tuple[dict | None, str]:
         """Состояние служб systemd. Не Linux, нет systemctl или он молчит — (None, почему)."""
         try:
@@ -950,6 +971,7 @@ def make_app(config: Config | None = None, fetch=None, now=None) -> web.Applicat
     r.add_get("/api/health", api.health)
     r.add_post("/api/seen", api.seen)
     r.add_get("/api/admin/status", api.admin_status)
+    r.add_get("/api/admin/goals", api.admin_goals)
     r.add_get("/api/agent/status", api.agent_status)
     r.add_get("/api/live/{name:" + LIVE_NAME + "}.json", api.live)
     r.add_get("/api/me/player", api.mp_get)

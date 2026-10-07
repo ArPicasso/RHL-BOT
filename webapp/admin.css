@@ -12,6 +12,8 @@
   --mint: #55db9c;
   --ember: #fb4903;
   --sun: #ffd731;
+  --lavender: #e9ccff;
+  --act: #000000; --on-act: #ffffff;
   --ok-bg: var(--mint);   --ok-fg: #000000;   --ok-edge: #000000;
   --bad-bg: var(--ember); --bad-fg: #000000;  --bad-edge: #000000;
   --line: 1px solid var(--edge);
@@ -28,6 +30,7 @@
   --edge: #2c3645;
   --sel: #1f2c3f;
   --band-concrete: #1c222c;
+  --act: #4da2ff; --on-act: #08121f;
   --ok-bg: rgba(85, 219, 156, .14);  --ok-fg: #86ddb3;  --ok-edge: rgba(85, 219, 156, .34);
   --bad-bg: rgba(251, 73, 3, .18);   --bad-fg: #ff9a70; --bad-edge: rgba(251, 73, 3, .45);
   color-scheme: dark;
@@ -96,4 +99,38 @@ tr.today td { font-weight: 700; }
 .gate b { display: block; color: var(--ink); font-size: 16px; margin-bottom: 8px; }
 .foot { margin-top: 24px; text-align: center; font-size: 12px; color: var(--muted); }
 
-@media (hover: hover) { .btn-round:hover, .more:hover { background: var(--sel); } }
+/* вкладки «Состояние · Голы» (DESIGN.md → «Пульт → вкладки»): сегменты, как в Календаре */
+.seg { display: grid; grid-template-columns: 1fr 1fr; margin-top: 14px; padding: 3px; border: var(--line); border-radius: 9999px; background: var(--paper); }
+.seg[hidden] { display: none; }
+.seg button { min-height: 40px; padding: 0 10px; border: 0; border-radius: 9999px; background: none; font-weight: 700; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.seg button.on { background: var(--act); color: var(--on-act); }
+
+/* статус гола — мини-стикер: цвет — роль (clips.goal_states), текст всегда есть */
+.st { display: inline-flex; align-items: center; justify-content: center; height: 20px; padding: 0 8px; border: 1px solid var(--edge); border-radius: 9999px; font: 700 11px/1 var(--ui); white-space: nowrap; color: #000000; background: var(--paper); }
+.st-clip { background: var(--mint); }
+.st-ready { background: rgba(85, 219, 156, .4); }
+.st-done { color: var(--ink); }
+.st-confirm { background: var(--lavender); }
+.st-dispute { background: var(--ember); }
+.st-approx { background: var(--sun); }
+.st-search { background: var(--mist); color: var(--ink); }
+.st-absent { color: var(--ink); border-style: dashed; }
+.st-stuck { background: var(--mist); color: var(--ink); border-style: dashed; }
+:root[data-theme="dark"] .st-clip { background: rgba(85, 219, 156, .18); color: #86ddb3; border-color: rgba(85, 219, 156, .4); }
+:root[data-theme="dark"] .st-ready { background: rgba(85, 219, 156, .1); color: #86ddb3; border-color: rgba(85, 219, 156, .3); }
+:root[data-theme="dark"] .st-confirm { background: rgba(233, 204, 255, .14); color: #e9ccff; border-color: rgba(233, 204, 255, .4); }
+:root[data-theme="dark"] .st-dispute { background: rgba(251, 73, 3, .18); color: #ff9a70; border-color: rgba(251, 73, 3, .45); }
+:root[data-theme="dark"] .st-approx { background: rgba(255, 215, 49, .16); color: #ffe27a; border-color: rgba(255, 215, 49, .4); }
+.row.st-row { grid-template-columns: 92px 1fr auto; }
+.row.st-row .st { justify-self: start; }
+
+.row.match { cursor: pointer; }
+.row.match .chev { margin-left: 6px; }
+.goals { margin: 0 0 8px 20px; }
+.goal { display: grid; grid-template-columns: 92px 1fr; gap: 10px; align-items: baseline; padding: 7px 0; font-size: 14px; }
+.goal + .goal { border-top: 1px solid var(--mist); }
+.goal .st { justify-self: start; }
+.goal small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+:focus-visible { outline: 2px solid var(--blue, #4da2ff); outline-offset: 2px; }
+
+@media (hover: hover) { .btn-round:hover, .more:hover, .row.match:hover, .seg button:not(.on):hover { background: var(--sel); } }

@@ -565,13 +565,17 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
     flagged = apply_admin(games, marked, league)
     todo = pending(league, marked, games, now.date(), now)
     kinds = recordings(league, marked, season_days(now.date()), games)
-    for key, video in todo[:SCAN_MAX]:
+    for i, (key, video) in enumerate(todo[:SCAN_MAX]):
         was = games.get(key) or {}
         same = replay.same_video(was.get("video"), video) and was.get("v", 1) >= VERSION
         tries = (was.get("tries", 0) if same else 0) + 1
         gone_n = was.get("gone_tries", 0) if same else 0   # отказов «записи нет» подряд: другой исход их обнуляет
         kind = (kinds.get(key) or {}).get("src") or "league"
         log.info("%s: разбираю %s (%s, попытка %d)", key, video, kind, tries)
+        if track is not None:   # «Сейчас» на пульте (ADR-036, раздел 4): разбор записи — минуты, видно какой
+            track.info(scan={"key": key, "src": kind, "at": now_msk().isoformat(timespec="seconds")},
+                       waiting=len(todo) - i - 1)
+            track.flush()
         try:
             got = scan(key, video, ((marked or {}).get(key) or {}).get("anchors") or {}, protocol_order(league, key),
                        kind)
@@ -622,6 +626,8 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
         store["updated"] = now_msk().isoformat(timespec="seconds")
         write_atomic(LIVE_DIR / "clips.json", store)
     done = min(len(todo), SCAN_MAX)
+    if track is not None:
+        track.info(scan=None, waiting=len(todo) - done)
     return done, len(todo) - done
 
 
@@ -1183,6 +1189,55 @@ def catalog(store: dict, league: dict | None, marked: dict, today: date) -> dict
 
 
 WHY = ("no_video", "gone", "pending", "error", "no_board", "not_found")   # почему у гола нет повтора (ADR-031)
+STUCK = ("no_video", "gone", "pending", "error")   # матч стоит до голов: с самим голом человеку делать нечего
+# Где гол на конвейере (ADR-036, раздел 4: вкладка «Голы» пульта), слова и цвета — DESIGN.md → «Пульт»
+STATES = ("clip", "ready", "done", "confirm", "dispute", "approx", "search", "absent", "stuck")
+
+
+def goal_states(game: dict, admin_e: dict | None, protocol: dict[str, dict], scores: set[str],
+                entry: dict | None, why: str | None) -> dict[str, str]:
+    """Статус каждого гола матча для пульта: `clip` — клип у болельщиков; `ready` — два свидетеля, клип режется;
+    `done` — секунда точная, а клипа не будет (запись клуба, игрок скрыт); `confirm` — точная секунда одного
+    свидетеля, нужно «✅ Гол виден»; `dispute` — отметка человека и табло не сошлись (ADR-033); `approx` — есть окно в
+    пару минут (превью, ход часов, расчёт от опоры); `search` — где гол, не знает никто; `absent` — человек сказал, что
+    в записи гола нет; `stuck` — матч стоит раньше голов (`why` из STUCK). Те же правила, что у clip_plan и
+    replay.with_board: пульт и /replay не расходятся."""
+    absent = set((admin_e or {}).get("absent") or [])
+    mine = bool(admin_e) and bool(game) and replay.same_video(admin_e.get("video"), game.get("video"))
+    spor = replay.disputed(admin_e, game) if mine else set()
+    if game:
+        seconds = goal_seconds(game, admin_e)
+        two = clip_witnesses(game, admin_e)
+    else:   # служба записи не разбирала: точны только отметки людей, проверить их нечем
+        seconds = {s: (t, "admin") for s, t in ((admin_e or {}).get("anchors") or {}).items() if isinstance(t, int)}
+        two = {}
+    have = (game or {}).get("clips") or {}
+    board = (game or {}).get("goals") or {}
+    links = {g["score"]: g for g in (entry or {}).get("goals") or [] if isinstance(g, dict) and g.get("score")}
+    out = {}
+    for s in scores:
+        x = protocol.get(s) or {}
+        if s in absent:
+            out[s] = "absent"
+        elif why == "gone" or (game or {}).get("status") == "gone":
+            # повторов по удалённой записи нет, что бы ни помнил разбор; отметил человек после удаления — его повтор
+            out[s] = ("confirm" if links[s].get("exact") else "approx") if s in links else "stuck"
+        elif s in have:
+            out[s] = "clip"
+        elif s in two:
+            out[s] = "done" if (game or {}).get("src") == "club" or hidden_goal(x) or (protocol and not x) \
+                else "ready"
+        elif s in spor:
+            out[s] = "dispute"
+        elif s in seconds or (links.get(s) or {}).get("exact"):   # точная секунда одного свидетеля
+            out[s] = "confirm"
+        elif s in links or isinstance((board.get(s) or {}).get("ask"), dict):
+            out[s] = "approx"
+        elif why in STUCK:
+            out[s] = "stuck"
+        else:
+            out[s] = "search"
+    return out
 
 
 def coverage(store: dict, league: dict | None, marked: dict, today: date) -> dict[str, dict]:
@@ -1233,6 +1288,9 @@ def coverage(store: dict, league: dict | None, marked: dict, today: date) -> dic
             e["why"] = "no_board"
         else:
             e["why"] = "not_found"
+        if scores:   # статус каждого гола — для вкладки «Голы» пульта (ADR-036, раздел 4)
+            states = goal_states(game, admin_e, protocol, scores, entry, e["why"])
+            e["state"] = {s: states[s] for s in sorted(scores, key=sb.goal_rank)}
         if missing:
             e["missing"] = missing
             why = {s: r for s, r in (game.get("rejected") or {}).items() if s in missing}

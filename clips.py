@@ -83,6 +83,7 @@ TRIES = 3           # столько раз пробуем матч, котор�
 GONE_TRIES = 2      # столько раз подряд VK должен сказать «записи нет», чтобы считать её удалённой (этап 0.3 плана)
 GONE_MAX = 6        # удалённых записей в пульте и тревогах
 ALIVE_EVERY = 6 * 3600   # с: как часто спрашиваем VK, на месте ли уже разобранная запись (ADR-027, доп. 07.10)
+ALIVE_FRESH = 1800       # с: у матчей младше ALIVE_DAYS — чаще, но не каждый проход: запросов к VK и так хватает
 ALIVE_MAX = 3            # записей за проход: один запрос метаданных на запись, без скачивания
 ALIVE_DAYS = 2           # дней после матча запись проверяем каждый проход: в первые дни её и удаляют, и заменяют
 WAIT_EVERY = 1200   # с: VK ещё не знает длину записи (эфир идёт или запись обрабатывается) — спрашиваем снова не чаще
@@ -234,15 +235,17 @@ def wait_over(game: dict, now: datetime) -> bool:
 
 
 def alive_due(game: dict, key: str, now: datetime) -> bool:
-    """Пора ли спросить VK, на месте ли запись: сразу — если VK уже раз сказал «записи нет» или матч свежий,
-    иначе раз в ALIVE_EVERY от прошлой проверки (а первый раз — от разбора)."""
-    if game.get("gone_tries") or key[:10] >= (now.date() - timedelta(days=ALIVE_DAYS)).isoformat():
+    """Пора ли спросить VK, на месте ли запись: сразу — если VK уже раз сказал «записи нет» (подтвердить или снять),
+    иначе раз в ALIVE_FRESH у матчей младше ALIVE_DAYS и раз в ALIVE_EVERY у остальных — от прошлой проверки,
+    а первый раз от разбора."""
+    if game.get("gone_tries"):
         return True
-    try:
+    fresh = key[:10] >= (now.date() - timedelta(days=ALIVE_DAYS)).isoformat()
+    try:   # время в файле может быть и наивным — тогда вычитание упадёт: спрашиваем, как при отсутствии времени
         last = datetime.fromisoformat(game.get("alive") or game["scanned"])
+        return (now - last).total_seconds() >= (ALIVE_FRESH if fresh else ALIVE_EVERY)
     except (KeyError, TypeError, ValueError):
         return True
-    return (now - last).total_seconds() >= ALIVE_EVERY
 
 
 def alive_pass(store: dict, now: datetime, check=stream, track: "admin.Tracker | None" = None,
@@ -271,7 +274,10 @@ def alive_pass(store: dict, now: datetime, check=stream, track: "admin.Tracker |
                 track.add("vk_gone")
             e["gone_tries"] = e.get("gone_tries", 0) + 1
             if e["gone_tries"] >= GONE_TRIES:
-                e.update(status="gone", error=f"{type(err).__name__}: {err}"[:300])
+                # `gone_at` — когда служба это узнала: по нему сборка решает, чьё слово свежее, её или человека
+                # (replay.with_board). Без него считалось бы время разбора, а оно старше отметок админа
+                e.update(status="gone", error=f"{type(err).__name__}: {err}"[:300],
+                         gone_at=now.isoformat(timespec="seconds"))
                 log.warning("%s: записи %s больше нет в VK — повторов по ней не будет", key, e["video"])
         else:
             e.pop("gone_tries", None)
@@ -591,6 +597,7 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
                 got["gone_tries"] = gone_n   # в записи матча — только пока отказы идут подряд: иначе ключа нет
                 if gone_n >= GONE_TRIES:
                     got["status"] = "gone"
+                    got["gone_at"] = now_msk().isoformat(timespec="seconds")
                     log.warning("%s: записи %s больше нет в VK — повторов по ней не будет", key, video)
             elif isinstance(err, VkError):
                 vk_note(track, err)

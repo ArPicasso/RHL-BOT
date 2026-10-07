@@ -258,9 +258,12 @@ def _sec(v) -> bool:
 
 
 def _after(entry: dict | None, board: dict | None) -> bool:
-    """Отметки человека свежее разбора записи: он размечал гол уже после того, как служба не смогла её скачать."""
+    """Отметки человека свежее вердикта службы: он размечал гол уже после того, как VK не отдал запись. Когда
+    служба это узнала — `gone_at`; у старых записей файла его нет, тогда считаем по времени разбора."""
+    board = board or {}
     try:
-        return datetime.fromisoformat((entry or {})["updated"]) > datetime.fromisoformat((board or {})["scanned"])
+        return datetime.fromisoformat((entry or {})["updated"]) \
+            > datetime.fromisoformat(board.get("gone_at") or board["scanned"])
     except (KeyError, TypeError, ValueError):
         return False
 

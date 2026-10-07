@@ -898,18 +898,30 @@ class Gone(unittest.TestCase):
             # разбор такой матч не берёт
             self.assertNotIn(KEY, dict(clips.pending(LEAGUE, {}, store["games"], date(2026, 10, 5))))
             ok = mock.Mock(return_value=("url", {}, 3600))
+            later = self.now + timedelta(hours=1)   # между проверками одной записи проходит время (alive_due)
             self.assertEqual(clips.alive_pass(store, self.now, check=ok), 1)
             self.assertEqual((ok.call_args.args[0], e["status"]), (VIDEO, "ok"))
+            self.assertEqual(clips.alive_pass(store, self.now, check=ok), 0)   # только что спрашивали
             # сбой проверки записи не хоронит
-            clips.alive_pass(store, self.now, check=mock.Mock(side_effect=clips.VkError("timed out")))
+            clips.alive_pass(store, later, check=mock.Mock(side_effect=clips.VkError("timed out")))
             self.assertEqual((e["status"], e.get("gone_tries")), ("ok", None))
             gone = mock.Mock(side_effect=clips.VkError("Video was deleted"))
-            clips.alive_pass(store, self.now, check=gone)
+            clips.alive_pass(store, later + timedelta(hours=1), check=gone)
             self.assertEqual((e["status"], e["gone_tries"]), ("ok", 1))   # один отказ — ещё не приговор
-            with self.assertLogs(level="WARNING"):
+            with self.assertLogs(level="WARNING"):   # а второй подряд — приговор, и сразу, не через час
                 clips.alive_pass(store, self.now, check=gone)
             self.assertEqual((e["status"], e["goals"]), ("gone", {"0:1": {"t": 10}}))
             self.assertEqual(clips.alive_pass(store, self.now, check=gone), 0)   # уже знаем — не спрашиваем
+            # вердикт свежее отметок админа, сделанных до него: мёртвых ссылок у матча не остаётся
+            self.assertEqual(e["gone_at"], "2026-10-05T12:00:00+03:00")
+            entry = {"video": VIDEO, "anchors": {"0:1": 100}, "updated": "2026-10-05T10:00:00+03:00",
+                     "goals": [{"score": "0:1", "team": "away", "t": 90, "exact": True}]}
+            self.assertIsNone(replay.with_board(entry, e))
+            self.assertEqual(clips.coverage({"games": {KEY: e}}, LEAGUE, {KEY: entry},
+                                            date(2026, 10, 5))[KEY]["why"], "gone")
+            # а отметка после вердикта значит, что у человека запись открывается: его слово главнее
+            later = {**entry, "updated": "2026-10-05T12:00:01+03:00"}
+            self.assertEqual(replay.with_board(later, e)["goals"][0]["t"], 90)
             saved = json.loads((Path(tmp) / "clips.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["games"][KEY]["status"], "gone")
 
@@ -919,7 +931,10 @@ class Gone(unittest.TestCase):
              "alive": (now - timedelta(hours=1)).isoformat(timespec="seconds")}
         self.assertFalse(clips.alive_due(e, KEY, now))
         self.assertTrue(clips.alive_due({**e, "alive": (now - timedelta(hours=7)).isoformat()}, KEY, now))
-        self.assertTrue(clips.alive_due(e, "2026-10-20|a|b", now))       # матч сегодня — каждый проход
+        self.assertTrue(clips.alive_due(e, "2026-10-20|a|b", now))       # матч сегодня — чаще, но не каждый проход
+        soon = {**e, "alive": (now - timedelta(minutes=10)).isoformat(timespec="seconds")}
+        self.assertFalse(clips.alive_due(soon, "2026-10-20|a|b", now))
+        self.assertTrue(clips.alive_due({**e, "alive": "2026-10-20 10:00:00"}, KEY, now))   # время без пояса — спросим
         self.assertTrue(clips.alive_due({**e, "gone_tries": 1}, KEY, now))   # VK уже сказал «нет» — сразу
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
             store = {"games": {KEY: dict(e), "2026-10-05|kaluga|dinamo-576": {"video": "https://vk.com/video-3_4",

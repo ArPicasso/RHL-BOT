@@ -741,6 +741,65 @@ class Coverage(unittest.TestCase):
         self.assertEqual(clips.coverage(store, LEAGUE, {}, date(2026, 10, 5))[KEY]["why"], "pending")
 
 
+class GoalStates(unittest.TestCase):
+    """ADR-036, раздел 4: где каждый гол на конвейере — для вкладки «Голы» пульта, по тем же правилам, что клип."""
+    SCORES = ("0:1", "0:2", "1:2", "1:3", "2:3", "2:4", "2:5")
+
+    def setUp(self):
+        self.league = {"games": [{**LEAGUE["games"][0], "goals": [
+            {"score": s, "team": "home" if s in ("1:2", "2:3") else "away", "period": "1"} for s in self.SCORES]}]}
+        self.store = {"games": {KEY: {
+            "video": VIDEO, "status": "ok", "src": "league",
+            "clips": {"0:1": {"t": 2600}},
+            "goals": {"0:1": {"t": 2600, "src": "clock"}, "0:2": {"t": 2900, "src": "run"},
+                      "1:2": {"t": 3500, "src": "board"}, "1:3": {"change": 3700, "ask": {"start": 3580}}},
+            "checks": {"2:4": {"t": 4000, "status": "conflict", "against": ["табло"]}}}}}
+        self.marked = {KEY: {"video": VIDEO, "anchors": {"2:4": 4000}, "absent": ["2:5"], "goals": []}}
+
+    def test_every_goal_has_its_place(self):
+        got = clips.coverage(self.store, self.league, self.marked, date(2026, 10, 5))[KEY]
+        self.assertEqual(list(got["state"]), list(self.SCORES))             # по порядку голов
+        self.assertEqual(got["state"], {"0:1": "clip", "0:2": "ready", "1:2": "confirm", "1:3": "approx",
+                                        "2:3": "search", "2:4": "dispute", "2:5": "absent"})
+
+    def test_club_recording_and_hidden_player_never_get_a_clip(self):
+        game = {**self.store["games"][KEY], "src": "club", "clips": {}}
+        protocol = clips.league_goals(self.league, KEY)
+        got = clips.goal_states(game, None, protocol, {"0:1", "0:2"}, None, "ok")
+        self.assertEqual(got, {"0:1": "confirm", "0:2": "done"})            # два свидетеля, а клипа не будет
+        got = clips.goal_states({**game, "src": "league"}, None, {}, {"0:2"}, None, "ok")
+        self.assertEqual(got, {"0:2": "done"})                              # протокола нет — резать нечего
+        protocol["0:2"] = {**protocol["0:2"], "author": clips.pc.HIDDEN_NAME}
+        got = clips.goal_states({**game, "src": "league"}, None, protocol, {"0:2"}, None, "ok")
+        self.assertEqual(got, {"0:2": "done"})
+
+    def test_match_stuck_before_goals(self):
+        self.store["games"][KEY].update(status="gone", gone_at="2026-10-05T10:00:00+03:00")
+        got = clips.coverage(self.store, self.league, self.marked, date(2026, 10, 5))[KEY]
+        self.assertEqual(set(got["state"].values()), {"stuck", "absent"})   # по удалённой записи — ничего
+        entry = {"video": "https://vk.com/video-1_9", "goals": [{"score": "0:1", "t": 90, "exact": True}]}
+        got = clips.goal_states(self.store["games"][KEY], None, {}, {"0:1", "0:2"}, entry, "gone")
+        self.assertEqual(got, {"0:1": "confirm", "0:2": "stuck"})           # человек отметил после удаления
+        got = clips.goal_states({}, None, {}, {"0:1"}, None, "pending")
+        self.assertEqual(got, {"0:1": "stuck"})
+        got = clips.goal_states({}, {"video": VIDEO, "anchors": {"0:1": 50}}, {}, {"0:1"}, None, "pending")
+        self.assertEqual(got, {"0:1": "confirm"})                           # отметку человека проверить нечем
+
+    def test_scan_is_visible_on_the_panel(self):
+        """«Сейчас»: какую запись служба разбирает — в пульсе до разбора, после прохода — пусто."""
+        seen = []
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            track = clips.admin.Tracker("clips", Path(tmp) / "status.json")
+
+            def scan(*_):
+                seen.append(json.loads((Path(tmp) / "status.json").read_text())["info"])
+                return {"status": "ok", "goals": {}}
+            clips.run_pass({}, {"games": LEAGUE["games"][:1]}, {}, datetime(2026, 10, 5, 12, tzinfo=TZ), scan=scan,
+                           track=track)
+        self.assertEqual((seen[0]["scan"]["key"], seen[0]["waiting"]), (KEY, 0))
+        self.assertIsNone(track.info_["scan"])
+
+
 class Waiting(unittest.TestCase):
     """06.10: «Белгород» и «Дизелист» разобраны во время эфира — VK ещё не знал длину записи, и кадр табло для
     разметки вышел из заставки до матча. Свежий матч без длины записи ждёт, а не разбирается."""

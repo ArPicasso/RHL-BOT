@@ -482,6 +482,108 @@ def build_status(*, now: datetime, teams: dict[str, str], services: dict | None,
     return status
 
 
+# ---------- вкладка «Голы» (ADR-036, раздел 4) ----------
+# Где каждый матч и гол на конвейере «запись → разбор → секунды → проверка → клип». Статус гола считает служба
+# clips (`coverage` в live/clips.json, поле `state` — clips.goal_states), здесь только сборка ответа: названия,
+# авторы из league.json, очередь «Ждут вас» и «Сейчас» из пульса служб. Только чтение: отметки — шаг 5.
+
+GOAL_STATES = ("clip", "ready", "done", "confirm", "dispute", "approx", "search", "absent", "stuck")   # clips.STATES
+WAIT_ORDER = {"dispute": 0, "approx": 1, "confirm": 2, "search": 3}   # что ждёт человека и в каком порядке
+GOALS_DAYS = 14     # матчи старше — на вкладке, только если у них что-то ждёт человека
+GOALS_MATCHES = 80  # матчей в ответе
+WAIT_SHOW = 60      # голов в «Ждут вас»: больше за раз не разобрать, число — полное
+
+
+def _rank(score: str) -> int:
+    try:
+        return sum(int(x) for x in score.split(":"))
+    except (AttributeError, ValueError):
+        return 99
+
+
+def _score(g: dict | None) -> str:
+    sc = (g or {}).get("score")
+    if isinstance(sc, dict) and sc.get("home") is not None and sc.get("away") is not None:
+        return f"{sc['home']}:{sc['away']}"
+    return ""
+
+
+def build_goals(*, now: datetime, teams: dict[str, str], clips_store: dict | None, league: dict[str, dict],
+                clips: dict | None, cuts: dict | None, role: str) -> dict:
+    """Ответ GET /api/admin/goals. clips_store — live/clips.json, league — матчи league.json по ключу, clips и cuts —
+    пульс служб (status/*.json). Людей нет: только матчи, голы и авторы из протокола — они и так у болельщиков."""
+    store = clips_store if isinstance(clips_store, dict) else {}
+    cov = {k: e for k, e in (store.get("coverage") or {}).items() if isinstance(e, dict) and k.count("|") == 2}
+    since = (now.date() - timedelta(days=GOALS_DAYS - 1)).isoformat()
+    states = dict.fromkeys(GOAL_STATES, 0)
+    pipe = {"played": len(cov), "video": 0, "parsed": 0, "goals": 0, "replays": 0, "full": 0}
+    matches, wait = [], []
+    for key in sorted(cov, key=lambda k: (k[:10], k), reverse=True):
+        e = cov[key]
+        why = e.get("why")
+        pipe["video"] += bool(e.get("src"))   # src у разбора покрытия есть, только когда запись нашлась
+        pipe["parsed"] += bool(e.get("src")) and why != "pending"
+        pipe["goals"] += int(e.get("goals") or 0)
+        pipe["replays"] += int(e.get("replays") or 0)
+        pipe["full"] += why == "ok"
+        g = league.get(key) or {}
+        protocol = {x["score"]: x for x in g.get("goals") or []
+                    if isinstance(x, dict) and isinstance(x.get("score"), str) and x.get("period") != "РБ"}
+        day, home, away = key.split("|")
+        title = match_title(key, teams)
+        rejected = e.get("rejected") or {}
+        goals, counts, waits = [], {}, 0
+        for score, st in (e.get("state") or {}).items():
+            if st not in states:
+                continue
+            states[st] += 1
+            counts[st] = counts.get(st, 0) + 1
+            x = protocol.get(score) or {}
+            row = {"score": score, "state": st, "team": x.get("team"), "period": x.get("period"),
+                   "time": x.get("time"), "author": x.get("author"), "assists": x.get("assists") or []}
+            if score in rejected:
+                row["why"] = no_ids(str(rejected[score]))[:120]
+            goals.append(row)
+            if st in WAIT_ORDER:
+                waits += 1
+                wait.append({"key": key, "date": day, "title": title, **row})
+        goals.sort(key=lambda r: _rank(r["score"]))
+        if day < since and not waits:
+            continue
+        m = {"key": key, "date": day, "home": home, "away": away, "title": title, "score": _score(g),
+             "why": why, "src": e.get("src"), "goals": int(e.get("goals") or 0),
+             "replays": int(e.get("replays") or 0), "states": counts, "wait": waits, "list": goals}
+        if e.get("error"):
+            m["error"] = no_ids(str(e["error"]))[:200]
+        matches.append(m)
+    wait.sort(key=lambda r: (WAIT_ORDER[r["state"]], -int(r["date"].replace("-", "")), r["key"], _rank(r["score"])))
+    clips = clips if isinstance(clips, dict) else None
+    info = (clips or {}).get("info") or {}
+    scan = info.get("scan") if isinstance(info.get("scan"), dict) else None
+    cuts = cuts if isinstance(cuts, dict) else None
+    cinfo = (cuts or {}).get("info") or {}
+    boards = [{"club": c, "name": teams.get(c, c), "matches": int((b or {}).get("matches") or 0)}
+              for c, b in sorted((store.get("boards") or {}).items()) if isinstance(b, dict)]
+    return {
+        "now": iso(now),
+        "role": role,
+        "updated": store.get("updated"),
+        "pipeline": {**pipe, "states": states, "boards": boards},
+        "work": {
+            "clips": {"beat": clips.get("beat"), "started": clips.get("started"),
+                      "scan": {**scan, "title": match_title(str(scan.get("key") or ""), teams)} if scan else None,
+                      "waiting": info.get("waiting"), "cut": info.get("cut"), "bucket": info.get("bucket"),
+                      "vk_ok": info.get("vk_ok"), "vk_fail": info.get("vk_fail"),
+                      "vk_error": info.get("vk_error")} if clips else None,
+            "cuts": {"beat": cuts.get("beat"), "job": cinfo.get("job"), "queue": cinfo.get("queue"),
+                     "ok_at": cinfo.get("cut_ok"), "fail_at": cinfo.get("cut_fail"),
+                     "error": cinfo.get("cut_error")} if cuts else None,
+        },
+        "wait": {"total": len(wait), "items": wait[:WAIT_SHOW]},
+        "matches": matches[:GOALS_MATCHES],
+    }
+
+
 def _ago(at: str | None, now: datetime) -> timedelta | None:
     dt = parse_iso(at)
     return now - dt if dt else None

@@ -369,6 +369,72 @@ class BuildStatusTest(unittest.TestCase):
                                            "text": "Состояние служб не прочиталось: systemctl: FileNotFoundError"}])
 
 
+class GoalsTab(unittest.TestCase):
+    """Вкладка «Голы» (ADR-036, раздел 4): конвейер, «Ждут вас» по порядку и «Сейчас» из пульса служб."""
+    now = datetime(2026, 10, 7, 21, 0, tzinfo=TZ)
+    teams = {"proton": "Протон", "kristall": "Кристалл", "rostov": "Ростов", "krasnodar": "Краснодар",
+             "arktika": "Арктика", "ermak": "Ермак"}
+
+    def build(self, **kw):
+        cov = {
+            "2026-10-04|proton|kristall": {"goals": 3, "replays": 2, "why": "not_found", "src": "league",
+                                           "state": {"0:1": "clip", "1:1": "confirm", "2:1": "search"},
+                                           "rejected": {"2:1": "табло убирали"}},
+            "2026-10-06|rostov|krasnodar": {"goals": 2, "replays": 2, "why": "ok", "src": "league",
+                                            "state": {"1:0": "approx", "1:1": "dispute"}},
+            "2026-09-20|arktika|ermak": {"goals": 1, "replays": 1, "why": "ok", "src": "league",
+                                         "state": {"1:0": "clip"}},
+            "2026-09-21|rostov|ermak": {"goals": 0, "replays": 0, "why": "ok"},   # 0:0 без записи
+            "2026-10-05|arktika|ermak": {"goals": 1, "replays": 0, "why": "no_video", "state": {"0:1": "stuck"}},
+        }
+        league = {"2026-10-04|proton|kristall": {"score": {"home": 2, "away": 1}, "goals": [
+            {"score": "1:1", "period": "2", "time": "31:05", "team": "away", "author": "Кузнецов",
+             "assists": ["Попов"]}]}}
+        args = dict(now=self.now, teams=self.teams, clips_store={"coverage": cov, "updated": "2026-10-07T20:50:00+03:00",
+                                                                 "boards": {"proton": {"matches": 2}}},
+                    league=league, clips=None, cuts=None, role="admin")
+        args.update(kw)
+        return admin.build_goals(**args)
+
+    def test_pipeline_and_waiting_order(self):
+        got = self.build()
+        p = got["pipeline"]
+        self.assertEqual((p["played"], p["video"], p["parsed"], p["goals"], p["replays"], p["full"]), (5, 3, 3, 7, 5, 3))
+        self.assertEqual((p["states"]["clip"], p["states"]["stuck"], p["boards"][0]["name"]), (2, 1, "Протон"))
+        # спор → примерно → подтвердить → поиск, внутри — свежие матчи первыми
+        self.assertEqual([(w["state"], w["score"]) for w in got["wait"]["items"]],
+                         [("dispute", "1:1"), ("approx", "1:0"), ("confirm", "1:1"), ("search", "2:1")])
+        self.assertEqual(got["wait"]["total"], 4)
+        x = got["wait"]["items"][2]
+        self.assertEqual((x["title"], x["author"], x["assists"], x["time"]), ("Протон — Кристалл", "Кузнецов",
+                                                                                ["Попов"], "31:05"))
+
+    def test_matches_fresh_first_old_only_when_waiting(self):
+        got = self.build()
+        self.assertEqual([m["key"] for m in got["matches"]],
+                         ["2026-10-06|rostov|krasnodar", "2026-10-05|arktika|ermak", "2026-10-04|proton|kristall"])
+        m = got["matches"][2]
+        self.assertEqual((m["score"], m["why"], m["states"], m["wait"]), ("2:1", "not_found",
+                                                                         {"clip": 1, "confirm": 1, "search": 1}, 2))
+        self.assertEqual(m["list"][2]["why"], "табло убирали")
+
+    def test_now_block_from_service_beats(self):
+        clips = {"beat": "2026-10-07T20:58:00+03:00", "info": {
+            "scan": {"key": "2026-10-04|proton|kristall", "at": "2026-10-07T20:57:00+03:00"}, "waiting": 3,
+            "cut": "off", "vk_ok": "2026-10-07T20:57:01+03:00"}}
+        cuts = {"beat": "2026-10-07T20:59:00+03:00", "info": {"job": {"kind": "review", "len": 30, "prio": 2},
+                                                              "queue": {"queued": 4, "urgent": 1}}}
+        got = self.build(clips=clips, cuts=cuts, role="helper")
+        w = got["work"]
+        self.assertEqual((w["clips"]["scan"]["title"], w["clips"]["waiting"], w["clips"]["cut"]),
+                         ("Протон — Кристалл", 3, "off"))
+        self.assertEqual((w["cuts"]["job"]["kind"], w["cuts"]["queue"]["urgent"]), ("review", 1))
+        self.assertEqual(got["role"], "helper")
+        empty = admin.build_goals(now=self.now, teams={}, clips_store=None, league={}, clips=None, cuts=None,
+                                  role="admin")
+        self.assertEqual((empty["matches"], empty["wait"]["total"], empty["work"]["clips"]), ([], 0, None))
+
+
 class Alerts(unittest.TestCase):
     """Тревоги админу (ADR-022, раздел 3): новое — сразу, то же — раз в час, ушло — «починилось»."""
 

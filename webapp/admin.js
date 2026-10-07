@@ -1,6 +1,9 @@
-// Пульт админа (ADR-021): здоровье системы, аудитория, рассылки и игры одним экраном.
+// Пульт админа (ADR-021): здоровье системы, аудитория, рассылки и игры одним экраном — вкладка «Состояние».
 // Данные — GET ${LIVE_API}/admin/status с подписью Telegram, пускает только ADMIN_IDS на сервере.
-// Для разработки: ?admin_mock=1 — выдуманный ответ data/admin/mock/status.json, =bad — с проблемами.
+// Вкладка «Голы» (ADR-036, раздел 4): где каждый гол на пути к клипу — GET ${LIVE_API}/admin/goals, пускает ADMIN_IDS
+// и помощников PREVIEW_IDS; помощник видит только её. ?tab=goals — открыть сразу на ней (так её открывает бот).
+// Для разработки: ?admin_mock=1 — выдуманный ответ data/admin/mock/status.json и goals.json, =bad — с проблемами,
+// =helper — как у помощника.
 // Всё, что пришло с сервера, — только через esc(): там названия источников, ошибки и имена команд.
 "use strict";
 
@@ -261,49 +264,203 @@ function games(st) {
   return html;
 }
 
+// ---------- вкладка «Голы» (ADR-036, раздел 4) ----------
+// Слова и цвета статусов — DESIGN.md → «Пульт → вкладки». Статус гола считает служба clips, здесь только показ.
+
+const GOAL_WORDS = { clip: "клип", ready: "к клипу", done: "точно", confirm: "подтвердить", dispute: "спор", approx: "примерно", search: "поиск", absent: "нет в записи", stuck: "стоит" };
+const GOAL_HINTS = {
+  clip: "клип у болельщиков",
+  ready: "два свидетеля — клип будет",
+  done: "секунда точная, клипа нет: запись клуба, игрок скрыт или протокола ещё нет",
+  confirm: "точная секунда одного свидетеля — нужно «✅ Гол виден»",
+  dispute: "отметка человека и табло не сошлись",
+  approx: "известно окно в пару минут — найти секунду",
+  search: "где гол, не знает никто — искать в записи",
+  absent: "человек сказал: в записи гола нет",
+  stuck: "матч застрял раньше голов",
+};
+// почему матч не дошёл до повтора у каждого гола — как в /replay и вечерней сводке бота (COVER_WHY).
+// Что сделать — только админу: /replay помощнику бот не открывает
+const WHY_WORDS = {
+  ok: "повтор у каждого гола",
+  no_video: "нет записи ни лиги, ни клуба",
+  gone: "запись удалили из VK",
+  pending: "ждёт разбора службой",
+  error: "VK не отдал запись",
+  no_board: "табло клуба не размечено — служба голы не ищет",
+  not_found: "табло нашло не все голы",
+};
+const WHY_TODO = { no_video: "пришли ссылку в /replay", gone: "нужна новая ссылка в /replay" };
+const WHY_LEVEL = { ok: "ok", pending: "", no_video: "bad", gone: "bad", error: "bad", no_board: "warn", not_found: "warn" };
+const CUT_KINDS = { preview: "превью", review: "30 с гола", search: "окно поиска", clip: "клип" };
+const PIPE_STATES = ["clip", "ready", "done", "confirm", "dispute", "approx", "search", "absent", "stuck"];
+
+const sticker = (st) => `<span class="st st-${esc(st)}">${esc(GOAL_WORDS[st] || st)}</span>`;
+function dm(iso) {
+  const [, m, d] = String(iso || "").split("-");
+  return d && m ? `${d}.${m}` : "";
+}
+function goalLine(x) {
+  const per = x.period ? (/^\d+$/.test(String(x.period)) ? `${x.period}-й` : String(x.period)) : "";
+  const who = x.author ? `${x.author}${x.assists && x.assists.length ? ` (${x.assists.join(", ")})` : ""}` : "";
+  return [`гол ${x.score}`, [per, x.time].filter(Boolean).join(", "), who].filter(Boolean).map(esc).join(" · ");
+}
+
+function pipeline(gd) {
+  const p = gd.pipeline || {};
+  const s = p.states || {};
+  let html = `<div class="label">Конвейер сезона</div><div class="tiles">
+    ${tile(p.played, "матчей сыграно")}
+    ${tile(p.video, "из них с записью")}
+    ${tile(p.parsed, "разобраны службой")}
+    ${tile(p.full, "с повтором у каждого гола")}
+    ${tile(p.goals, "голов в этих матчах")}
+    ${tile(p.replays, "голов с повтором")}
+  </div><section class="card" style="margin-top:12px"><div class="card-title">Голы по статусам</div>`;
+  for (const st of PIPE_STATES) {
+    if (!v(s, st) && !["clip", "ready", "confirm"].includes(st)) continue;
+    html += `<div class="row st-row">${sticker(st)}<span><small>${esc(GOAL_HINTS[st])}</small></span><span class="aside"><b>${num(v(s, st))}</b></span></div>`;
+  }
+  for (const b of p.boards || []) html += row("warn", `Табло не размечено: ${b.name}`, esc(`домашних матчей без секунд и клипов: ${b.matches}`), "");
+  return html + `</section>`;
+}
+
+function work(gd, now) {
+  const w = gd.work || {};
+  const c = w.clips, k = w.cuts;
+  let html = `<div class="label">Сейчас</div><section class="card">`;
+  if (c) {
+    const sub = c.scan ? `разбирает запись: ${c.scan.title} ${dm(String(c.scan.key || "").slice(0, 10))}${c.scan.at ? ` · с ${hm(toDate(c.scan.at))}` : ""}` : "новых записей не разбирает";
+    const wait = typeof c.waiting === "number" ? ` · ждут разбора ${num(c.waiting)}` : "";
+    html += row(minsAgo(c.beat, now) > 60 ? "bad" : "ok", "Служба клипов", esc(sub + wait), esc(ago(c.beat, now)));
+    const vkBad = toDate(c.vk_fail) && (!toDate(c.vk_ok) || toDate(c.vk_fail) > toDate(c.vk_ok));
+    const vkSub = vkBad ? c.vk_error || "последний раз отказал" : c.vk_ok ? "последняя запись скачалась" : "с запуска службы записей не качали";
+    html += row(vkBad ? "warn" : c.vk_ok ? "ok" : "", "VK отдаёт записи", esc(vkSub), c.vk_ok || c.vk_fail ? esc(ago(vkBad ? c.vk_fail : c.vk_ok, now)) : "");
+    const cutOff = c.cut === "off" || c.bucket === false;
+    html += row(cutOff ? "warn" : "ok", "Клипы болельщикам", esc(c.cut === "off" ? "нарезка на паузе: CLIPS_CUT=off в bot.env"
+      : c.bucket === false ? "не режутся: нет ключей хранилища CLIPS_S3_* в bot.env" : "режутся у голов с двумя свидетелями"), "");
+  } else {
+    html += row("bad", "Служба клипов", "status/clips.json нет: служба не запущена", "");
+  }
+  if (k) {
+    const q = k.queue || {};
+    const job = k.job ? `режет ${CUT_KINDS[k.job.kind] || k.job.kind}${k.job.len ? `, ${k.job.len} с` : ""}` : "ничего не режет";
+    const queue = `в очереди ${num(v(q, "queued"))}${v(q, "urgent") ? `, ждут люди — ${num(v(q, "urgent"))}` : ""}`;
+    html += row(minsAgo(k.beat, now) > 20 ? "bad" : "ok", "Видео для людей", esc(`${job} · ${queue}`), esc(ago(k.beat, now)));
+  }
+  if (gd.updated) html += row("", "Статусы голов", "служба пересчитывает их каждым проходом, раз в 10 минут", esc(ago(gd.updated, now)));
+  return html + `</section>`;
+}
+
+function waiting(gd) {
+  const w = gd.wait || {};
+  const items = w.items || [];
+  let html = `<div class="label">Ждут вас · ${num(w.total || 0)}</div><section class="card">`;
+  if (!items.length) return html + row("ok", "Никто не ждёт", "у каждого гола либо секунда, либо матч стоит до голов — смотри «Матчи»", "") + `</section>`;
+  const all = state.open.wait;
+  for (const x of all ? items : items.slice(0, 8)) {
+    html += `<div class="row st-row">${sticker(x.state)}<span><b>${esc(x.title)}, ${esc(dm(x.date))}</b><small>${goalLine(x)}</small></span><span class="aside"></span></div>`;
+  }
+  if (items.length > 8) html += `<button type="button" class="more" data-more="wait">${all ? "Свернуть" : `Все ${items.length}`}</button>`;
+  if (w.total > items.length) html += `<div class="card-title">Показаны первые ${num(items.length)} из ${num(w.total)}</div>`;
+  html += `<div class="card-title">${state.role === "helper" ? "Видео голов без секунды бот присылает тебе в чат — превью с кнопками." : "Видео гола — в боте: /replay → матч → гол."} В пульте видео появится следующим шагом.</div>`;
+  return html + `</section>`;
+}
+
+function matchCard(m) {
+  const id = `m:${m.key}`;
+  const open = !!state.open[id];
+  const counts = PIPE_STATES.filter((st) => m.states && m.states[st]).map((st) => `${GOAL_WORDS[st]} ${m.states[st]}`).join(" · ");
+  const todo = state.role === "admin" && WHY_TODO[m.why] ? ` — ${WHY_TODO[m.why]}` : "";
+  const why = (WHY_WORDS[m.why] || m.why || "") + todo;
+  const sub = [why + (m.why === "error" && m.error ? `: ${m.error}` : ""), counts].filter(Boolean).map(esc).join("<br>");
+  const title = m.score ? `${dm(m.date)} ${m.title.replace(" — ", ` ${m.score} `)}` : `${dm(m.date)} ${m.title}`;
+  let html = `<div class="row match" role="button" tabindex="0" data-open="${esc(id)}" aria-expanded="${open}">
+    <span class="dot ${WHY_LEVEL[m.why] || ""}"></span><span><b>${esc(title)}</b><small>${sub}</small></span>
+    <span class="aside">${num(m.replays)} / ${num(m.goals)}<span class="chev">${open ? "▴" : "▾"}</span></span></div>`;
+  if (open) {
+    html += `<div class="goals">${(m.list || []).length ? m.list.map((x) => `<div class="goal">${sticker(x.state)}<span>${goalLine(x)}${x.why ? `<small>табло: ${esc(x.why)}</small>` : ""}</span></div>`).join("") : `<div class="card-title">Голов протокола ещё нет</div>`}</div>`;
+  }
+  return html;
+}
+
+function matchList(gd) {
+  const ms = gd.matches || [];
+  let html = `<div class="label">Матчи</div><section class="card">`;
+  if (!ms.length) return html + row("", "Пока пусто", "служба clips ещё не писала разбор покрытия", "") + `</section>`;
+  html += `<div class="card-title">Справа — голов с повтором из всех. Нажми матч — его голы</div>`;
+  return html + ms.map(matchCard).join("") + `</section>`;
+}
+
+function goalsTab(gd, now) {
+  return pipeline(gd) + work(gd, now) + waiting(gd) + matchList(gd) +
+    `<div class="foot">«Голы» только показывают: отметить гол — в боте, ${state.role === "helper" ? "кнопкой под превью" : "/replay"}. Обновляется раз в минуту, пока открыто.</div>`;
+}
+
 // ---------- загрузка ----------
 
-const state = { data: null, gotAt: 0, error: null, gate: null, loading: false, open: {} };
+const tabArg = (() => { try { return new URLSearchParams(location.search).get("tab") || ""; } catch (e) { return ""; } })();
+// по вкладке: данные, когда пришли, ошибка в шапке, экран «нет доступа»
+const state = { tab: tabArg === "goals" ? "goals" : "status", role: "", open: {}, loading: false,
+  status: { data: null, gotAt: 0, error: null, gate: null }, goals: { data: null, gotAt: 0, error: null, gate: null } };
 
 function gate(title, text) {
   return `<div class="gate"><b>${esc(title)}</b>${esc(text)}</div>`;
 }
 
+function renderTabs() {
+  const tabs = $("#tabs");
+  // помощнику — только «Голы» (ADR-036, раздел 4): сегментов нет совсем
+  tabs.hidden = state.role === "helper" || (!state.status.data && !state.goals.data);
+  for (const b of tabs.querySelectorAll("[data-tab]")) {
+    const on = b.dataset.tab === state.tab;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  }
+  const w = state.goals.data && state.goals.data.wait;
+  $("#goals-n").textContent = w && w.total ? ` · ${w.total}` : "";
+}
+
 function render() {
   const main = $("#main");
+  const t = state[state.tab];
+  renderTabs();
   // «N мин назад» — от времени сервера: часы телефона могут врать, а мок застыл на 03.10 в 20:56.
   // Между обновлениями добавляем, сколько прошло на телефоне
-  const at0 = state.data && toDate(state.data.now);
-  const now = at0 ? at0.getTime() + (Date.now() - state.gotAt) : Date.now();
-  if (state.gate) {
-    main.innerHTML = state.gate;
+  const at0 = t.data && toDate(t.data.now);
+  const now = at0 ? at0.getTime() + (Date.now() - t.gotAt) : Date.now();
+  if (t.gate) {
+    main.innerHTML = t.gate;
     $("#when").textContent = "";
     return;
   }
-  const st = state.data;
+  const st = t.data;
   if (!st) {
-    main.innerHTML = state.error ? gate("Не загрузилось", state.error) : `<div class="empty">Загружаю…</div>`;
+    main.innerHTML = t.error ? gate("Не загрузилось", t.error) : `<div class="empty">Загружаю…</div>`;
     return;
   }
   const at = toDate(st.now);
   const who = inTelegram && tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.first_name : "";
-  $("#when").textContent = `${who ? `${who} · ` : ""}данные на ${at ? hm(at) : "—"} МСК${state.error ? ` · ${state.error}` : ""}${mock ? " · мок" : ""}`;
-  main.innerHTML = summary(st) + system(st, now) + audience(st) + sends(st, now) + games(st) +
+  $("#when").textContent = `${who ? `${who} · ` : ""}данные на ${at ? hm(at) : "—"} МСК${t.error ? ` · ${t.error}` : ""}${mock ? " · мок" : ""}`;
+  main.innerHTML = state.tab === "goals" ? goalsTab(st, now) : summary(st) + system(st, now) + audience(st) + sends(st, now) + games(st) +
     `<div class="foot">Пульт только показывает. Обновляется сам раз в минуту, пока открыт. Людей по именам и id здесь нет — только числа.</div>`;
 }
 
-async function fetchStatus() {
+async function fetchJson(path) {
   if (mock) {
-    const r = await fetch(`data/admin/mock/status${mock === "bad" ? "-bad" : ""}.json`, { cache: "no-store" });
+    const name = path === "goals" ? "goals" : `status${mock === "bad" ? "-bad" : ""}`;
+    if (mock === "helper" && path === "status") throw Object.assign(new Error("Пульт только для админов."), { gate: "Нет доступа" });
+    const r = await fetch(`data/admin/mock/${name}.json`, { cache: "no-store" });
     if (!r.ok) throw new Error("мок не нашёлся");
-    return r.json();
+    const d = await r.json();
+    return mock === "helper" && path === "goals" ? { ...d, role: "helper" } : d;
   }
   const base = apiBase();
   if (!base) throw Object.assign(new Error("Сервер API не подключён: у задания Pages пуст LIVE_API."), { gate: "Нет сервера" });
   if (!inTelegram) throw Object.assign(new Error("Пульт открывается из бота: напиши ему /admin и нажми «Открыть пульт»."), { gate: "Открой из Telegram" });
   let r;
   try {
-    r = await fetch(`${base}/admin/status`, { headers: { Authorization: `tma ${tg.initData}` }, cache: "no-store" });
+    r = await fetch(`${base}/admin/${path}`, { headers: { Authorization: `tma ${tg.initData}` }, cache: "no-store" });
   } catch (e) {
     throw new Error("Нет связи с сервером");
   }
@@ -315,18 +472,28 @@ async function fetchStatus() {
   return d;
 }
 
+async function loadOne(path) {
+  const t = state[path];
+  try {
+    t.data = await fetchJson(path);
+    t.gotAt = Date.now();
+    t.error = null;
+    t.gate = null;
+    if (path === "goals" && t.data && (t.data.role === "admin" || t.data.role === "helper")) state.role = t.data.role;
+  } catch (e) {
+    if (e.gate) t.gate = gate(e.gate, e.message);
+    else t.error = e.message;   // прежние данные остаются на экране, ошибка — в шапке
+  }
+}
+
 async function load() {
   if (state.loading) return;
   state.loading = true;
   $("#refresh").classList.add("spin");
   try {
-    state.data = await fetchStatus();
-    state.gotAt = Date.now();
-    state.error = null;
-    state.gate = null;
-  } catch (e) {
-    if (e.gate) state.gate = gate(e.gate, e.message);
-    else state.error = e.message;   // прежние данные остаются на экране, ошибка — в шапке
+    // «Голы» — всегда: их число на вкладке. «Состояние» помощнику не положено — не спрашиваем
+    await Promise.all([loadOne("goals"), state.role === "helper" ? null : loadOne("status")]);
+    if (state.role === "helper") state.tab = "goals";
   } finally {
     state.loading = false;
     $("#refresh").classList.remove("spin");
@@ -334,14 +501,33 @@ async function load() {
   }
 }
 
+function toggle(id) {
+  state.open[id] = !state.open[id];
+  render();
+}
+
 document.addEventListener("click", (e) => {
   const more = e.target.closest("[data-more]");
-  if (more) {
-    state.open[more.dataset.more] = !state.open[more.dataset.more];
+  if (more) return toggle(more.dataset.more);
+  const open = e.target.closest("[data-open]");
+  if (open) return toggle(open.dataset.open);
+  const tab = e.target.closest("[data-tab]");
+  if (tab) {
+    state.tab = tab.dataset.tab;
     render();
+    window.scrollTo(0, 0);
     return;
   }
   if (e.target.closest("#refresh")) load();
+});
+document.addEventListener("keydown", (e) => {
+  const open = (e.key === "Enter" || e.key === " ") && e.target.closest && e.target.closest("[data-open]");
+  if (open) {
+    e.preventDefault();
+    toggle(open.dataset.open);
+    const again = document.querySelector(`[data-open="${CSS.escape(open.dataset.open)}"]`);
+    if (again) again.focus();
+  }
 });
 
 if (inTelegram) {

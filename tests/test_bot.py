@@ -89,6 +89,14 @@ class AdminPanel(unittest.TestCase):
         self.assertIn("<code>8</code>", text)
         self.assertIn("ADMIN_IDS", text)
 
+    def test_helper_gets_goals_tab(self):
+        """Помощнику /admin открывает пульт сразу на «Голах» (ADR-036, раздел 4): другой вкладки ему не покажут."""
+        with mock.patch.object(bot, "ADMIN_IDS", frozenset({7})), mock.patch.object(bot, "PREVIEW_IDS", frozenset({9})), \
+                mock.patch.object(bot, "WEBAPP_URL", "https://x.github.io/app/?v=3"):
+            text, kb = bot.admin_reply(9, 9)
+        self.assertEqual(kb.inline_keyboard[0][0].web_app.url, "https://x.github.io/app/admin.html?tab=goals")
+        self.assertIn("«Голы»", text)
+
     def test_start_kinds(self):
         self.assertEqual([bot.start_kind(a) for a in ("", "today", "remind", "remind-tambov", "tambov", "leaders", "zzz")],
                          ["plain", "today", "remind", "remind", "team", "leaders", "other"])

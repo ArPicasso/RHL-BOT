@@ -91,6 +91,8 @@ CROSS_DIFF = 0.22       # клетки хозяев и гостей рисуют
                         # цифры — от 0,22 («2» и «3»): между SAME и этим — не знаем, одна ли цифра
 GLYPH_SHARE = 0.5       # картинку цифры видно меньше чем в такой доле кадров с табло — цифры прозрачные, смены по пикселям
 GLYPH_CLASSES = 24      # разных картинок в клетке больше — это фон за прозрачными цифрами, а не цифры: смены по пикселям
+NAME_CLASSES = 60       # картинок клетки названия помним не больше: у «Калуги» и «Ростова» фон за табло — десятки картинок
+RARE = 0.15             # образец названия видит табло реже — сломан (у 13 матчей 03–06.10 табло на экране 30–68% записи)
 EXACT = 15              # с: табло между старым и новым счётом пропадало не дольше — секунда смены точная
 ORDER_TOL = 300         # с: смена годится голу, если не дальше стольких секунд от ожидаемой по сайту лиги
 CLOCK_BACK = 120        # с: остановку часов перед сменой счёта ищем не раньше стольких секунд до неё
@@ -591,17 +593,60 @@ def cell_pixels(rect: tuple[int, int, int, int]) -> list[int]:
     return [y * W + x for y in range(y0, y1) for x in range(x0, x1)]
 
 
-def name_model(frames: list[bytes], rect) -> dict | None:
-    """Как выглядит название хозяев на табло: частое значение каждого пикселя клетки (modes) — табло видно хотя
-    бы треть записи. Пиксели делим на тёмные и светлые: белый лёд совпадает со светлыми, тёмная трибуна — с
-    тёмными, а название целиком — только само табло. Нет контраста — клетка не та."""
-    pixels = cell_pixels(rect)
+def common_frames(frames: list[bytes], rect) -> list[bytes]:
+    """Кадры самой частой картинки в клетке rect (glyph, классы — как у цифр): плашка с названием стоит на месте, а
+    фон за ней обычно каждый раз другой. Плашка не сдвигается — сравниваем без сдвига. Картинок держим не больше
+    NAME_CLASSES: для новой забываем самую маленькую, из равных — самую старую (до первого табло бывает долгая
+    заставка). У самой частой меньше HOLD кадров — пусто."""
+    reps: list = []                  # [картинка, её «масса», кадры, номер кадра, с которого она]
+    last = None
+    for i, f in enumerate(frames):
+        g = glyph(f, rect)
+        if g is None:
+            continue
+        mass = sum(g[1].values())
+        k = next((k for k in ([last] if last is not None else []) + list(range(len(reps)))
+                  if abs(mass - reps[k][1]) < SAME * (mass + reps[k][1])      # иначе glyph_diff не меньше SAME
+                  and (d := glyph_diff(g, reps[k][0], (0, 0))) is not None and d < SAME), None)
+        if k is None:
+            k = len(reps) if len(reps) < NAME_CLASSES else min(range(len(reps)), key=lambda j: (len(reps[j][2]), reps[j][3]))
+            reps[k:k + 1] = [[g, mass, [], i]]
+        reps[k][2].append(f)
+        last = k
+    best = max((r[2] for r in reps), key=len, default=[])
+    return best if len(best) >= HOLD else []
+
+
+def fit_name(frames: list[bytes], pixels: list[int]) -> dict | None:
+    """Образец клетки названия по кадрам: частое значение каждого пикселя (modes), пиксели — тёмные и светлые. Нет
+    контраста — клетка не та, None."""
     value, _ = modes([bytes(f[p] for p in pixels) for f in frames])
     mid = (min(value) + max(value)) / 2
     if max(value) - min(value) < 2 * DIFF:
         return None
     return {"pixels": pixels, "value": value, "dark": [i for i, v in enumerate(value) if v < mid],
             "light": [i for i, v in enumerate(value) if v >= mid]}
+
+
+def name_model(frames: list[bytes], rect) -> dict | None:
+    """Как выглядит название хозяев на табло: частое значение каждого пикселя клетки (fit_name) по всей записи — табло
+    видно хотя бы треть записи. Пиксели делим на тёмные и светлые: белый лёд совпадает со светлыми, тёмная трибуна —
+    с тёмными, а название целиком — только само табло. Нет контраста — клетка не та.
+    Такой образец видит табло меньше чем в доле RARE кадров — его перебил неподвижный фон (в копии «Протон —
+    Кристалл» 04.10 от 07.10 камера почти час смотрит в стену: табло в 66 кадрах из 1251). Тогда пробуем образец по
+    кадрам самой частой картинки названия (common_frames) и берём его, если он видит табло хотя бы в доле RARE и
+    вдвое чаще (там — 444 кадра). Когда первый образец работает, второй не считаем: самой частой картинкой бывает и
+    фон (один план при разном свете), а у всех 13 матчей 03–06.10 табло видно в 30–68% записи."""
+    pixels = cell_pixels(rect)
+    model = fit_name(frames, pixels)
+    seen = sum(on_screen(f, model) for f in frames) if model else 0
+    if seen >= RARE * len(frames):
+        return model
+    same = common_frames(frames[::max(1, len(frames) // MODE_FRAMES)], rect)
+    other = fit_name(same, pixels) if same else None
+    if other and sum(on_screen(f, other) for f in frames) >= max(RARE * len(frames), 2 * seen):
+        return other
+    return model
 
 
 def on_screen(frame: bytes, model: dict) -> bool:
@@ -645,6 +690,8 @@ def glyph_diff(a, b, shift: tuple[int, int] = GLYPH_SHIFT) -> float | None:
     mass = sum(pa.values()) + sum(pb.values())
     if not mass:
         return None
+    if shift == (0, 0):
+        return (sum(abs(v - pb.get(p, 0.0)) for p, v in pa.items()) + sum(v for p, v in pb.items() if p not in pa)) / mass
     best = 1.0
     for dy in range(-shift[1], shift[1] + 1):
         for dx in range(-shift[0], shift[0] + 1):

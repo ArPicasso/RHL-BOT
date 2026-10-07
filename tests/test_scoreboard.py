@@ -418,6 +418,32 @@ class Glyphs(unittest.TestCase):
         self.s = [(t, ry_frame(t)) for t in range(0, 1140, 10)]
         self.visible, self.found = sb.analyse(self.s, RY_BOARD)
 
+    def test_board_rescued_from_static_wall(self):
+        # копия «Протон — Кристалл» 04.10 от 07.10: камера почти час смотрит в стену, частым значением пикселя вышла
+        # стена, и обычный образец названия табло не видел. Тогда образец — по самой частой картинке названия
+        wall = bytes(120 + (p % W) % 50 for p in range(W * H))
+        s = [(t, scoreboard(t, GOALS) if t % 40 == 0 else wall) for t in range(0, 2000, 10)]
+        model = sb.name_model([f for _, f in s], CELL_BOARD["name"])
+        self.assertEqual([t for t, f in s if sb.on_screen(f, model)], list(range(0, 2000, 40)))
+
+    def test_working_model_is_kept(self):
+        # самой частой картинкой названия бывает и фон: один план при разном свете (две трети записи). Обычный
+        # образец табло видит — его и берём
+        rnd = random.Random(2)
+        shot = [rnd.choice((40, 160)) for _ in range(W * H)]
+
+        def frame_(t):
+            i = t // 10
+            if i % 3 == 0:
+                return scoreboard(t, GOALS)
+            return bytes(min(255, max(0, v + (-40, 0, 40)[i // 3 % 3])) for v in shot)
+
+        s = [(t, frame_(t)) for t in range(0, 3000, 10)]
+        model = sb.name_model([f for _, f in s], CELL_BOARD["name"])
+        self.assertEqual(model, sb.fit_name([f for _, f in s], sb.cell_pixels(CELL_BOARD["name"])))
+        self.assertTrue(all(sb.on_screen(f, model) for t, f in s if t // 10 % 3 == 0))
+        self.assertEqual(len(sb.common_frames([f for _, f in s], CELL_BOARD["name"])), 200)   # самая частая — фон
+
     def test_highlight_and_recaps_are_not_changes(self):
         self.assertEqual([(c["zone"], c["lo"], c["hi"]) for c in self.found],
                          [("away", 200, 210), ("away", 470, 480), ("home", 900, 910)])   # 0:2 — уже в подсветке

@@ -76,12 +76,13 @@ EVERY = 600         # с между проходами; пока есть нер
 TRIES = 3           # столько раз пробуем матч, который не скачался или упал
 WAIT_EVERY = 1200   # с: VK ещё не знает длину записи (эфир идёт или запись обрабатывается) — спрашиваем снова не чаще
 KEEP_DAYS = 3       # кадры прохода держим столько дней
-VERSION = 8         # разбор поменялся — матчи разбираем заново (05.10: голы по порядку протокола; 06.10: смены
+VERSION = 9         # разбор поменялся — матчи разбираем заново (05.10: голы по порядку протокола; 06.10: смены
                     # табло — в порядке счёта, у двух голов не бывает одной остановки часов; 06.10: кадр клуба без
                     # разметки — в probe/grids/; 06.10, вечер: гол берём, только если цифры в клетке идут цепочкой;
                     # 06.10, вечер: одна смена табло на голы подряд, когда табло убирали на повтор; 06.10, вечер:
                     # разбор падал, если табло не увидело смену раннего гола, — «Факел Ямал» 05.10 исчерпал попытки;
-                    # 07.10: цифры табло — по картинкам, подсветка строки и обзоры голов больше не смены)
+                    # 07.10: цифры табло — по картинкам, подсветка строки и обзоры голов больше не смены; 07.10,
+                    # вечер: «табло на экране» — по самой частой картинке названия, «Протон» 04.10 табло не видел)
 CLOCK_MAX = 2       # матчей за проход со счётом хода часов (ADR-031): кадр в секунду — минуты записи на гол
 CLUB_MIN = 3000     # с: ролик клуба короче — не запись матча (пресс-конференция, обзор), берём следующий
 PREVIEW_BEFORE = 120   # с записи до смены счёта на табло в превью: оператор меняет счёт через 0–90 с после гола
@@ -287,6 +288,7 @@ def add_previews(key: str, video: str, goals: dict[str, dict], length: float | N
     board = sb.BOARDS.get(club) or {}
     src480, h480, _ = sb.stream_of(video)
     src360, h360, _ = sb.stream_of(video, PREVIEW_FORMAT)
+    whole = name_model_of(key, club) if board.get("clock") else None   # образец табло по всей записи
     for score, g in need.items():
         win = g.get("win")
         start, span = run_window(win, length) if win else preview_window(g["change"], length)
@@ -296,7 +298,8 @@ def add_previews(key: str, video: str, goals: dict[str, dict], length: float | N
             cand = [round(t - start) for t in (g.get("wcand") or [])][-CANDIDATES:]
         elif board.get("clock"):
             dense = sb.safe_scan(src480, h480, sb.BOXES[club], start, start + span)
-            model = sb.name_model([f for _, f in dense], board["name"]) if dense else None
+            # в двух минутах до смены счёта повторов и крупных планов больше, чем во всей записи
+            model = whole or (sb.name_model([f for _, f in dense], board["name"]) if dense else None)
             vis = [(t, f) for t, f in dense if not model or sb.on_screen(f, model)]
             stops = [t for t in clock_stops(vis, sb.cell_pixels(board["clock"])) if t <= g["change"]]
             cand = [round(t - start) for t in stops[-CANDIDATES:]]

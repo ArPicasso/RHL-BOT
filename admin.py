@@ -41,6 +41,7 @@ UNBLOCK = {"online.khl.ru": "письмо на access_deny@khl.ru"}   # адре
 DISK_LOW = 1 << 30
 CLIPS_STALE = timedelta(hours=1)   # служба clips пишет пульс после каждого матча и прохода (ADR-030, раздел 7)
 VK_FAILS = 3        # столько раз за день VK не отдал запись и ни разу не отдал — тревога: обычно чинит новый yt-dlp
+GONE_SHOW = 4       # удалённых записей в тревоге: о каждой — своя причина, чтобы «починилось» пришло по своей
 # что служба clips считает о каталоге голов (`Tracker.gauge`), плитки пульта — в «Рассылках»
 CLIPS_GAUGES = ("goals", "timed", "timed_auto", "timed_admin", "clips", "ask", "no_video", "mismatch", "no_board",
                 "boards", "m_total", "m_full", "m_none", "g_replay", "run")
@@ -437,7 +438,8 @@ def build_status(*, now: datetime, teams: dict[str, str], services: dict | None,
             "disk": disk,
             "clips": {"beat": clips.get("beat"), "started": clips.get("started"),
                       "vk_ok": clip_today.get("vk_ok", 0), "vk_fail": clip_today.get("vk_fail", 0),
-                      "vk_error": clip_info.get("vk_error"), "vk_last_ok": clip_info.get("vk_ok")} if clips else None,
+                      "vk_error": clip_info.get("vk_error"), "vk_last_ok": clip_info.get("vk_ok"),
+                      "gone": clip_info.get("gone")} if clips else None,
         },
         "audience": {
             "subscribers": total,
@@ -596,6 +598,15 @@ def problems(status: dict, now: datetime) -> list[dict]:
             bad("clips:vk", f"VK сегодня не отдал ни одной записи трансляции ({n} {word}): "
                 f"{c.get('vk_error') or 'ошибка не записана'}. Обычно лечит новый yt-dlp: "
                 "sudo -u rhl /opt/rhl/venv/bin/pip install -U yt-dlp и systemctl restart clips")
+        # запись удалили из VK: повторов у матча нет, пока человек не пришлёт другую (этап 0.3 плана). Говорим раз
+        # на матч (`warn`), ключ — с матчем: запись заменили — придёт «починилось»
+        for e in (c.get("gone") or [])[:GONE_SHOW]:
+            key = str((e or {}).get("key") or "")[:40] if isinstance(e, dict) else ""
+            if not key:
+                continue
+            what = str(e.get("title") or key)[:80]
+            warn(f"clips:gone:{key}", f"Записи матча {what} больше нет в VK ({e.get('video') or 'ссылка не записана'}): "
+                 "повторов у его голов не будет. Найди другую запись (канал клуба) и пришли ссылку в /replay")
     d = sysm.get("disk") or {}
     if d.get("free") is not None and d["free"] < DISK_LOW:
         bad("disk", f"На диске меньше 1 ГБ: {d['free'] // (1 << 20)} МБ")

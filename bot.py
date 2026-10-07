@@ -1689,6 +1689,9 @@ def board_state(board: dict | None, video: str | None) -> str:
     if not board or not replay.same_video(board.get("video"), video):
         return "📺 Служба clips эту запись ещё не разбирала — свежие матчи первыми, дойдёт сама"
     status = board.get("status")
+    if status == "gone":   # этап 0.3 плана: ссылка на удалённый ролик никуда не ведёт, повторов у матча нет
+        return ("📺 Этой записи больше нет в VK: повторов по ней не будет. Найди другую запись — в канале клуба или на "
+                "вкладке «Видео» матча на сайте лиги — и пришли ссылку сюда")
     if status == "error":
         return f"📺 Запись не скачалась: {html.escape(str(board.get('error') or '')[:200])}"
     if status == "ok" and not any(isinstance(x, dict) and (x.get("change") is not None or x.get("t") is not None)
@@ -2113,6 +2116,7 @@ def key_title(key: str) -> str:
 
 COVER_WHY = {   # причины, по которым у матча не все голы с повтором (ADR-031, clips.coverage) — что делать админу
     "no_video": "нет записи ни лиги, ни клуба",
+    "gone": "запись удалили из VK",
     "error": "VK не отдал запись",
     "no_board": "табло клуба не размечено",
     "not_found": "табло не нашло голы",
@@ -2121,6 +2125,8 @@ COVER_WHY = {   # причины, по которым у матча не все 
 COVER_NAMES = 4   # матчей на причину в разборе — дальше «и ещё N»
 COVER_TODO = {   # что сделать, чтобы у матча были повторы всех голов (кнопка «Почему не у всех» в /replay)
     "no_video": "открой матч и пришли ссылку на запись в VK (из канала клуба) с временами голов",
+    "gone": "записи больше нет в VK: найди другую (канал клуба, вкладка «Видео» на сайте лиги) и пришли ссылку — "
+            "по старой ссылке повтор никуда не ведёт",
     "error": "VK не отдал запись трижды: на сервере sudo -u rhl /opt/rhl/venv/bin/pip install -U yt-dlp, "
              "systemctl restart clips — или пришли время голов в матче сам",
     "no_board": "перешли кадр табло, который прислал бот, в сессию Claude — после разметки служба переберёт матчи сама; "
@@ -2175,7 +2181,7 @@ def coverage_todo(cov: dict | None) -> tuple[str, InlineKeyboardMarkup | None]:
         return text + "\n\nВсё готово: повтор у каждого гола.", None
     why_now = [w for w in COVER_WHY if any(cov[k]["why"] == w for k in todo)]
     lines = [text, "", "<b>Что сделать</b>"] + [f"• {COVER_WHY[w]} — {html.escape(COVER_TODO[w])}" for w in why_now]
-    order = {"not_found": 0, "no_video": 1, "no_board": 2, "error": 3, "pending": 4}
+    order = {"not_found": 0, "gone": 1, "no_video": 2, "no_board": 3, "error": 4, "pending": 5}
     rows = []
     for k in sorted(todo, key=lambda k: (order.get(cov[k]["why"], 9), k))[:COVER_BUTTONS]:
         place = match_place(k)

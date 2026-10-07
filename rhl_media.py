@@ -22,6 +22,8 @@ TZ = ZoneInfo("Europe/Moscow")
 SITE = "https://rhl.fhr.ru"
 SRC = "rhl.fhr.ru"
 VIDEO_DAYS = 3      # вкладку «Видео» сыгранного матча спрашиваем не дольше трёх дней после него
+GONE_DAYS = 14      # а если ту запись удалили из VK — две недели: ждём, что лига выложит её заново (этап 0.3 плана)
+VIDEO_RE_ = re.compile(r"(?:video|live)(-?\d{1,12})_(\d{1,12})")   # номер ролика VK, как в replay.same_video
 VIDEO_EVERY = timedelta(hours=2)   # и не чаще раза в два часа: запись лига выкладывает и через часы после матча
                     # (06.10: из ~40 матчей 03–05.10 запись нашлась у 12 — спрашивали три раза за 45 минут)
 VK_HOSTS = ("vk.com", "vk.ru", "m.vk.com", "m.vk.ru", "vkvideo.ru")
@@ -33,6 +35,13 @@ CARD_RE = re.compile(r'<a\s+href="/matchcenter/(\d+)/(\d+)/video/"\s+class="tran
 
 def _text(s: str) -> str:
     return re.sub(r"\s+", " ", htmllib.unescape(re.sub(r"<[^>]+>", " ", s))).strip()
+
+
+def same_video(a: str | None, b: str | None) -> bool:
+    """Один ли это ролик VK: по номеру, а не по адресу (vk.com, vkvideo.ru, live-, video-). Как replay.same_video,
+    но rhl_media без зависимостей: его зовёт и сборка, и задание «Снимок источников»."""
+    ma, mb = VIDEO_RE_.search(a or ""), VIDEO_RE_.search(b or "")
+    return bool(ma and mb and ma.groups() == mb.groups())
 
 
 def _host(url: str) -> str:
@@ -101,17 +110,23 @@ def parse_translations(page: str) -> list[dict]:
     return out
 
 
-def need_video(g: dict, now: datetime) -> bool:
+def need_video(g: dict, now: datetime, gone=()) -> bool:
     """Спрашивать ли вкладку «Видео» матча хранилища rhl_site.json: ссылки ещё нет, матч сегодня или завтра,
-    а сыгранный — VIDEO_DAYS дней, не чаще раза в VIDEO_EVERY (`video_asked`). Нашлась — больше не спрашиваем."""
-    if g.get("video") or not g.get("t") or not g.get("id") or not g.get("start"):
+    а сыгранный — VIDEO_DAYS дней, не чаще раза в VIDEO_EVERY (`video_asked`). Нашлась — больше не спрашиваем.
+
+    gone — ролики, которых больше нет в VK (служба clips, этап 0.3 плана): ссылка на такой ролик никуда не ведёт,
+    поэтому вкладку спрашиваем заново — лига могла выложить запись второй раз — и дольше, GONE_DAYS дней."""
+    if not g.get("t") or not g.get("id") or not g.get("start"):
+        return False
+    dead = bool(g.get("video")) and any(same_video(g["video"], v) for v in gone or ())
+    if g.get("video") and not dead:
         return False
     try:
         start = datetime.fromisoformat(g["start"])
     except ValueError:
         return False
     day, today = start.astimezone(TZ).date(), now.astimezone(TZ).date()
-    if day > today + timedelta(days=1) or day < today - timedelta(days=VIDEO_DAYS):
+    if day > today + timedelta(days=1) or day < today - timedelta(days=GONE_DAYS if dead else VIDEO_DAYS):
         return False
     if g.get("status") == "final":
         try:

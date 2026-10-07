@@ -267,10 +267,14 @@ def with_board(entry: dict | None, board: dict | None) -> dict | None:
     секунды табло к нему не подходят, остаётся запись админа.
     Спор (ADR-033): отметка человека не сошлась с табло или ходом часов (`checks` службы) — точной секунды у гола нет
     ни от человека, ни от табло: повтор примерный, по окну или смене счёта, нет их — с отметки человека, но «≈».
+    Записи больше нет в VK (`status: gone` у службы, этап 0.3 плана) — повторов у матча нет совсем: ссылка на удалённый
+    ролик никуда не ведёт. Запись админа — другой ролик: его повторы остаются.
     board — запись матча из live/clips.json: {"video", "goals": {счёт: {"t", "src", "team", "change", "win"}},
     "checks": {счёт: {"t", "status"}}}."""
     goals = (board or {}).get("goals") or {}
     video = (board or {}).get("video")
+    if (board or {}).get("status") == "gone" and (not entry or same_video(entry.get("video"), video)):
+        return None
     if not goals or not video or (entry and not same_video(entry.get("video"), video)):
         return entry
     spor = disputed(entry, board)

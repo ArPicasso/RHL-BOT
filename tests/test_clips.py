@@ -807,5 +807,74 @@ class MarkChecks(unittest.TestCase):
         self.assertEqual(replay.disputed(entry, board), set())
 
 
+class Gone(unittest.TestCase):
+    """Запись удалили из VK (этап 0.3 плана): повторов по ней нет, админам — тревога."""
+    now = datetime(2026, 10, 5, 12, 0, tzinfo=TZ)
+
+    def test_tells_deleted_from_refused(self):
+        for text in ("Video 456239074 was deleted", "Это видео было удалено", "HTTP Error 404: Not Found",
+                     "Video has been removed from public access", "видео не существует"):
+            self.assertTrue(clips.gone_error(text), text)
+        for text in ("HTTP 403: Forbidden", "Video is private", "Видео доступно только для зарегистрированных",
+                     "Видео недоступно в вашем регионе", "Unable to download webpage: timed out",
+                     "TimeoutError", "ffmpeg вернул 1", "Too Many Requests"):
+            self.assertFalse(clips.gone_error(text), text)
+
+    def test_second_refusal_in_a_row_marks_gone(self):
+        """Один 404 бывает и от сбоя: «записи больше нет» говорим со второго отказа подряд."""
+        scan = mock.Mock(side_effect=clips.VkError("Video 200 was deleted"))
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            store = {}
+            clips.run_pass(store, LEAGUE, {}, self.now, scan=scan)
+            self.assertEqual(store["games"][KEY]["status"], "error")
+            with self.assertLogs(level="WARNING"):
+                clips.run_pass(store, LEAGUE, {}, self.now, scan=scan)
+            self.assertEqual((store["games"][KEY]["status"], store["games"][KEY]["tries"]), ("gone", 2))
+            # больше не пробуем: ролик тот же
+            self.assertNotIn(KEY, dict(clips.pending(LEAGUE, {}, store["games"], date(2026, 10, 5))))
+
+    def test_counted_apart_from_vk_refusals(self):
+        """Новый yt-dlp тут не поможет — счётчик «VK не отдал ни одной записи» не трогаем."""
+        import admin
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            t = admin.Tracker("clips", path=Path(tmp) / "s.json", clock=lambda: self.now)
+            scan = mock.Mock(side_effect=clips.VkError("видео удалено"))
+            store = {}
+            clips.run_pass(store, LEAGUE, {}, self.now, scan=scan, track=t)
+            with self.assertLogs(level="WARNING"):
+                clips.run_pass(store, LEAGUE, {}, self.now, scan=scan, track=t)
+            self.assertEqual(t.today(), {"vk_gone": 4})
+            got = json.loads((Path(tmp) / "s.json").read_text(encoding="utf-8"))["info"]["gone"]
+            self.assertEqual([e["key"] for e in got], [KEY, "2026-10-04|rostov|krasnodar"])
+            self.assertEqual(got[0]["video"], "https://vk.com/video-100_200")
+            self.assertEqual(got[0]["title"], "04.10 tverichi — metallurg")   # без teams в league.json — ключом
+        named = {**LEAGUE, "teams": [{"id": "tverichi", "name": "Тверичи"}, {"id": "metallurg", "name": "Металлург"}]}
+        self.assertEqual(clips.match_title(named, KEY), "04.10 Тверичи — Металлург")
+
+    def test_no_replay_and_no_watch_link(self):
+        """Ссылка на удалённый ролик никуда не ведёт: ни «Повтора» у гола, ни кнопки «Смотреть»."""
+        entry = {"video": VIDEO, "anchors": {"0:1": 2700},
+                 "goals": [{"score": "0:1", "team": "away", "t": 2690, "exact": True}]}
+        board = {"video": VIDEO, "status": "gone", "goals": {"0:1": {"t": 2600, "src": "clock", "team": "away"}}}
+        self.assertIsNone(replay.with_board(entry, board))
+        self.assertIsNone(replay.with_board(None, board))
+        other = {**entry, "video": "https://vk.com/video-7_8"}      # админ прислал другую запись — она жива
+        self.assertEqual(replay.with_board(other, board), other)
+        games = [{"date": "2026-10-04", "home": "tverichi", "away": "metallurg", "id": "m1",
+                  "goals": [{"score": "0:1", "team": "away", "period": "1"}],
+                  "watch": [{"src": "rhl.fhr.ru", "url": "https://vkvideo.ru/video-100_200"},
+                            {"src": "t.me/club", "url": "https://vk.com/video-7_8"}]}]
+        self.assertEqual(b.drop_gone(games, {KEY: board}), 1)
+        self.assertEqual([w["url"] for w in games[0]["watch"]], ["https://vk.com/video-7_8"])
+        self.assertEqual(b.apply_replays(games, {KEY: entry}, {KEY: board}), 0)
+        self.assertNotIn("replay", games[0]["goals"][0])
+
+    def test_coverage_says_why(self):
+        store = {"games": {KEY: {"video": VIDEO, "status": "gone", "tries": 2, "goals": {},
+                                 "error": "VkError: видео удалено"}}}
+        cov = clips.coverage(store, LEAGUE, {}, date(2026, 10, 5))[KEY]
+        self.assertEqual((cov["why"], cov["replays"]), ("gone", 0))
+        self.assertIn("gone", clips.WHY)
+
 if __name__ == "__main__":
     unittest.main()

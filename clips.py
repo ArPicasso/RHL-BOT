@@ -24,7 +24,11 @@ league.json («Смотреть» от rhl.fhr.ru) или ссылка адми�
 (`coverage` в clips.json): по нему бот пишет админам.
 
 По одному писателю на файл: live/replays.json пишет только бот, live/clips.json — только эта служба. Качаем как
-плеер (yt-dlp), без обхода защиты (ADR-012): VK отказал — пишем ошибку и пробуем позже, не больше TRIES раз. VK ещё
+плеер (yt-dlp), без обхода защиты (ADR-012): VK отказал — пишем ошибку и пробуем позже, не больше TRIES раз.
+Отказ «записи больше нет» (удалена, не существует, 404) — не сбой: со второго раза подряд у матча `status: gone`,
+повторов по такой записи сборка не ставит (мёртвая ссылка), а админам уходит тревога — пришли другую запись в
+/replay (этап 0.3 плана). «Нам её не отдали» (приватная, регион, 403, капча) — не `gone`: болельщик в VK её
+откроет, пробуем снова. VK ещё
 не знает длину записи (эфир идёт или запись обрабатывается) — не разбираем (`wait`), спрашиваем снова через
 WAIT_EVERY до конца следующего дня после матча: 06.10 разбор во время эфира дал кадр табло из заставки до матча.
 Кадры прохода и картинки — в probe/scoreboard/<матч>/ (там же, где у пробника), держатся KEEP_DAYS дней с разбора.
@@ -74,6 +78,8 @@ SINCE = date.fromisoformat(os.environ.get("CLIPS_SINCE") or "2026-10-03")   # с
 SCAN_MAX = 2        # записей за проход: разбор — минуты, между ними — нарезка клипов
 EVERY = 600         # с между проходами; пока есть неразобранные записи сезона — через минуту
 TRIES = 3           # столько раз пробуем матч, который не скачался или упал
+GONE_TRIES = 2      # столько раз подряд VK должен сказать «записи нет», чтобы считать её удалённой (этап 0.3 плана)
+GONE_MAX = 6        # удалённых записей в пульте и тревогах
 WAIT_EVERY = 1200   # с: VK ещё не знает длину записи (эфир идёт или запись обрабатывается) — спрашиваем снова не чаще
 KEEP_DAYS = 3       # кадры прохода держим столько дней
 VERSION = 9         # разбор поменялся — матчи разбираем заново (05.10: голы по порядку протокола; 06.10: смены
@@ -100,6 +106,47 @@ log = logging.getLogger("clips")
 
 class VkError(RuntimeError):
     """VK не отдал поток записи: на пульте — «VK за день не отдал ни одной записи» (ADR-030, раздел 7)."""
+
+
+# Отказ VK бывает трёх видов, и повторы зависят от того, какой это (этап 0.3 плана):
+#  • записи больше нет ни у кого — удалена, не существует, 404: повтор по ней мёртвый, его нельзя показывать;
+#  • нам её не отдали — приватная, регион, 403, капча, «только для зарегистрированных»: болельщик в VK её откроет,
+#    повтор оставляем и пробуем снова;
+#  • сбой — сеть, таймаут, ffmpeg: пробуем снова.
+# Слова ищем и по-русски, и по-английски: yt-dlp отдаёт то, что написал VK. «Нам не отдали» проверяем первым: в
+# «недоступно в вашем регионе» есть и «недоступ», и регион.
+RESTRICTED_RE = re.compile(r"приватн|закрыт|только для|регистрац|авториз|подписчик|регион|private|registered|"
+                           r"region|sign in|log in|login|access denied|forbidden|403|429|captcha|"
+                           r"too many requests", re.I)
+GONE_RE = re.compile(r"удал|не существует|нет такого|deleted|removed|does ?n.?t exist|no longer|unavailable|"
+                     r"not found|404|unable to find", re.I)
+
+
+def gone_error(err) -> bool:
+    """Отказ VK — «записи больше нет» (удалена, не существует, 404), а не «нам её не отдали» (приватная, регион,
+    403, капча) и не сбой сети: по удалённой записи повтора нет ни у кого (этап 0.3 плана)."""
+    s = str(err or "")
+    return bool(GONE_RE.search(s)) and not RESTRICTED_RE.search(s)
+
+
+def match_title(league: dict | None, key: str) -> str:
+    """«05.10 Калужские Ракеты — Динамо» — ключ матча в тревоге админам читается плохо."""
+    names = {t["id"]: t.get("name") or t["id"] for t in (league or {}).get("teams") or []
+             if isinstance(t, dict) and t.get("id")}
+    day, _, rest = key.partition("|")
+    home, _, away = rest.partition("|")
+    return f"{day[8:10]}.{day[5:7]} {names.get(home, home)} — {names.get(away, away)}".strip()
+
+
+def gone_note(track: "admin.Tracker | None", games: dict, league: dict | None = None) -> None:
+    """Записи, которых больше нет в VK, — в пульс для пульта и тревоги админам (ADR-022): по ним повторов не будет,
+    пока человек не пришлёт другую ссылку в /replay."""
+    if track is None:
+        return
+    out = [{"key": k, "title": match_title(league, k), "video": e.get("video"), "at": e.get("scanned")}
+           for k, e in sorted(games.items(), reverse=True)
+           if isinstance(e, dict) and e.get("status") == "gone"]
+    track.info(gone=out[:GONE_MAX])
 
 
 def stream(video: str, fmt: str | None = None):
@@ -197,7 +244,8 @@ def pending(league: dict | None, marked: dict, store: dict, today: date,
             if was.get("status") == "wait" and not wait_over(was, now):
                 continue
             marked_now = was.get("status") == "no_board" and key.split("|")[1] in sb.BOARDS   # табло разметили
-            if not marked_now and (was.get("status") in ("ok", "no_board", "short") or was.get("tries", 0) >= TRIES):
+            if not marked_now and (was.get("status") in ("ok", "no_board", "short", "gone")
+                                   or was.get("tries", 0) >= TRIES):
                 continue
         out.append((key, video))
     return out
@@ -479,7 +527,15 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
         except Exception as err:   # VK не отдал, ffmpeg упал — дальше не ломимся (ADR-012), попробуем в другой проход
             log.warning("%s: не разобрали — %s: %s", key, type(err).__name__, err)
             got = {"status": "error", "error": f"{type(err).__name__}: {err}"[:300], "goals": was.get("goals") or {}}
-            if isinstance(err, VkError):
+            if isinstance(err, VkError) and gone_error(err):
+                # записи больше нет в VK: повторы по ней мёртвые. Говорим это только со второго отказа подряд —
+                # один 404 бывает и от сбоя. Счётчик vk_fail не трогаем: новый yt-dlp тут не поможет (этап 0.3)
+                if track is not None:
+                    track.add("vk_gone")
+                if tries >= GONE_TRIES:
+                    got["status"] = "gone"
+                    log.warning("%s: записи %s больше нет в VK — повторов по ней не будет", key, video)
+            elif isinstance(err, VkError):
                 vk_note(track, err)
         if got.get("status") == "wait":   # запись ещё не готова — это не попытка разбора; прежний разбор ролика остаётся
             tries -= 1
@@ -501,6 +557,7 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
         store["updated"] = now_msk().isoformat(timespec="seconds")
         write_atomic(LIVE_DIR / "clips.json", store)
         if track is not None:   # пульс после каждого матча: разбор записи — минуты, пульт ждёт не дольше часа
+            gone_note(track, games, league)
             track.flush()
     for key in [k for k in games if k[:10] < SINCE.isoformat()]:
         games.pop(key)
@@ -952,7 +1009,7 @@ def catalog(store: dict, league: dict | None, marked: dict, today: date) -> dict
     return out
 
 
-WHY = ("no_video", "pending", "error", "no_board", "not_found")   # причины, по которым у гола нет повтора (ADR-031)
+WHY = ("no_video", "gone", "pending", "error", "no_board", "not_found")   # почему у гола нет повтора (ADR-031)
 
 
 def coverage(store: dict, league: dict | None, marked: dict, today: date) -> dict[str, dict]:
@@ -960,7 +1017,8 @@ def coverage(store: dict, league: dict | None, marked: dict, today: date) -> dic
     буллитов; нет протокола — найденные табло или счёт матча), у скольких есть повтор (как его поставит сборка:
     replay.with_board — клип, точная секунда или примерная), и если не у всех — одна причина на матч (`why`):
     `no_video` — записи нет ни у лиги, ни у клуба, ни у админа; `pending` — запись есть, служба ещё не разобрала;
-    `error` — VK не отдал или упал ffmpeg (`error` — текст); `no_board` — табло клуба-хозяина не размечено;
+    `gone` — записи больше нет в VK (удалена); `error` — VK не отдал или упал ffmpeg (`error` — текст);
+    `no_board` — табло клуба-хозяина не размечено;
     `not_found` — табло разобрано, а этих голов не нашло ни оно, ни счёт хода. Голы, которых, по словам админа, в
     записи нет (`absent`), повтора не ждут. Голы без повтора — `missing`, почему табло их не взяло — `rejected`."""
     days = season_days(today)
@@ -994,6 +1052,8 @@ def coverage(store: dict, league: dict | None, marked: dict, today: date) -> dic
             e["why"] = "no_video"
         elif not game or not replay.same_video(game.get("video"), rec["video"]) or game.get("status") == "wait":
             e["why"] = "pending"
+        elif game.get("status") == "gone":
+            e.update(why="gone", error=game.get("error"))
         elif game.get("status") == "error":
             e.update(why="error" if game.get("tries", 0) >= TRIES else "pending", error=game.get("error"))
         elif game.get("status") == "no_board":
@@ -1028,6 +1088,7 @@ def write_coverage(store: dict, league: dict | None, marked: dict, now: datetime
 
 def report(track: "admin.Tracker", store: dict, league: dict | None, marked: dict, now: datetime) -> None:
     """Снимок каталога — в счётчики дня и на диск: так пульт видит, что служба жива, даже когда разбирать нечего."""
+    gone_note(track, store.get("games") or {}, league)
     try:
         for k, v in catalog(store, league, marked, now.date()).items():
             track.gauge(k, v)

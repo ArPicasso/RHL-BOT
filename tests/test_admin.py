@@ -283,6 +283,23 @@ class BuildStatusTest(unittest.TestCase):
                                              "DownloadError: HTTP Error 403. Обычно лечит новый yt-dlp"), got)
         self.assertEqual(self.texts(clips={**vk, "days": {"2026-10-03": {"vk_fail": 2}}}), [])   # рано
 
+    def test_deleted_recording_is_told_once_per_match(self):
+        """Запись удалили из VK (этап 0.3 плана): повторов у матча нет — говорим раз, причина — с матчем."""
+        gone = [{"key": "2026-10-05|kaluga|dinamo-576", "title": "05.10 Калужские Ракеты — Динамо",
+                 "video": "https://vk.com/video-1_2", "at": ago(minutes=5)}]
+        clips = {"beat": ago(minutes=2), "info": {"gone": gone}, "days": {"2026-10-03": {"vk_ok": 3}}}
+        st = healthy(clips=clips)
+        self.assertEqual(st["system"]["clips"]["gone"], gone)
+        got = [(p["level"], p["key"], p["text"]) for p in st["problems"]]
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0][:2], ("warn", "clips:gone:2026-10-05|kaluga|dinamo-576"))
+        self.assertIn("05.10 Калужские Ракеты — Динамо", got[0][2])
+        self.assertIn("https://vk.com/video-1_2", got[0][2])
+        self.assertIn("/replay", got[0][2])
+        many = [{"key": f"2026-10-0{i}|a|b", "video": f"https://vk.com/video-1_{i}"} for i in range(1, 7)]
+        self.assertEqual(len(self.texts(clips={**clips, "info": {"gone": many}})), admin.GONE_SHOW)
+        self.assertEqual(self.texts(clips={**clips, "info": {"gone": [{"video": "x"}, None]}}), [])   # без матча
+
     def test_clips_tiles_from_last_snapshot(self):
         days = {"2026-10-02": {"goals": 40, "timed": 30, "clips": 20, "ask": 4, "no_video": 3, "vk_ok": 4},
                 "2026-10-03": {"vk_ok": 1}}   # после полуночи снимка ещё нет — берём вчерашний

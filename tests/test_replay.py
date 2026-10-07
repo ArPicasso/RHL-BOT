@@ -422,6 +422,19 @@ class Nag(unittest.TestCase):
         self.assertTrue(text.startswith("🖼 Табло не размечено: Полёт (2)"), text)
         self.assertIsNone(kb)                                   # матчей для /replay нет — без пустой клавиатуры
 
+    def test_deleted_recording_in_replay_and_report(self):
+        """Этап 0.3: запись удалили из VK — в /replay сказано, что повторов по ней не будет, и это видно в разборе."""
+        clips_ = {"games": {GAME["key"]: {"video": VIDEO, "status": "gone", "goals": {},
+                                          "error": "VkError: видео удалено"}},
+                  "coverage": {GAME["key"]: {"goals": 4, "replays": 0, "why": "gone"}}}
+        (self.dir / "clips.json").write_text(json.dumps(clips_), encoding="utf-8")
+        text = self.bot.replay_text("2026-10-03", GAME, None, video=VIDEO)
+        self.assertIn("Этой записи больше нет в VK", text)
+        self.assertIn("запись удалили из VK — 1", self.bot.coverage_text(clips_["coverage"]))
+        todo, kb = self.bot.coverage_todo(clips_["coverage"])
+        self.assertIn("записи больше нет в VK", todo)
+        self.assertEqual(kb.inline_keyboard[0][0].callback_data, "rp:m:2026-10-03:0")
+
     def test_coverage_report(self):
         """ADR-031: каждый вечер — сколько матчей с повтором у всех голов и почему не у остальных, с ошибками."""
         cover = {"2026-10-03|tverichi|metallurg": {"goals": 4, "replays": 4, "why": "ok"},

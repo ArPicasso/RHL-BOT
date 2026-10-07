@@ -522,6 +522,14 @@ class Cutting(unittest.TestCase):
     def test_no_keys_no_cutting(self):
         self.assertEqual(clips.cut_pass({"games": {KEY: dict(self.game)}}, None, {}, mock.Mock(ok=False)), 0)
 
+    def test_pause_is_now_a_switch(self):
+        """ADR-030, дополнение 07.10: режем по умолчанию, пауза — только явный CLIPS_CUT=off."""
+        self.assertTrue(clips.cut_on(None))
+        self.assertTrue(clips.cut_on(""))
+        self.assertTrue(clips.cut_on("on"))
+        self.assertFalse(clips.cut_on("off"))
+        self.assertFalse(clips.cut_on(" OFF\n"))
+
     def test_paused_no_cutting(self):
         """Нарезка на паузе (дополнение 06.10, ночь): ключи есть, секунда и протокол есть — клип не режется."""
         bucket, cut = mock.Mock(ok=True), mock.Mock()

@@ -4,6 +4,7 @@ import random
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -19,8 +20,10 @@ CLOCK = [(x, y) for y in range(10, 30) for x in range(60, 85)]       # секу�
 
 
 def digit(cells, n):
-    """Цифра n — свой узор полос: у разных цифр разные пиксели светлые."""
-    return {(x, y): 230 if ((x - cells[0][0]) // 3 + n) % 3 == 0 else 40 for x, y in cells}
+    """Цифра n — свой узор: у разных цифр разные пиксели светлые, и сдвигом одну в другую не превратить (картинки цифр
+    сравниваем со сдвигом, glyph_diff; у полос через три пикселя «3» была бы та же «0»)."""
+    rnd = random.Random(n)
+    return {(x, y): 230 if rnd.random() < 0.35 else 40 for x, y in cells}
 
 
 def frame(t, goals, hidden=(), rnd=None, stale=()):
@@ -370,6 +373,168 @@ class Digits(unittest.TestCase):
         self.assertTrue(sb.cell_same(bytes(W * H), bytes(W * H), (0, 0, 10, 10), (20, 0, 30, 10)))
 
 
+# Шаблон табло «Рязани-ВДВ» (у «Белгорода» и «Дизелиста» тот же): хозяева сверху, гости снизу, плашка скошена — цифра
+# гостей на 5 пикселей левее и на 1 выше, чем в клетке хозяев. Строку гостей временами подсвечивают белым
+RY_BOARD = {"box": (0, 0, 1, 1), "name": (10, 8, 56, 30), "home": (92, 6, 118, 33), "away": (92, 34, 118, 61),
+            "clock": (60, 10, 86, 30)}
+AWAY_RY = [(x - 5, y + 27) for x, y in HOME]
+
+
+def ryazan(t, score, hl=False):
+    """Кадр табло шаблона «Рязани-ВДВ» со счётом score (хозяева, гости); hl — строка гостей подсвечена: белый фон,
+    цифра тёмная. Часы идут."""
+    rnd = random.Random(int(t * 1000))
+    px = bytearray(rnd.randrange(256) for _ in range(W * H))
+    for y in range(4, 62):
+        for x in range(5, 160):
+            px[y * W + x] = 235 if hl and y >= 34 else 30
+    for x, y in LETTERS:
+        px[y * W + x] = 230 if (x // 4 + y // 5) % 2 == 0 else 30
+    for (x, y), v in {**digit(HOME, score[0]), **digit(CLOCK_PX, int(t))}.items():
+        px[y * W + x] = v
+    for (x, y), v in digit(AWAY_RY, score[1]).items():
+        px[y * W + x] = (30 if v > 100 else 235) if hl else v
+    return bytes(px)
+
+
+# «Белгород — Рязань-ВДВ» 06.10 в малом виде: гости забивают, пока их строка подсвечена; в перерыве и после матча табло
+# показывает счёт после каждого гола по порядку — по пикселям это были смены, и цепочка цифр рвалась
+RY_PLAN = [(0, (0, 0), False), (210, (0, 1), False), (300, (0, 1), True), (400, (0, 1), False), (450, (0, 1), True),
+           (480, (0, 2), True), (520, (0, 2), False), (600, (0, 2), True), (650, (0, 2), False),
+           (700, (0, 0), False), (710, (0, 1), False), (720, (0, 2), False), (730, (0, 2), False),
+           (910, (1, 2), False),
+           (1100, (0, 0), False), (1110, (0, 1), False), (1120, (0, 2), False), (1130, (1, 2), False)]
+
+
+def ry_frame(t):
+    _, score, hl = next(p for p in reversed(RY_PLAN) if p[0] <= t)
+    return ryazan(t, score, hl)
+
+
+class Glyphs(unittest.TestCase):
+    """Цифры по картинкам (cell_changes, ADR-030, этап 0.2 плана 07.10): подсветка строки, обзоры голов, скошенная плашка."""
+
+    def setUp(self):
+        self.s = [(t, ry_frame(t)) for t in range(0, 1140, 10)]
+        self.visible, self.found = sb.analyse(self.s, RY_BOARD)
+
+    def test_highlight_and_recaps_are_not_changes(self):
+        self.assertEqual([(c["zone"], c["lo"], c["hi"]) for c in self.found],
+                         [("away", 200, 210), ("away", 470, 480), ("home", 900, 910)])   # 0:2 — уже в подсветке
+
+    def test_chain_kept_through_recaps(self):
+        picked = {"0:1": 210, "0:2": 480, "1:2": 910}
+        self.assertEqual(sb.verify_digits(picked, self.found, RY_BOARD, self.s, self.visible, (1, 2)), (picked, {}))
+
+    def test_score_after_shootout_is_not_the_last_digit(self):
+        # «Протон — Кристалл» 03.10: в последних кадрах записи — счёт после буллитов, а победного буллита в протоколе нет
+        s = self.s + [(t, ryazan(t, (2, 2))) for t in (1140, 1150)]
+        visible, found = sb.analyse(s, RY_BOARD)
+        picked = {"0:1": 210, "0:2": 480, "1:2": 910}
+        self.assertEqual(sb.verify_digits(picked, found, RY_BOARD, s, visible, (1, 2)), (picked, {}))
+
+    def test_refine_through_highlight(self):
+        ch = next(c for c in self.found if c["hi"] == 480)
+        got = sb.refine(ch, ry_frame, self.visible, 10,
+                        window=lambda a, b: [(t, ry_frame(t)) for t in range(int(a), int(b) + 1)])
+        self.assertEqual((got["lo"], got["hi"]), (479, 480))
+
+    def test_slanted_zero_is_zero(self):
+        f = ry_frame(100)
+        self.assertFalse(sb.cell_same(f, f, RY_BOARD["home"], RY_BOARD["away"]))         # по пикселям — мимо
+        self.assertTrue(sb.cell_same(f, f, RY_BOARD["home"], RY_BOARD["away"], True))
+        self.assertFalse(sb.cell_same(f, ry_frame(300), RY_BOARD["home"], RY_BOARD["away"], True))   # «0» и «1»
+        self.assertIsNone(sb.cell_same(f, ry_frame(350), RY_BOARD["away"], glyphs=True))  # подсветка — не сравниваем
+
+    def test_flash_in_rival_cell_before_first_goal(self):
+        # «Калуга — Динамо 576» 04.10: в кадре перед голом хозяев в клетке гостей мелькнуло другое — «0» у гостей
+        # смотрим по последним кадрам, а не по одному
+        s = [(t, ryazan(t, (1 if t >= 500 else 0, 0)) if t != 490 else ryazan(t, (0, 7))) for t in range(0, 1000, 10)]
+        visible, found = sb.analyse(s, RY_BOARD)
+        self.assertEqual([(c["zone"], c["hi"]) for c in found], [("home", 500)])
+        self.assertEqual(sb.verify_digits({"1:0": 500}, found, RY_BOARD, s, visible, (1, 0)), ({"1:0": 500}, {}))
+
+    def test_brief_digit_before_next_goal_is_a_change(self):
+        # «Ростов — Краснодар» 03.10: «3» видно 20 с, табло убрали на повтор и вернули уже с «4» — две смены, не одна
+        goals = [(206, "home"), (236, "home"), (476, "away")]
+        s = [(t, scoreboard(t, goals, [(250, 300)])) for t in range(0, 1200, 10)]
+        visible, found = sb.analyse(s, CELL_BOARD)
+        self.assertEqual([(c["zone"], c["hi"]) for c in found], [("home", 220), ("home", 300), ("away", 490)])
+
+    def test_see_through_digits_by_pixels(self):
+        # картинки цифры нет (прозрачные цифры «Факел-Ямала» на светлом льду) — смены по пикселям, как до 07.10
+        stale = [(g + 32, g + 62) for g, _ in GOALS]
+        s = [(t, scoreboard(t, GOALS, HIDDEN, stale)) for t in range(0, 1200, 10)]
+        with mock.patch.object(sb, "glyph", return_value=None):
+            visible, found = sb.analyse(s, CELL_BOARD)
+        self.assertEqual([(c["zone"], c["hi"]) for c in found], [("home", 230), ("away", 500), ("home", 930)])
+        self.assertFalse(any("cell" in c for c in found))
+
+    def test_background_instead_of_digits_by_pixels(self):
+        # в клетке каждый кадр другая картинка (фон за прозрачными цифрами) — не копим классы, а смотрим по пикселям
+        s = [(t, ryazan(t, (1000 + t, 0))) for t in range(0, 1200, 10)]
+        visible, found = sb.analyse(s, RY_BOARD)
+        self.assertFalse(any("cell" in c for c in found if c["zone"] == "home"))
+
+    def test_goal_in_the_first_minute(self):
+        # табло видно с начала записи, гол на 50-й секунде: первая цифра — та, что в первом кадре
+        s = [(t, scoreboard(t, [(50, "home"), (476, "away")])) for t in range(0, 1200, 10)]
+        visible, found = sb.analyse(s, CELL_BOARD)
+        self.assertEqual([(c["zone"], c["hi"]) for c in found], [("home", 60), ("away", 490)])
+
+    def test_check_window_on_marked_board(self):
+        # --check: окно 30 с до гола и 2 минуты после, кадр в секунду — счёт сменился через 7 с после гола
+        s = [(t, scoreboard(t, GOALS)) for t in range(476 - 30, 476 + 120)]
+        self.assertEqual(sb.first_after(sb.board_changes(s, CELL_BOARD), 476)["hi"], 483)
+
+    def test_goal_credited_to_wrong_team_then_fixed(self):
+        # гол хозяев две минуты висел у гостей, потом его перенесли; гости забили по-настоящему через 8 минут
+        plan = [(0, (0, 0)), (300, (0, 1)), (420, (1, 0)), (900, (1, 1))]
+        s = [(t, ryazan(t, next(sc for a, sc in reversed(plan) if a <= t))) for t in range(0, 1200, 10)]
+        visible, found = sb.analyse(s, RY_BOARD)
+        self.assertEqual([(c["zone"], c["hi"]) for c in found], [("home", 420), ("away", 900)])
+
+    def test_rival_zero_drawn_otherwise_and_a_flash(self):
+        # «0» гостей нарисован чуть иначе, чем у хозяев (сравнение — «не знаем»), а за кадр до гола хозяев в клетке
+        # гостей мелькнуло другое: одна вспышка — не повод отбросить голы хозяев
+        def frame_(t):
+            f = bytearray(ryazan(t, (1 if t >= 500 else 0, 7 if t == 490 else 0)))
+            if t != 490:
+                for x, y in AWAY_RY:
+                    if (x + y) % 3 == 0:
+                        f[y * W + x] = 40
+            return bytes(f)
+        s = [(t, frame_(t)) for t in range(0, 1000, 10)]
+        visible, found = sb.analyse(s, RY_BOARD)
+        self.assertIsNone(sb.cell_same(s[10][1], s[10][1], RY_BOARD["home"], RY_BOARD["away"], True))
+        self.assertEqual(sb.verify_digits({"1:0": 500}, found, RY_BOARD, s, visible, (1, 0)), ({"1:0": 500}, {}))
+
+    def test_recording_cut_in_the_middle_of_recap(self):
+        # запись оборвалась на обзоре голов после матча (на табло снова 0:2) — последняя цифра хозяев всё равно «1»
+        s = [(t, f) for t, f in self.s if t < 1130]
+        visible, found = sb.analyse(s, RY_BOARD)
+        picked = {"0:1": 210, "0:2": 480, "1:2": 910}
+        self.assertEqual(sb.verify_digits(picked, found, RY_BOARD, s, visible, (1, 2)), (picked, {}))
+
+
+class ByPixels:
+    """Картинки цифры нет (прозрачные цифры): те же проверки — по пикселям, как разбирали до 07.10."""
+
+    def setUp(self):
+        patcher = mock.patch.object(sb, "glyph", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        super().setUp()
+
+
+class CellsByPixels(ByPixels, Cells):
+    pass
+
+
+class DigitsByPixels(ByPixels, Digits):
+    pass
+
+
 class Merged(unittest.TestCase):
     """Смен у команды меньше, чем голов: какая смена накрыла голы подряд (align_by_order, merged)."""
 
@@ -391,7 +556,6 @@ class Merged(unittest.TestCase):
         # проход целиком, как у службы без времени голов от live: под одной сменой хозяев 1:0 и 2:0
         import tempfile
         from types import SimpleNamespace
-        from unittest import mock
         goals = [(206, "home"), (236, "home"), (476, "away")]
         s = [(t, scoreboard(t, goals, [(212, 300)])) for t in range(0, 1200, 10)]
         order = [("1:0", "home", "1", 100), ("2:0", "home", "1", 130), ("2:1", "away", "1", 300)]
@@ -429,6 +593,10 @@ class Merged(unittest.TestCase):
             {"score": "0:3", "team": "away", "period": "РБ", "time": "65:00"}]}]}
         self.assertEqual(sb.protocol_order(league, "2026-10-03|rostov|krasnodar"),
                          [("0:1", "away", "1", 190), ("0:2", "away", "2", 2092)])
+
+
+class MergedByPixels(ByPixels, Merged):
+    pass
 
 
 class Align(unittest.TestCase):

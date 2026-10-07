@@ -19,7 +19,9 @@
 У клубов из `BOARDS` размечены клетки табло: название хозяев (по нему видно, что табло на экране), цифры счёта и
 часы игры. Тогда смены ищем только в клетках цифр, какой гол — по порядку голов команды (align_order), а когда —
 по остановке часов перед сменой счёта (clock_stop). Это нашло 14 голов из 15 на кадрах 04.10; прикидка по всей
-рамке выше — для клубов без разметки.
+рамке выше — для клубов без разметки. Цифры в клетке не читаем, а сравниваем картинки (glyph, 07.10): новая картинка —
+новая цифра, уже виденная — старое табло (повтор гола, обзор голов в перерыве и после матча), подсвеченная строка —
+своя картинка той же цифры. Так табло «Рязани-ВДВ», «Белгорода» и «Дизелиста» перестало давать лишние смены.
 
 Минуты и секунды часов игры на табло меняются десятки раз за запись — такие пиксели не берём, счёт меняется
 редко. Остаются лишние смены (десятки минут на часах, номер периода): какая смена — какой гол, решает время
@@ -79,6 +81,16 @@ BOXES = {club: b["box"] for club, b in BOARDS.items()}
 ON_SCREEN = 0.6         # табло на экране: столько тёмных и столько светлых пикселей названия как обычно (04.10: 0,8–1 и 0–0,3)
 CELL_MIN = 40           # смена цифры: сменилось не меньше стольких пикселей клетки…
 CELL_SHARE = 0.1        # …и такой её доли. 04.10: шум сжатия — 0–28 пикселей, смена цифры — 58–250
+GLYPH_CONTRAST = 80     # картинка цифры: от фона клетки до цифры по яркости не меньше (пустая подсветка — меньше)
+GLYPH_RAMP = (0.32, 0.92)   # пиксель — цифра на столько, сколько он прошёл пути от фона к цифре: ниже — фон, выше — цифра
+SAME = 0.14             # картинки одной цифры расходятся меньше (04–06.10: своя клетка до 0,03, клетки хозяев и гостей
+                        # до 0,09), разных — больше («0» и «3» у «Рязани-ВДВ» — 0,19, остальные пары — от 0,2)
+GLYPH_SHIFT = (2, 1)    # пикселей сдвига по x и y при сравнении картинок одной клетки: сжатие сдвигает цифру
+CROSS_SHIFT = (6, 2)    # …клеток хозяев и гостей: плашка «Рязани-ВДВ» скошена, цифра гостей на 5 пикселей левее
+CROSS_DIFF = 0.22       # клетки хозяев и гостей рисуют одну цифру чуть по-разному («2» у «Рязани-ВДВ» 03.10 — 0,18), разные
+                        # цифры — от 0,22 («2» и «3»): между SAME и этим — не знаем, одна ли цифра
+GLYPH_SHARE = 0.5       # картинку цифры видно меньше чем в такой доле кадров с табло — цифры прозрачные, смены по пикселям
+GLYPH_CLASSES = 24      # разных картинок в клетке больше — это фон за прозрачными цифрами, а не цифры: смены по пикселям
 EXACT = 15              # с: табло между старым и новым счётом пропадало не дольше — секунда смены точная
 ORDER_TOL = 300         # с: смена годится голу, если не дальше стольких секунд от ожидаемой по сайту лиги
 CLOCK_BACK = 120        # с: остановку часов перед сменой счёта ищем не раньше стольких секунд до неё
@@ -403,11 +415,11 @@ def changes(samples: list[tuple[float, bytes]], mask: list[int], med: dict[int, 
 def first_new(ch: dict, dense: list[tuple[float, bytes]], visible) -> dict | None:
     """Кадры каждую секунду вокруг смены: первая секунда с новым счётом после старого, и новое держится (в
     большинстве из следующих 2·HOLD кадров с табло). Табло между ними убрано (заставка «GOAL», повтор) — не
-    мешает: смотрим только кадры с табло (visible(кадр) → да/нет)."""
+    мешает: смотрим только кадры с табло (visible(кадр) → да/нет) и с одной из двух цифр (which)."""
     marks = []
     for t, f in dense:
-        if visible(f):
-            marks.append((t, len(moved(f, ch["after"], ch["pixels"])) < len(moved(f, ch["before"], ch["pixels"]))))
+        if visible(f) and (new := which(ch, f)) is not None:
+            marks.append((t, new))
     lo = None
     for k, (t, new) in enumerate(marks):
         if not new:
@@ -435,6 +447,9 @@ def refine(ch: dict, get, visible, step: float, tries: int = 10, window=None) ->
         f = get(max(0.0, t))
         if f is None or not visible(f):
             return None
+        if "cell" in ch:
+            new_ = which(ch, f)
+            return None if new_ is None else "new" if new_ else "old"
         old = len(moved(f, ch["before"], ch["pixels"]))
         new = len(moved(f, ch["after"], ch["pixels"]))
         return "old" if old < new else "new"
@@ -597,10 +612,52 @@ def on_screen(frame: bytes, model: dict) -> bool:
     return True
 
 
-def cell_changes(vis: list[tuple[float, bytes]], cell: list[int]) -> list[dict]:
-    """Смены цифры в клетке по кадрам с табло (vis): клетка сменилась (CELL_MIN, CELL_SHARE), и новое — в
-    большинстве кадров с табло за REPLAY секунд после (мелькание и повтор со старым табло — нет). Откат и
-    возврат за REPLAY — повтор (without_replays)."""
+def glyph(frame: bytes, rect) -> tuple[bool, dict[tuple[int, int], float]] | None:
+    """Картинка цифры в клетке rect: (светлая ли цифра, {(x, y) в клетке: насколько пиксель — цифра, 0–1}). Цифра —
+    меньшинство пикселей клетки: светлая на тёмном или тёмная на светлом (у «Рязани-ВДВ» строку команды временами
+    подсвечивают белым, и цифра становится тёмной). Фон и цифра — 5-й и 95-й процентили яркости клетки; пиксель,
+    прошедший от фона к цифре меньше GLYPH_RAMP[0], — фон, больше GLYPH_RAMP[1] — цифра, между — край сглаживания:
+    у мелких цифр «Калуги» штрих в 1–2 пикселя, и жёсткий порог дрожал бы от кадра к кадру. Контраста меньше
+    GLYPH_CONTRAST (табло убрали, подсветка без цифры, прозрачные цифры на льду) — картинки нет, None."""
+    x0, y0, x1, y1 = rect
+    vals = [frame[y * W + x] for y in range(y0, y1) for x in range(x0, x1)]
+    srt = sorted(vals)
+    lo, hi = srt[len(srt) // 20], srt[-len(srt) // 20 - 1]
+    if hi - lo < GLYPH_CONTRAST:
+        return None
+    light = 2 * sum(v > (lo + hi) / 2 for v in vals) <= len(vals)
+    a, b = GLYPH_RAMP
+    w, out = x1 - x0, {}
+    for i, v in enumerate(vals):
+        d = (((v - lo) if light else (hi - v)) / (hi - lo) - a) / (b - a)
+        if d > 0:
+            out[(i % w, i // w)] = min(1.0, d)
+    return light, out
+
+
+def glyph_diff(a, b, shift: tuple[int, int] = GLYPH_SHIFT) -> float | None:
+    """Насколько разные картинки цифр (glyph): 0 — одинаковые, 1 — ничего общего. Разница «цифровости» пикселей на
+    сумму цифровости обеих при лучшем сдвиге b в пределах shift. Картинки нет или полярность разная (одну строку
+    подсветили) — не сравниваем, None: светлая и тёмная одна цифра различаются почти как разные цифры."""
+    if a is None or b is None or a[0] != b[0]:
+        return None
+    pa, pb = a[1], b[1]
+    mass = sum(pa.values()) + sum(pb.values())
+    if not mass:
+        return None
+    best = 1.0
+    for dy in range(-shift[1], shift[1] + 1):
+        for dx in range(-shift[0], shift[0] + 1):
+            nb = {(x + dx, y + dy): v for (x, y), v in pb.items()}
+            d = sum(abs(v - nb.get(p, 0.0)) for p, v in pa.items()) + sum(v for p, v in nb.items() if p not in pa)
+            best = min(best, d / mass)
+    return best
+
+
+def pixel_changes(vis: list[tuple[float, bytes]], cell: list[int]) -> list[dict]:
+    """Смены цифры в клетке по пикселям (так разбирали до 07.10, теперь — когда картинки цифры почти не видно,
+    cell_changes): клетка сменилась (CELL_MIN, CELL_SHARE), и новое — в большинстве кадров с табло за REPLAY секунд
+    после (мелькание и повтор со старым табло — нет). Откат и возврат за REPLAY — повтор (without_replays)."""
     out: list[dict] = []
     if not vis:
         return out
@@ -619,6 +676,97 @@ def cell_changes(vis: list[tuple[float, bytes]], cell: list[int]) -> list[dict]:
     return without_replays(out)
 
 
+def cell_changes(vis: list[tuple[float, bytes]], rect) -> list[dict]:
+    """Смены цифры в клетке rect по кадрам с табло (vis). Цифр не читаем — сравниваем картинки (glyph): кадры с одной
+    картинкой — один класс. Цифра команды только растёт, поэтому новый класс — новая цифра, а уже виденный —
+    старое табло: повтор гола, обзор голов в перерыве и после матча (у «Рязани-ВДВ» и «Белгорода» табло показывает
+    счёт после каждого гола по порядку — по пикселям это были смены, и цепочка цифр рвалась). Первая цифра — с первого
+    кадра. Смена — первый кадр нового класса, если табло к старым цифрам не вернулось: за REPLAY секунд после него
+    старые — меньше чем в половине кадров с табло (в остальных эта цифра или следующая: табло убрали на повтор и
+    вернули уже после следующего гола), и таких кадров не меньше HOLD. Прежняя цифра вернулась и стоит 2·REPLAY
+    секунд подряд — смены не было (оператор записал гол не той команде, гол отменили): эта картинка снова новая.
+    Обзор голов в перерыве показывает прежнюю цифру минуту-полторы. Подсвеченная
+    строка (тёмная цифра на белом) — свои классы: такой класс — та цифра, между кадрами которой он стоит, без
+    разногласий; иначе его кадры не считаем. Картинку цифры видно меньше чем в доле GLYPH_SHARE кадров или картинок
+    больше GLYPH_CLASSES (прозрачные цифры «Факел-Ямала»: в клетке фон) — смены по пикселям.
+    У смены, кроме lo/hi/before/after: cell — клетка, old/new — картинки старой и новой цифры (refine), was/now —
+    их классы, final — класс цифры клетки в конце записи (verify_digits)."""
+    marks = [(t, f, g) for t, f in vis if (g := glyph(f, rect)) is not None]
+    if not marks or len(marks) < GLYPH_SHARE * len(vis):
+        return pixel_changes(vis, cell_pixels(rect))
+    reps: list = []                  # картинка-образец класса — первый его кадр
+    cls: list[int] = []
+    for _, _, g in marks:
+        k = next((k for k in ([cls[-1]] if cls else []) + list(range(len(reps)))
+                  if (d := glyph_diff(g, reps[k])) is not None and d < SAME), None)
+        if k is None:
+            if len(reps) >= GLYPH_CLASSES:
+                return pixel_changes(vis, cell_pixels(rect))
+            reps.append(g)
+            k = len(reps) - 1
+        cls.append(k)
+    count = [cls.count(k) for k in range(len(reps))]
+    if sum(count[k] >= HOLD for k in cls) < GLYPH_SHARE * len(vis):   # кадры в мелькнувших картинках — фон
+        return pixel_changes(vis, cell_pixels(rect))
+    light = 2 * sum(g[0] for _, _, g in marks) >= len(marks)    # обычная полярность цифр клетки
+    link = {k: k for k in range(len(reps)) if reps[k][0] == light and count[k] >= HOLD}
+    runs = [(i, k) for i, k in enumerate(cls) if count[k] >= HOLD]
+    votes: dict[int, set[int]] = {}
+    j = 0
+    while j < len(runs):
+        e = j
+        while e + 1 < len(runs) and runs[e + 1][1] == runs[j][1]:
+            e += 1
+        k = runs[j][1]
+        if k not in link and 0 < j and e + 1 < len(runs) and runs[j - 1][1] in link and runs[j - 1][1] == runs[e + 1][1]:
+            votes.setdefault(k, set()).add(runs[j - 1][1])
+        j = e + 1
+    link.update({k: next(iter(v)) for k, v in votes.items() if len(v) == 1})
+    line = [(i, link[k]) for i, k in enumerate(cls) if k in link]   # кадры с известной цифрой: (номер кадра, класс)
+
+    known: list[int] = []             # цифры, которые клетка уже показывала, по порядку
+    out: list[dict] = []
+    cur = line[0][1] if line else None
+    known += [cur] if line else []
+    for p, (i, k) in enumerate(line):
+        if k == cur:
+            continue
+        if k in known:
+            run = list(takewhile(lambda x: x[1] == k, line[p:]))    # прежняя цифра подряд, без нынешней
+            if (out and out[-1]["now"] == cur and out[-1]["was"] == k
+                    and marks[run[-1][0]][0] - marks[i][0] >= 2 * REPLAY):
+                known.remove(out.pop()["now"])
+                cur = k
+            continue
+        nxt = [kk for _, kk in takewhile(lambda x: marks[x[0]][0] - marks[i][0] <= REPLAY, line[p + 1:])]
+        if len(nxt) < HOLD or 2 * sum(kk in known for kk in nxt) >= len(nxt):
+            continue
+        lo = max(ii for ii, kk in line[:p] if kk == cur)
+        before = max((ii for ii in range(i) if cls[ii] == cur), default=lo)
+        new = next((ii for ii in range(i, len(cls)) if cls[ii] == k), i)
+        out.append({"lo": marks[lo][0], "hi": marks[i][0], "before": marks[before][1], "after": marks[new][1],
+                    "pixels": cell_pixels(rect), "cell": tuple(rect), "was": cur, "now": k,
+                    "old": [reps[c] for c, d in link.items() if d == cur],
+                    "new": [reps[c] for c, d in link.items() if d == k]})
+        known.append(k)
+        cur = k
+    for c in out:
+        c["final"] = cur
+    return out
+
+
+def which(ch: dict, f: bytes) -> bool | None:
+    """Новая ли цифра в кадре f у смены ch: да, нет или None — не понять. Смена по картинкам (cell_changes) —
+    ближайшая из картинок старой и новой цифры ближе SAME; другая картинка (подсветка, повтор с ещё более старым
+    счётом) — None. По пикселям — к какому кадру, до или после смены, ближе пиксели смены."""
+    if "cell" in ch:
+        g = glyph(f, ch["cell"])
+        best = min(((d, new) for new, refs in ((False, ch["old"]), (True, ch["new"])) for r in refs
+                    if (d := glyph_diff(g, r)) is not None and d < SAME), default=None)
+        return best[1] if best else None
+    return len(moved(f, ch["after"], ch["pixels"])) < len(moved(f, ch["before"], ch["pixels"]))
+
+
 def analyse(samples: list[tuple[float, bytes]], board: dict | None = None, report: list | None = None):
     """Кадры рамки → (табло на экране: функция кадра, смены [{lo, hi, before, after, pixels, zone, often}]).
     board — разметка клуба из BOARDS: смены по клеткам цифр, zone — «home»/«away». Без разметки — прикидка по
@@ -630,7 +778,7 @@ def analyse(samples: list[tuple[float, bytes]], board: dict | None = None, repor
         if model:
             vis = [(t, f) for t, f in samples if on_screen(f, model)]
             found = [{**c, "zone": side, "often": False}
-                     for side in ("home", "away") for c in cell_changes(vis, cell_pixels(board[side]))]
+                     for side in ("home", "away") for c in cell_changes(vis, board[side])]
             return (lambda f: on_screen(f, model)), sorted(found, key=lambda c: c["hi"])
     mask, med, kernel = plate(frames)
     if len(mask) < MIN_PLATE:
@@ -785,12 +933,19 @@ def merged(cs: list[dict], goals: list[tuple]) -> dict[str, float]:
     return {g[0]: c["hi"] for grp, c in zip(ways[0], cs) for g in grp} if ways else {}
 
 
-def cell_same(fa: bytes, fb: bytes, ca, cb=None) -> bool | None:
+def cell_same(fa: bytes, fb: bytes, ca, cb=None, glyphs: bool = False) -> bool | None:
     """Одна ли цифра в клетке ca кадра fa и в клетке cb кадра fb (cb — клетка той же величины, по умолчанию та же):
-    разных пикселей меньше, чем бывает у смены цифры (CELL_MIN, CELL_SHARE). Клетки разной величины — None."""
+    разных пикселей меньше, чем бывает у смены цифры (CELL_MIN, CELL_SHARE). Клетки разной величины — None.
+    glyphs — сравниваем картинки цифр (glyph_diff меньше SAME), клетки хозяев и гостей — со сдвигом CROSS_SHIFT:
+    у скошенной плашки «Рязани-ВДВ» по пикселям «0» хозяев не совпадал с «0» гостей; разные — от CROSS_DIFF, между
+    ними — не знаем. Картинки нет или строку подсветили — тоже None."""
     cb = cb or ca
     if (ca[2] - ca[0], ca[3] - ca[1]) != (cb[2] - cb[0], cb[3] - cb[1]):
         return None
+    if glyphs:
+        cross = tuple(ca) != tuple(cb)
+        d = glyph_diff(glyph(fa, ca), glyph(fb, cb), CROSS_SHIFT if cross else GLYPH_SHIFT)
+        return None if d is None or cross and SAME <= d < CROSS_DIFF else d < SAME
     shift = (cb[1] - ca[1]) * W + (cb[0] - ca[0])
     pixels = cell_pixels(ca)
     diff = sum(abs(fa[p] - fb[p + shift]) > DIFF for p in pixels)
@@ -810,8 +965,11 @@ def verify_digits(picked: dict[str, float], found: list[dict], board: dict, samp
     - после: не вернулась прежняя цифра до смены (k+1)-го гола, у последнего гола — то, что в клетке в конце записи;
       и если соперник уже доходил до k — та же картинка, что у него тогда.
     Клетки разной величины («Ростов») сравниваем только с самими собой. Разорвалась цепочка — дальше голы этой
-    команды не берём: секунда и повтор по чужой смене хуже, чем никакого. (оставленные голы — счёт → смена,
-    отброшенные — счёт → почему)."""
+    команды не берём: секунда и повтор по чужой смене хуже, чем никакого. Смены по картинкам цифр (cell_changes) — в
+    своей клетке цифры сравниваем по классам картинок, с соперником — по glyph_diff (первый кадр новой картинки уже
+    устоялся), «в конце записи» — цифра клетки, на которой запись кончилась (final): обзор голов после матча её не
+    меняет. Сравнить нельзя (строку подсветили, картинки нет, клетки рисуют цифру по-разному) — цепочку не рвём.
+    (оставленные голы — счёт → смена, отброшенные — счёт → почему)."""
     zone_of = {c["hi"]: c["zone"] for c in found if c.get("zone") in ("home", "away")}
     vis = [(t, f) for t, f in samples if visible(f)]
     seq: dict[str, dict[int, dict]] = {"home": {}, "away": {}}
@@ -821,30 +979,55 @@ def verify_digits(picked: dict[str, float], found: list[dict], board: dict, samp
             c = next(c for c in found if c["hi"] == hi and c.get("zone") == side)
             seq[side][int(score.split(":")[0 if side == "home" else 1])] = {**c, "score": score}
     side_changes = {side: sorted(c["hi"] for c in found if c.get("zone") == side) for side in ("home", "away")}
+    glyphs = {side: any("cell" in c for c in found if c.get("zone") == side) for side in ("home", "away")}
 
     def settled(side: str, c: dict) -> bytes:
         """Кадр с новой цифрой, когда она устоялась (смена бывает с анимацией), но раньше следующей смены клетки."""
+        if "cell" in c:
+            return c["after"]
         nxt = next((t for t in side_changes[side] if t > c["hi"]), float("inf"))
         got = [f for t, f in vis if c["hi"] + 5 <= t < nxt - 5]
         return got[min(len(got) - 1, 2)] if got else c["after"]
+
+    def same_digit(a: dict, b: dict, side: str) -> bool | None:
+        """Одна ли цифра в клетке side после смены a и до смены b. По картинкам — классы смен (cell_changes) точно, а
+        два кадра одного класса могут разойтись и больше SAME; по пикселям — кадр, когда цифра устоялась, и кадр до b."""
+        if "now" in a and "was" in b:
+            return a["now"] == b["was"]
+        return cell_same(settled(side, a), b["before"], board[side])
 
     other = {"home": "away", "away": "home"}
     total = {"home": totals[0], "away": totals[1]}
     first = {side: seq[side].get(1) for side in seq}
     zero_bad: set[str] = set()
     if first["home"] and first["away"]:
-        same = cell_same(first["home"]["before"], first["away"]["before"], board["home"], board["away"])
+        same = cell_same(first["home"]["before"], first["away"]["before"], board["home"], board["away"],
+                         glyphs["home"] and glyphs["away"])
         if same is False:   # кто забил первым по ходу матча, у того и сбилось
             zero_bad.add(min(("home", "away"), key=lambda x: goal_rank(first[x]["score"])))
         elif same is None and vis:
-            zero_bad |= {x for x in ("home", "away") if not cell_same(first[x]["before"], vis[0][1], board[x])}
+            zero_bad |= {x for x in ("home", "away")
+                         if cell_same(first[x]["before"], vis[0][1], board[x], glyphs=glyphs[x]) is False}
+
+    def zero_opp(side: str, c1: dict) -> bool | None:
+        """Соперник без голов весь матч показывает «0»: та же ли картинка в клетке side перед её первым голом. По
+        пикселям — клетка соперника в том же кадре; по картинкам — в последних кадрах с табло до смены, за большинством:
+        у «Калуги» 04.10 в клетке гостей перед голом хозяев мелькало другое."""
+        if not glyphs[side]:
+            return cell_same(c1["before"], c1["before"], board[side], board[other[side]])
+        got = [cell_same(c1["before"], f, board[side], board[other[side]], True)
+               for _, f in [x for x in vis if x[0] < c1["hi"]][-30:]]
+        votes = [v for v in got if v is not None]
+        if len(votes) < HOLD or 2 * len(votes) < len(got) or 2 * sum(votes) == len(votes):
+            return None      # решили меньше половины кадров или поровну — не знаем, цепочку не рвём
+        return 2 * sum(votes) > len(votes)
+
     for side in ("home", "away"):
         c1 = first[side]
         if c1 and not first[other[side]]:
-            same = (cell_same(c1["before"], c1["before"], board[side], board[other[side]])
-                    if total[other[side]] == 0 else None)
+            same = zero_opp(side, c1) if total[other[side]] == 0 else None
             if same is None and vis:
-                same = cell_same(c1["before"], vis[0][1], board[side])
+                same = cell_same(c1["before"], vis[0][1], board[side], glyphs=glyphs[side])
             if same is False:
                 zero_bad.add(side)
     last = vis[-1][1] if vis else None
@@ -859,16 +1042,19 @@ def verify_digits(picked: dict[str, float], found: list[dict], board: dict, samp
         if not broken[side]:
             if k == 1 and side in zero_bad:
                 broken[side] = "до первого гола в клетке не «0»"
-            elif k > 1 and not joint_prev and not cell_same(settled(side, seq[side][k - 1]), c["before"], mine):
+            elif k > 1 and not joint_prev and same_digit(seq[side][k - 1], c, side) is False:
                 broken[side] = f"между {k - 1}-м и {k}-м голом цифра сменилась ещё раз"
             elif joint_next:
                 pass         # после смены уже следующий счёт: «после» проверит последний гол этой смены
             else:
                 post, nxt = None, seq[side].get(k + 1)
-                if nxt and not cell_same(settled(side, c), nxt["before"], mine):
+                if nxt and same_digit(c, nxt, side) is False:
                     # до следующей смены снова прежняя цифра — эта смена не держалась (фон, повтор со старым табло);
                     # иначе между ними пропущена смена, и цепочку порвёт следующий гол
-                    post = False if cell_same(c["before"], nxt["before"], mine) else None
+                    back = c["was"] == nxt["was"] if "was" in c and "was" in nxt else cell_same(c["before"], nxt["before"], mine)
+                    post = False if back else None
+                elif not nxt and k == total[side] and "final" in c:
+                    post = c["final"] == c["now"]     # последняя цифра клетки в записи — эта
                 elif not nxt and k == total[side] and last is not None:
                     post = cell_same(settled(side, c), last, mine)
                 twin = seq[opp].get(k)
@@ -876,7 +1062,7 @@ def verify_digits(picked: dict[str, float], found: list[dict], board: dict, samp
                     twin = None   # после той смены у соперника уже не «k» (merged)
                 earlier = twin and twin["score"] in kept and goal_rank(twin["score"]) < goal_rank(c["score"])
                 if post is not False and earlier:
-                    post = cell_same(settled(side, c), settled(opp, twin), mine, board[opp])
+                    post = cell_same(settled(side, c), settled(opp, twin), mine, board[opp], glyphs[side] and glyphs[opp])
                 if post is False:
                     broken[side] = f"после смены в клетке не та цифра, что должна быть после {k}-го гола"
         if broken[side]:

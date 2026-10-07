@@ -418,6 +418,23 @@ class Glyphs(unittest.TestCase):
         self.s = [(t, ry_frame(t)) for t in range(0, 1140, 10)]
         self.visible, self.found = sb.analyse(self.s, RY_BOARD)
 
+    def test_board_on_screen_a_quarter_of_the_time(self):
+        # «Протон — Кристалл» 04.10: табло показывали реже трети записи, частое значение пикселя дал фон, и табло нашлось
+        # в 66 кадрах из 1251. Самая частая картинка клетки названия — всё равно табло: фон каждый раз другой. Первые
+        # 70 кадров — заставка без табло: картинок фона больше, чем помним, табло всё равно находится
+        rnd = random.Random(1)
+        wall = [rnd.choice((60, 200)) for _ in range(W * H)]
+
+        def corner(t):
+            if t % 40 == 0 and t >= 700:
+                return scoreboard(t, GOALS)
+            r = random.Random(t)
+            return bytes(v if r.random() < 0.6 else r.randrange(256) for v in wall)
+
+        s = [(t, corner(t)) for t in range(0, 2000, 10)]
+        model = sb.name_model([f for _, f in s], CELL_BOARD["name"])
+        self.assertEqual([t for t, f in s if sb.on_screen(f, model)], list(range(720, 2000, 40)))
+
     def test_highlight_and_recaps_are_not_changes(self):
         self.assertEqual([(c["zone"], c["lo"], c["hi"]) for c in self.found],
                          [("away", 200, 210), ("away", 470, 480), ("home", 900, 910)])   # 0:2 — уже в подсветке

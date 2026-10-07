@@ -359,11 +359,11 @@ function waiting(gd) {
   if (!items.length) return html + row("ok", "Никто не ждёт", "у каждого гола либо секунда, либо матч стоит до голов — смотри «Матчи»", "") + `</section>`;
   const all = state.open.wait;
   for (const x of all ? items : items.slice(0, 8)) {
-    html += `<div class="row st-row">${sticker(x.state)}<span><b>${esc(x.title)}, ${esc(dm(x.date))}</b><small>${goalLine(x)}</small></span><span class="aside"></span></div>`;
+    html += `<div class="row st-row goal-open" role="button" tabindex="0" data-key="${esc(x.key)}" data-score="${esc(x.score)}">${sticker(x.state)}<span><b>${esc(x.title)}, ${esc(dm(x.date))}</b><small>${goalLine(x)}</small></span><span class="aside">▶</span></div>`;
   }
   if (items.length > 8) html += `<button type="button" class="more" data-more="wait">${all ? "Свернуть" : `Все ${items.length}`}</button>`;
   if (w.total > items.length) html += `<div class="card-title">Показаны первые ${num(items.length)} из ${num(w.total)}</div>`;
-  html += `<div class="card-title">${state.role === "helper" ? "Видео голов без секунды бот присылает тебе в чат — превью с кнопками." : "Видео гола — в боте: /replay → матч → гол."} В пульте видео появится следующим шагом.</div>`;
+  html += `<div class="card-title">Нажми гол — видео этого места записи.</div>`;
   return html + `</section>`;
 }
 
@@ -379,7 +379,7 @@ function matchCard(m) {
     <span class="dot ${WHY_LEVEL[m.why] || ""}"></span><span><b>${esc(title)}</b><small>${sub}</small></span>
     <span class="aside">${num(m.replays)} / ${num(m.goals)}<span class="chev">${open ? "▴" : "▾"}</span></span></div>`;
   if (open) {
-    html += `<div class="goals">${(m.list || []).length ? m.list.map((x) => `<div class="goal">${sticker(x.state)}<span>${goalLine(x)}${x.why ? `<small>табло: ${esc(x.why)}</small>` : ""}</span></div>`).join("") : `<div class="card-title">Голов протокола ещё нет</div>`}</div>`;
+    html += `<div class="goals">${(m.list || []).length ? m.list.map((x) => `<div class="goal${x.state === "stuck" || x.state === "absent" ? "" : " goal-open"}"${x.state === "stuck" || x.state === "absent" ? "" : ` role="button" tabindex="0" data-key="${esc(m.key)}" data-score="${esc(x.score)}"`}>${sticker(x.state)}<span>${goalLine(x)}${x.why ? `<small>табло: ${esc(x.why)}</small>` : ""}</span></div>`).join("") : `<div class="card-title">Голов протокола ещё нет</div>`}</div>`;
   }
   return html;
 }
@@ -394,8 +394,213 @@ function matchList(gd) {
 
 function goalsTab(gd, now) {
   return pipeline(gd) + work(gd, now) + waiting(gd) + matchList(gd) +
-    `<div class="foot">«Голы» только показывают: отметить гол — в боте, ${state.role === "helper" ? "кнопкой под превью" : "/replay"}. Обновляется раз в минуту, пока открыто.</div>`;
+    `<div class="foot">«Голы» показывают и видео, а отметить гол — в боте, ${state.role === "helper" ? "кнопкой под превью" : "/replay"}. Обновляется раз в минуту, пока открыто.</div>`;
 }
+
+// ---------- карточка гола: видео (ADR-036, раздел 4) ----------
+// Окна записи считает сервер (goalplan.py — те же, что у бота), режет служба cuts. Видео — fetch с подписью Telegram →
+// blob → <video>: у файлов нет публичных адресов. Время в видео переводим во время записи: начало окна + плеер.
+
+const CUT_POLL_MS = 2000;
+const CUT_WAIT_MS = 4 * 60e3;
+const SRC_WORDS = { clock: "⏱ встали часы", board: "📺 задержка табло клуба", run: "🕐 ход часов от соседнего гола", admin: "✅ отметка человека" };
+const card = { key: "", score: "", shift: 0, plan: null, error: "", note: "", vids: {}, token: 0, back: null };
+
+function clock(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function goalOf(key, score) {
+  const gd = state.goals.data || {};
+  const m = (gd.matches || []).find((x) => x.key === key);
+  const x = (m && (m.list || []).find((g) => g.score === score)) || ((gd.wait || {}).items || []).find((g) => g.key === key && g.score === score);
+  return { title: (m && m.title) || (x && x.title) || "", date: key.slice(0, 10), goal: x || { score, state: "" } };
+}
+
+function planText(p) {
+  if (!p) return "";
+  const w = p.windows || [];
+  if (p.shift) return `Листаешь запись: ${w[0] ? w[0].what : ""}. Где гол, не знает никто.`;
+  if (p.kind === "exact") return `${SRC_WORDS[p.src] || "✅"} — гол на ${clock(p.t - w[0].start)} этого видео: так его увидят болельщики.`;
+  if (p.kind === "dispute") return `⚠️ Спор: отметка ${clock(p.t)} записи не сходится с табло${p.why ? ` (${p.why})` : ""}. Первое видео — по отметке, второе — ${w[1] ? w[1].what : "другой версии нет"}.`;
+  if (p.kind === "approx") return `Примерное место — ${w[0] ? w[0].what : ""}.`;
+  return `Где гол, служба не знает: 3 минуты записи ${w[0] ? w[0].what : ""}.`;
+}
+
+function vidBlock(w, k) {
+  const v = card.vids[w.job] || {};
+  const head = (card.plan.windows || []).length > 1 ? `<div class="card-title">${k + 1}. ${esc(w.what)}</div>` : "";
+  let body;
+  if (v.url) {
+    body = `<video controls playsinline preload="metadata" src="${esc(v.url)}" data-start="${esc(w.start)}"></video>
+      <div class="pos" data-pos="${esc(w.job)}">0:00 видео = ${esc(clock(w.start))} записи</div>`;
+  } else if (v.error) {
+    body = `<div class="vid-wait">Видео не вырезалось: ${esc(v.error)}</div>`;
+  } else {
+    body = `<div class="vid-wait">⏳ Режу видео… обычно 10–40 секунд</div>`;
+  }
+  const cand = k === 0 && v.url && (card.plan.cand || []).length
+    ? `<div class="cand"><span class="card-title">Часы вставали:</span>${card.plan.cand.map((t) => `<button type="button" class="pill" data-seek="${esc(t - w.start)}" data-job="${esc(w.job)}">${esc(clock(t - w.start))}</button>`).join("")}</div>` : "";
+  return `<div class="vid" data-vid="${esc(w.job)}">${head}${body}${cand}</div>`;
+}
+
+// одно видео готово: меняем только его блок — второе видео спора, если уже играет, не сбрасывается
+function renderVid(job) {
+  const el = document.querySelector(`#card [data-vid="${CSS.escape(String(job))}"]`);
+  const k = ((card.plan && card.plan.windows) || []).findIndex((w) => w.job === job);
+  if (el && k >= 0) el.outerHTML = vidBlock(card.plan.windows[k], k);
+}
+
+function renderCard() {
+  const el = $("#card");
+  if (!card.key) {
+    el.hidden = true;
+    $("#card-back").hidden = true;
+    return;
+  }
+  const info = goalOf(card.key, card.score);
+  const p = card.plan;
+  let html = `<div class="handle" aria-hidden="true"></div><div class="sheet-head"><div><h2 id="card-title">${esc(info.title)}, ${esc(dm(info.date))}</h2>
+    <div class="sheet-sub">${info.goal.state ? sticker(info.goal.state) : ""} ${goalLine(info.goal)}</div></div>
+    <button type="button" class="btn-round" data-close aria-label="Закрыть">✕</button></div>`;
+  if (card.error) html += `<div class="vid-wait">${esc(card.error)}</div>`;
+  else if (!p) html += `<div class="vid-wait">⏳ Смотрю, что известно о голе…</div>`;
+  else {
+    html += `<p class="plan">${esc(planText(p))}</p>` + (p.windows || []).map(vidBlock).join("");
+    if (p.kind === "approx" || p.kind === "search") {
+      if (card.note) html += `<div class="card-title">${esc(card.note)}</div>`;
+      html += `<div class="nav"><button type="button" class="pill" data-shift="-1">⏪ 3 мин раньше</button><button type="button" class="pill" data-shift="1">⏩ 3 мин позже</button></div>`;
+      if (card.shift) html += `<button type="button" class="more" data-shift="0">Вернуться к ${p.base === "approx" ? "примерному месту" : "оценке"}</button>`;
+    }
+  }
+  html += `<div class="card-title sheet-foot">Время записи — для бота: ${state.role === "helper" ? "ответь им на превью в чате" : "пришли его в /replay → матч → гол"}. Отмечать прямо в пульте можно будет следующим шагом.</div>`;
+  // фокус с клавиатуры переживает перерисовку: та же кнопка или ✕
+  const f = document.activeElement && el.contains(document.activeElement) ? document.activeElement : null;
+  const again = f && (f.dataset.shift !== undefined ? `[data-shift="${f.dataset.shift}"]` : f.dataset.close !== undefined ? "[data-close]" : "");
+  el.innerHTML = html;
+  el.hidden = false;
+  $("#card-back").hidden = false;
+  if (again) { const x = el.querySelector(again); if (x) x.focus(); }
+}
+
+async function api(path, opts = {}) {
+  const base = apiBase();
+  if (!base || !inTelegram) throw new Error("Видео открывается в пульте из Telegram.");
+  let r;
+  try {
+    r = await fetch(`${base}/admin/${path}`, {
+      method: opts.body ? "POST" : "GET", cache: "no-store",
+      headers: { Authorization: `tma ${tg.initData}`, ...(opts.body ? { "Content-Type": "application/json" } : {}) },
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+  } catch (e) {
+    throw new Error("Нет связи с сервером");
+  }
+  if (r.ok && opts.blob) return r.blob();
+  let d = null;
+  try { d = await r.json(); } catch (e) { d = null; }
+  if (!r.ok) throw new Error((d && typeof d.error === "string" && d.error) || `Сервер ответил ${r.status}`);
+  return d;
+}
+
+function dropVideos() {
+  for (const v of Object.values(card.vids)) if (v.url) URL.revokeObjectURL(v.url);
+  card.vids = {};
+}
+
+async function waitCut(job, token) {
+  const until = Date.now() + CUT_WAIT_MS;
+  while (token === card.token) {
+    let st;
+    try {
+      st = await api(`cut/${job}`);
+    } catch (e) {
+      card.vids[job] = { error: e.message };
+      break;
+    }
+    if (token !== card.token) return;
+    if (st.status === "done") {
+      try {
+        const blob = await api(`cut/${job}.mp4`, { blob: true });
+        if (token !== card.token) return;
+        card.vids[job] = { url: URL.createObjectURL(blob) };
+      } catch (e) {
+        card.vids[job] = { error: e.message };
+      }
+      break;
+    }
+    if (st.status === "error") { card.vids[job] = { error: st.error || "служба cuts не смогла" }; break; }
+    if (Date.now() > until) { card.vids[job] = { error: "служба cuts не успела за 4 минуты — открой гол ещё раз позже" }; break; }
+    await new Promise((res) => setTimeout(res, CUT_POLL_MS));
+  }
+  if (token === card.token) renderVid(job);
+}
+
+async function loadCard(prevShift) {
+  const token = ++card.token;
+  const prev = card.plan;
+  card.note = "";
+  if (prevShift === undefined) {   // открыли гол — всё заново; листаем — прежнее видео остаётся, пока не придёт новое
+    dropVideos();
+    card.plan = null;
+    card.error = "";
+    renderCard();
+  }
+  let plan;
+  try {
+    if (mock) {
+      const r = await fetch("data/admin/mock/goal-video.json", { cache: "no-store" });
+      plan = { ...(await r.json()), shift: card.shift };
+    } else {
+      plan = await api("goal/video", { body: { key: card.key, score: card.score, shift: card.shift } });
+    }
+  } catch (e) {
+    if (token !== card.token) return;
+    if (prev && prevShift !== undefined) {   // дальше записи нет — остаёмся где были, кнопки на месте
+      card.shift = prevShift;
+      card.note = e.message;
+    } else {
+      card.error = e.message;
+    }
+    renderCard();
+    return;
+  }
+  if (token !== card.token) return;
+  dropVideos();   // прежнее видео играло, пока ждали новый план
+  card.plan = plan;
+  if (mock) for (const w of plan.windows) card.vids[w.job] = { error: "в моке видео не режется" };
+  renderCard();
+  if (!mock) for (const w of card.plan.windows) waitCut(w.job, token);
+}
+
+function openCard(key, score, from) {
+  card.key = key;
+  card.score = score;
+  card.shift = 0;
+  card.back = from || null;
+  document.body.classList.add("locked");
+  loadCard();
+  setTimeout(() => { const x = $("#card [data-close]"); if (x) x.focus(); }, 0);
+}
+
+function closeCard() {
+  card.token++;
+  dropVideos();
+  card.key = "";
+  card.plan = null;
+  document.body.classList.remove("locked");
+  renderCard();
+  if (card.back && document.contains(card.back)) card.back.focus();
+}
+
+document.addEventListener("timeupdate", (e) => {
+  const v = e.target;
+  if (!(v instanceof HTMLVideoElement) || !v.closest("#card")) return;
+  const pos = v.nextElementSibling;
+  if (pos && pos.dataset.pos) pos.textContent = `${clock(v.currentTime)} видео = ${clock(Number(v.dataset.start) + v.currentTime)} записи`;
+}, true);
 
 // ---------- загрузка ----------
 
@@ -507,6 +712,22 @@ function toggle(id) {
 }
 
 document.addEventListener("click", (e) => {
+  if (e.target.closest("[data-close]") || e.target.id === "card-back") return closeCard();
+  const seek = e.target.closest("[data-seek]");
+  if (seek) {
+    const v = $("#card video");
+    if (v) { v.currentTime = Number(seek.dataset.seek); v.play().catch(() => {}); }
+    return;
+  }
+  const shift = e.target.closest("[data-shift]");
+  if (shift) {
+    const was = card.shift;
+    card.shift = shift.dataset.shift === "0" ? 0 : card.shift + Number(shift.dataset.shift);
+    loadCard(was);
+    return;
+  }
+  const goal = e.target.closest(".goal-open");
+  if (goal) return openCard(goal.dataset.key, goal.dataset.score, goal);
   const more = e.target.closest("[data-more]");
   if (more) return toggle(more.dataset.more);
   const open = e.target.closest("[data-open]");
@@ -521,6 +742,12 @@ document.addEventListener("click", (e) => {
   if (e.target.closest("#refresh")) load();
 });
 document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && card.key) return closeCard();
+  const goal = (e.key === "Enter" || e.key === " ") && e.target.closest && e.target.closest(".goal-open");
+  if (goal) {
+    e.preventDefault();
+    return openCard(goal.dataset.key, goal.dataset.score, goal);
+  }
   const open = (e.key === "Enter" || e.key === " ") && e.target.closest && e.target.closest("[data-open]");
   if (open) {
     e.preventDefault();

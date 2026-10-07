@@ -1,0 +1,12 @@
+{
+ "kind": "approx",
+ "base": "approx",
+ "shift": 0,
+ "src": null,
+ "t": null,
+ "tb": null,
+ "why": "",
+ "cand": [3436, 3461],
+ "length": 9120,
+ "windows": [{"start": 3380, "len": 125, "what": "до смены счёта на табло", "job": 41}]
+}

@@ -199,6 +199,7 @@ class BotJournal(unittest.TestCase):
     def test_preview_answer_records_who_and_window(self):
         bot = mock.Mock()
         bot.edit_message_caption = mock.AsyncMock()
+        bot.send_message = mock.AsyncMock(return_value=mock.Mock(message_id=9))   # «⏳ Режу видео…» — 30 с ответа
         ask = {"from": 1500, "len": 125, "cand": [47, 72]}
         with mock.patch.object(self.bot, "published_league", mock.AsyncMock(return_value=None)), \
                 mock.patch.object(self.bot, "PREVIEWS_FILE", self.dir / "previews.json"):
@@ -279,10 +280,14 @@ class MarkChecks(unittest.TestCase):
         self.assertIn("спор: счёт на табло сменился раньше", text)
         bot = mock.Mock()
         bot.send_message = mock.AsyncMock()
+        later = self.now + self.bot.DISPUTE_CUT_WAIT
         with mock.patch.object(self.bot, "DISPUTES_FILE", self.dir / "disputes.json"), \
+                mock.patch.object(self.bot, "published_league", mock.AsyncMock(return_value=None)), \
                 mock.patch.object(self.bot.asyncio, "sleep", mock.AsyncMock()):
-            self.assertEqual(asyncio.run(self.bot.dispute_step(bot, self.now)), 1)
-            self.assertEqual(asyncio.run(self.bot.dispute_step(bot, self.now)), 0)   # один раз
+            self.assertEqual(asyncio.run(self.bot.dispute_step(bot, self.now)), 0)   # видео спора ещё режется
+            # служба cuts так и не вырезала (стоит) — спор не ждёт её вечно: ссылками, как раньше
+            self.assertEqual(asyncio.run(self.bot.dispute_step(bot, later)), 1)
+            self.assertEqual(asyncio.run(self.bot.dispute_step(bot, later)), 0)   # один раз
         cid, text = bot.send_message.call_args.args
         self.assertEqual(cid, 1001)                                          # отметившему
         self.assertIn("Спор по голу 1:1", text)
@@ -306,7 +311,7 @@ class Coverage(unittest.TestCase):
         self.assertIn("2 матча", kb.inline_keyboard[0][0].text)
         text, kb = self.bot.coverage_todo(cov)
         self.assertIn("Что сделать", text)
-        self.assertIn("пришли время", text)
+        self.assertIn("пришлю видео для поиска", text)
         self.assertIn("кадр табло", text)
         calls = [b.callback_data for row in kb.inline_keyboard for b in row]
         self.assertEqual(calls, ["rp:m:2026-10-03:0", "rp:list"])   # калуги нет в файле дня — без кнопки

@@ -36,7 +36,7 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup,
-                           MenuButtonWebApp, Message, ReplyKeyboardRemove, WebAppInfo)
+                           InputMediaVideo, MenuButtonWebApp, Message, ReplyKeyboardRemove, WebAppInfo)
 from raskat_store import RaskatStore
 
 BASE = Path(__file__).parent
@@ -105,6 +105,7 @@ GRID_MAX = 2                       # кадров за один проход п�
 DISPUTES_FILE = BASE / "disputes.json"   # о каких спорах по отметкам уже написали (ADR-033): «ключ|счёт|секунда» → когда
 DISPUTE_MAX = 4                    # споров за один проход пульса
 DISPUTE_KEEP = timedelta(days=7)   # столько помним, что о споре написали
+DISPUTE_CUT_WAIT = timedelta(minutes=15)   # видео спора не вырезано за столько — пишем о споре ссылками, как раньше
 
 DOW = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
@@ -1472,8 +1473,9 @@ _marks: tuple[Path, marks.MarksStore] | None = None
 HISTORY_MAX = 6    # строк истории у гола в /replay
 REVOKE_MAX = 3     # кнопок «Отозвать» у гола: последние действующие отметки
 ROLE_WORD = {"admin": "админ", "helper": "помощник", "import": "до журнала"}
-VIA_WORD = {"replay": "/replay", "preview": "превью", "confirm": "клип", "import": "перенесено, не проверено"}
-KIND_WORD = {"absent": "🚫 нет в записи", "wrong": "⚠️ табло сбилось", "confirm": "✅ клип верен",
+VIA_WORD = {"replay": "/replay", "preview": "превью", "video": "видео", "confirm": "клип",
+            "import": "перенесено, не проверено"}
+KIND_WORD = {"absent": "🚫 нет в записи", "wrong": "⚠️ табло сбилось", "confirm": "✅ гол виден",
              "reject": "❌ клип неверен"}
 
 
@@ -1528,6 +1530,8 @@ def marks_apply(key: str, g: dict, now: datetime, protocol: list[dict] | None = 
 def mark_word(r: dict) -> str:
     if r["kind"] == "time" and isinstance(r.get("sec"), int):
         return replay.fmt_clock(r["sec"])
+    if r["kind"] == "confirm" and isinstance(r.get("sec"), int):   # «✅ Гол виден» на видео (ADR-036)
+        return f"✅ гол виден на {replay.fmt_clock(r['sec'])}"
     if r["kind"] == "time" and not r.get("score"):   # ссылка на запись без времён (этап 0.4 плана)
         return "🎥 запись матча"
     return KIND_WORD.get(r["kind"], r["kind"])
@@ -1633,11 +1637,11 @@ def replay_text(day: str, g: dict, entry: dict | None, protocol: list[dict] | No
     links = {x["score"]: x for x in (entry or {}).get("goals") or []}
     goals = replay_goals(g, protocol)
     lines = [f"🎬 <b>{html.escape(replay_title(day, g))}</b>"]
-    if entry:
-        lines.append(f'Запись: {html.escape(entry["video"])}')
+    if entry:   # ссылкой не даём: смотреть гол — видео в боте (ADR-036)
+        lines.append(f"Запись: ролик VK {html.escape(cutjobs.vid(entry['video']))}")
     elif video:
-        lines.append(f"Запись лиги: {html.escape(video)} — ссылку можно не присылать, только времена. "
-                     "Не тот ролик — пришли свою ссылку, времена к ней не обязательны.")
+        lines.append(f"Запись лиги: ролик VK {html.escape(cutjobs.vid(video))}. Не тот ролик — пришли свою ссылку, "
+                     "времена к ней не обязательны.")
     seen = board_state(board, (entry or {}).get("video") or video)
     if seen:
         lines.append(seen)
@@ -1649,9 +1653,9 @@ def replay_text(day: str, g: dict, entry: dict | None, protocol: list[dict] | No
         per = str(x.get("period") or "")
         per = f" · {per}-й" if per.isdigit() else f" · {html.escape(per)}" if per else ""
         r = links.get(x["score"])
-        url = replay.at_link(entry["video"], r["t"]) if r else None   # заново: старые записи хранят прежний формат
+        url = replay.at_link(entry["video"], r["t"]) if r else None   # есть ли повтор: ссылкой его не даём (ADR-036)
         sign = {"clock": "⏱", "board": "📺", "run": "🕐"}.get(r.get("src"), "✅") if r and r["exact"] else "≈"
-        mark = f' — <a href="{html.escape(url)}">{sign} {replay.fmt_t(r["t"])}</a>' if url else ""
+        mark = f" — {sign} {replay.fmt_t(r['t'])}" if url else ""
         c = checks.get(x["score"]) if x["score"] in anchors else None
         if isinstance(c, dict) and c.get("t") == anchors[x["score"]]:   # проверка отметки службой (ADR-033)
             mark += {"ok": " · сошлось", "conflict": " · ⚠️ спор: " + html.escape(", ".join(c.get("against") or [])),
@@ -1668,13 +1672,14 @@ def replay_text(day: str, g: dict, entry: dict | None, protocol: list[dict] | No
     lines.append("")
     if entry:
         lines.append("✅ — по твоему времени, ⏱ и 📺 — нашла служба по табло (встали часы, сменился счёт), 🕐 — по "
-                     "ходу часов от соседнего гола, ≈ — примерно, начинается раньше гола. Время человека служба "
-                     "сверяет с табло: «сошлось», «не проверено» или «спор» — тогда точной секунды нет ни у отметки, ни "
-                     "у табло, пока не пришлёшь верное время. Мимо — нажми на гол: пришли время, «табло сбилось», "
-                     "«нет в записи» или «Отозвать».")
+                     "ходу часов от соседнего гола, ≈ — примерно. Время человека служба сверяет с табло: «сошлось», "
+                     "«не проверено» или «спор» — тогда точной секунды нет ни у отметки, ни у табло.")
+        lines.append("Нажми на гол — пришлю видео: точная секунда — 30 с, как у клипа, примерное место — пару минут, "
+                     "где гол неизвестно — 3 минуты для поиска. Ответ — кнопкой под видео или временем в видео (0:47). "
+                     "«▶️ Все голы матча» — 30 с каждого точного гола одним альбомом.")
     what = "времена" if entry or video else "ссылку на запись и времена"
-    lines.append(f"Пришли {what} всех {len(goals)} голов по порядку, по строке на гол: "
-                 "1:08:03. Или нажми на гол и пришли время одного.")
+    lines.append(f"Знаешь времена в записи — пришли {what} всех {len(goals)} голов по порядку, по строке на гол: "
+                 "1:08:03.")
     if not entry:   # этап 0.4 плана: разметка целого матча руками нужна не всегда
         lines.append("Можно прислать одну ссылку без времён: голы в записи служба найдёт по табло сама, а где не "
                      "сможет — пришлёт тебе превью с кнопками.")
@@ -1720,6 +1725,9 @@ def replay_kb(day: str, i: int, g: dict, entry: dict | None, protocol: list[dict
             row = []
     if row:
         rows.append(row)
+    board = replay.with_board(entry, clips_game(match_key(g)))
+    if any(x.get("exact") for x in (board or {}).get("goals") or []):   # есть что показать альбомом (ADR-036)
+        rows.append([InlineKeyboardButton(text="▶️ Все голы матча", callback_data=f"rp:all:{day}:{i}")])
     vm = video_mark(match_key(g)) if entry else None
     if vm:   # ссылку прислали без времён — её можно отозвать, не сбрасывая верные времена голов (этап 0.4)
         rows.append([InlineKeyboardButton(text=f"↩️ Отозвать: {mark_word(vm)}",
@@ -1914,10 +1922,12 @@ def replay_mark(key: str, score: str, kind: str, video: str | None, now: datetim
 
 
 def replay_waiting(m: Message) -> bool:
-    """Ждём ли от этого чата времена голов (открыл матч или нажал гол в /replay не дольше REPLAY_WAIT назад)."""
+    """Ждём ли от этого чата времена голов (открыл матч или нажал гол в /replay не дольше REPLAY_WAIT назад). Видео
+    гола прислано позже — время ждём в нём (cut_waiting)."""
     ask = REPLAY_ASK.get(m.chat.id)
+    cut = CUT_ASK.get(m.chat.id)
     return bool(ask and m.text and m.from_user and m.from_user.id in ADMIN_IDS
-                and datetime.now(TZ) - ask[3] <= REPLAY_WAIT)
+                and datetime.now(TZ) - ask[3] <= REPLAY_WAIT and not (cut and cut[1] > ask[3]))
 
 
 @dp.message(Command("replay"))   # только админам, в меню команд её нет
@@ -1976,12 +1986,32 @@ async def cb_replay(c: CallbackQuery):
     if not g:
         await c.answer("Матч пропал из файла службы live — открой /replay заново", show_alert=True)
         return
+    if parts[1] == "all":   # ▶️ Все голы матча: альбом 30 с у голов с точной секундой (ADR-036)
+        await c.answer()
+        await match_videos(c.bot, cid, day, i, g, protocol_of(await published_league(), g))
+        return
     if parts[1] == "g" and len(parts) == 5:
         REPLAY_ASK[cid] = (day, i, parts[4], now, match_key(g))
         await c.answer()
-        video = (load_replays()["games"].get(match_key(g)) or {}).get("video") \
-            or league_video(await published_league(), g)
+        league = await published_league()
         history, open_ = goal_history(match_key(g), parts[4], c.from_user.id)
+        plan = goal_plan(match_key(g), parts[4], protocol_of(league, g), league_video(league, g)) \
+            if cut_store() else None
+        if plan:   # видео вместо ссылки VK (ADR-036): ответ — кнопкой под видео или временем в видео
+            await goal_video(c.bot, cid, plan, protocol_of(league, g))
+            now_t = next((r for r in reversed(open_) if r["kind"] == "time"), None)
+            rows = [[InlineKeyboardButton(text=f"✅ Время верное: {mark_word(now_t)}",
+                                          callback_data=f"rp:v:{day}:{i}:{now_t['id']}")]] \
+                if now_t and now_t.get("who") != c.from_user.id else []
+            rows += [[InlineKeyboardButton(text=f"↩️ Отозвать: {mark_word(r)}", callback_data=f"rp:r:{day}:{i}:{r['id']}")]
+                     for r in open_]
+            if history or rows:
+                await c.message.answer(
+                    f"Гол <b>{html.escape(parts[4])}</b>: <b>отметки</b> (перепроверил и всё верно — «Время верное»; "
+                    "ошиблись — «Отозвать», это остаётся в истории):\n" + "\n".join(html.escape(x) for x in history),
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
+            return
+        video = (load_replays()["games"].get(match_key(g)) or {}).get("video") or league_video(league, g)
         rows = [[InlineKeyboardButton(text="🚫 Гола нет в записи", callback_data=f"rp:a:{day}:{i}:{parts[4]}")],
                 [InlineKeyboardButton(text="⚠️ Повтор не тот — табло сбилось",
                                       callback_data=f"rp:w:{day}:{i}:{parts[4]}")]] if video else []
@@ -2166,8 +2196,8 @@ COVER_TODO = {   # что сделать, чтобы у матча были по
     "error": "VK не отдал запись трижды: на сервере sudo -u rhl /opt/rhl/venv/bin/pip install -U yt-dlp, "
              "systemctl restart clips — или пришли время голов в матче сам",
     "no_board": "перешли кадр табло, который прислал бот, в сессию Claude — после разметки служба переберёт матчи сама; "
-                "или пришли время голов в матче",
-    "not_found": "открой матч: у голов без ссылки пришли время (одно сообщение — все голы по порядку)",
+                "а пока открой матч и нажми гол: пришлю видео для поиска",
+    "not_found": "открой матч и нажми гол без повтора: пришлю видео для поиска, ответ — кнопкой или временем в видео",
     "pending": "ничего: служба разберёт запись сама, свежие матчи — первыми",
 }
 COVER_BUTTONS = 10   # кнопок на матчи в «Почему не у всех»
@@ -2256,7 +2286,7 @@ def replay_nag(todo: list[tuple[str, int, dict]], waiting: dict[str, list[str]] 
         names = ", ".join(f"{tname(g.get('home', ''))} — {tname(g.get('away', ''))}" for _, _, g in todo)
         head = "Без превью" if waiting else "🎬 Без превью"
         parts.append(f"{head}, табло не разобрало: {html.escape(names)}.\n"
-                     "Запись лиги уже подставлена — в матче достаточно прислать времена голов.")
+                     "Открой матч: у каждого гола — видео, ответ — кнопкой или временем в видео.")
     days = set(replay_days(now)) if now else None
     picks = [(day, i, g) for day, i, g in todo]
     for key in waiting:   # матч из превью — тоже кнопкой, если он ещё в окне /replay
@@ -2592,12 +2622,22 @@ async def preview_answer(bot: Bot, cid: int, key: str, score: str, ask: dict, vi
         return
     TRACK.add("preview_answers")
     await preview_done(bot, key, score, sec, video)
+    # 30 с результата (ADR-036): ответ на превью сразу виден тем, что увидят болельщики. Отметка уже записана —
+    # видео не вышло, ответ от этого не теряется
+    length = clips_game(key).get("length")
+    try:
+        await goal_video(bot, cid, {"kind": "exact", "video": video, "length": length, "key": key, "score": score,
+                                    "t": sec, "src": "admin", "windows": [(*cutjobs.review_window(sec, length), "гол")]},
+                         protocol_of(league, g) if g else None)
+    except Exception:
+        logging.exception("preview result video to %s failed", cid)
 
 
 def preview_waiting(m: Message) -> bool:
     ask = PREVIEW_ASK.get(m.chat.id)
+    cut = CUT_ASK.get(m.chat.id)
     return bool(ask and m.text and m.from_user and m.from_user.id in preview_people()
-                and datetime.now(TZ) - ask[1] <= REPLAY_WAIT)
+                and datetime.now(TZ) - ask[1] <= REPLAY_WAIT and not (cut and cut[1] > ask[1]))
 
 
 @dp.message(preview_waiting)   # раньше h_lost: время гола в превью — не «непонятое сообщение»
@@ -2616,6 +2656,465 @@ async def h_preview_time(m: Message):
         return
     PREVIEW_ASK.pop(m.chat.id, None)
     await preview_answer(m.bot, m.chat.id, key, score, ask, video, t, who=m.from_user.id)
+
+
+# ---------- видео гола вместо ссылок VK (ADR-036, этап 1.2 плана) ----------
+# Всё, что бот показывает человеку о месте гола в записи, — видео, вырезанное службой cuts, а не ссылка VK. Что
+# показать, решает то, что известно о голе (goal_plan): точная секунда — 30 с вокруг неё, ровно как клип болельщикам;
+# примерное место — окно превью (до смены счёта на табло или по счёту хода часов); спор — два видео одним альбомом;
+# ничего — 3 минуты записи около оценки по протоколу и шаги «⏪ / ⏩» по 3 минуты. Ответ — кнопкой под видео или
+# временем в этом видео («0:47»): секунду записи бот считает сам — начало окна плюс ответ. Видео режется по запросу
+# (срочное задание службы cuts), пока человек ждёт, — «⏳ Режу видео…», потом видео. VK не отдал запись — текст с
+# ссылкой: тут без VK никак (это и так тревога).
+
+CUT_WAIT = timedelta(minutes=4)   # столько ждём, пока служба cuts вырежет видео для человека
+CUT_POLL = 2                      # с между взглядами на задание
+ALBUM_MAX = 10                    # видео в альбоме Telegram
+SEARCH_STRETCH = 1.3              # запись между голами периода дольше часов игры: остановки (оценка для поиска)
+PERIOD_GAP = 1100                 # с записи на перерыв между периодами (оценка для поиска из другого периода)
+PRE_SHOW = 300                    # с записи до вбрасывания: студия, гимн (оценка, когда ни одного гола не нашли)
+CUT_ASK: dict[int, tuple[int, datetime]] = {}   # чат → (задание, когда показали): ждём время в этом видео
+_cut_tasks: set = set()           # фоновые ожидания видео: ссылка держит задачу, пока она не кончилась
+SRC_WORD = {"clock": "⏱ встали часы", "board": "📺 задержка табло клуба", "run": "🕐 ход часов от соседнего гола",
+            "admin": "✅ отметка человека"}
+
+
+def clips_game(key: str) -> dict:
+    return ((read_live("clips.json") or {}).get("games") or {}).get(key) or {}
+
+
+def goal_estimate(score: str, known: dict[str, int], protocol: list[dict] | None,
+                  length: float | None = None) -> int | None:
+    """Где гол в записи, если ни табло, ни люди его не нашли: от ближайшего по часам гола с известной секундой —
+    разница по протоколу, растянутая на остановки, между периодами — плюс перерыв. Ни одного известного гола — от
+    начала записи: студия до вбрасывания, время по протоколу с остановками и перерывы (ADR-036, раздел 1: «доля записи
+    по времени протокола»). Оценка для окна поиска, не секунда."""
+    info = {x.get("score"): x for x in protocol or []}
+    me = info.get(score) or {}
+    gs = clockrun.game_sec(me.get("time"))
+    if gs is None:
+        return None
+    if not known:
+        per = int(me["period"]) if str(me.get("period") or "").isdigit() else gs // 1200 + 1
+        est = PRE_SHOW + round(gs * SEARCH_STRETCH) + (per - 1) * PERIOD_GAP
+        return min(est, int(length)) if length else est
+    best = None
+    for s, t in known.items():
+        o = info.get(s) or {}
+        go = clockrun.game_sec(o.get("time"))
+        if go is None:
+            continue
+        same = str(o.get("period") or "") == str(me.get("period") or "")
+        cost = (0 if same else 1, abs(gs - go))
+        if best is None or cost < best[0]:
+            gap = 0
+            if not same and str(me.get("period")).isdigit() and str(o.get("period")).isdigit():
+                gap = (int(me["period"]) - int(o["period"])) * PERIOD_GAP
+            best = (cost, t + round((gs - go) * SEARCH_STRETCH) + gap)
+    return max(0, best[1]) if best else None
+
+
+def goal_plan(key: str, score: str, protocol: list[dict] | None = None, video: str | None = None) -> dict | None:
+    """Что показать человеку о голе (ADR-036, раздел 1): {"kind", "video", "windows": [(начало, длина, что это)], ...}.
+    kind: exact — точная секунда `t` (`src`: человек, часы, табло, ход часов); approx — примерное место, `cand` —
+    моменты, когда вставали часы (секунды записи); dispute — обе версии спора; search — где гол, неизвестно: окно около
+    оценки. video — запись лиги из league.json: её берём, пока у матча нет ни отметок, ни разбора. Записи у матча нет,
+    она удалена или гола в ней нет по словам человека — None: тогда как раньше, просьба прислать ссылку или время."""
+    marked = load_replays()["games"].get(key)
+    board = clips_game(key)
+    entry = replay.with_board(marked, board)
+    if entry is None and board.get("status") != "gone":   # табло не размечено или не разобрано — голов нет, запись есть
+        own = board.get("video") if board.get("status") in ("ok", "no_board", "wait", "error") else None
+        entry = {"video": own or video, "goals": []} if own or video else None
+    if not entry or not entry.get("video") or score in set((marked or {}).get("absent") or []):
+        return None
+    video = entry["video"]
+    same = replay.same_video(board.get("video"), video)
+    length = board.get("length") if same else None
+    bg = ((board.get("goals") or {}).get(score) or {}) if same else {}
+    anchors = (marked or {}).get("anchors") or {} if replay.same_video((marked or {}).get("video"), video) else {}
+    base = {"video": video, "length": length, "score": score, "key": key}
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)   # noqa: E731
+    if score in replay.disputed(marked, board) and score in anchors:
+        c = (board.get("checks") or {}).get(score) or {}
+        wins = [(*cutjobs.review_window(anchors[score], length), "по отметке")]
+        tb = None
+        if num(bg.get("t")) and not bg.get("off"):
+            tb = int(bg["t"])
+            wins.append((*cutjobs.review_window(tb, length), "по табло"))
+        elif isinstance(bg.get("win"), list) and len(bg["win"]) == 2:
+            wins.append((*cutjobs.run_window(bg["win"], length), "по ходу часов"))
+        elif num(bg.get("change")):
+            wins.append((*cutjobs.change_window(bg["change"], length), "до смены счёта на табло"))
+        return {**base, "kind": "dispute", "windows": wins, "t": anchors[score], "tb": tb,
+                "why": ", ".join(c.get("against") or [])}
+    r = {x["score"]: x for x in entry.get("goals") or []}.get(score)
+    if r and r.get("exact"):
+        t = anchors[score] if score in anchors else int(bg["t"]) if num(bg.get("t")) else r["t"] + replay.EXACT_LEAD
+        src = "admin" if score in anchors else r.get("src") or "board"
+        return {**base, "kind": "exact", "t": t, "src": src, "windows": [(*cutjobs.review_window(t, length), "гол")]}
+    if r:
+        cand: list[int] = []
+        if r.get("src") == "win" and isinstance(bg.get("win"), list) and len(bg["win"]) == 2:
+            w, how = cutjobs.run_window(bg["win"], length), "по ходу часов от соседнего гола"
+            cand = [int(x) for x in bg.get("wcand") or [] if num(x)]
+        elif r.get("src") == "change" and num(bg.get("change")):
+            w, how = cutjobs.change_window(bg["change"], length), "до смены счёта на табло"
+            ask = bg.get("ask") if isinstance(bg.get("ask"), dict) else {}
+            if ask.get("from") == w[0]:
+                cand = [w[0] + int(x) for x in ask.get("cand") or [] if num(x)]
+        else:   # расчёт от отметки того же периода по времени сайта лиги
+            w, how = cutjobs.search_window(r["t"] + replay.GUESS_LEAD, length), "по времени сайта лиги от соседнего гола"
+        return {**base, "kind": "approx", "windows": [(*w, how)], "cand": cand[-CANDIDATE_MAX:]}
+    known = {x["score"]: x["t"] + (replay.EXACT_LEAD if x.get("exact") else replay.GUESS_LEAD)
+             for x in entry.get("goals") or [] if num(x.get("t"))}
+    est = goal_estimate(score, known, protocol, length)
+    if est is None:
+        return None
+    return {**base, "kind": "search", "windows": [(*cutjobs.search_window(est, length), "около оценки по протоколу")]}
+
+
+CANDIDATE_MAX = 3   # кнопок «Гол на …» под видео
+
+
+def goal_head(key: str, score: str, protocol: list[dict] | None = None) -> str:
+    """«🎬 04.10 Тверичи — Металлург, гол 1:0 · 1-й · Иванов» — для подписи видео."""
+    day, home, away = key.split("|")
+    p = protocol_goal(protocol, score)
+    per = str(p.get("period") or "")
+    per = f" · {per}-й" if per.isdigit() else f" · {html.escape(per)}" if per else ""
+    who = f" · {html.escape(str(p['author']))}" if p.get("author") else ""
+    return (f"🎬 <b>{day[8:10]}.{day[5:7]} {html.escape(tname(home))} — {html.escape(tname(away))}</b>, гол "
+            f"<b>{html.escape(score)}</b>{per}{who}")
+
+
+def cut_kb(plan: dict, jobs: list[int]) -> InlineKeyboardMarkup:
+    """Кнопки под видео гола: ответ человека по таблице ADR-036, раздел 1."""
+    j = jobs[0]
+    b = lambda text, data: InlineKeyboardButton(text=text, callback_data=f"cv:{data}")   # noqa: E731
+    kind = plan["kind"]
+    if kind == "exact":
+        rows = [[b("✅ Гол виден", f"{j}:y:{plan['t']}")],
+                [b("⏪ Гол раньше", f"{j}:e"), b("⏩ Гол позже", f"{j}:l")],
+                [b("🚫 Гола нет в записи", f"{j}:n")]]
+    elif kind == "dispute":
+        rows = [[b(f"✅ Верно по отметке {replay.fmt_clock(plan['t'])}", f"{j}:y:{plan['t']}")]]
+        if plan.get("tb") is not None:
+            rows.append([b(f"✅ Верно по табло {replay.fmt_clock(plan['tb'])}", f"{jobs[1]}:t:{plan['tb']}")])
+        elif len(jobs) > 1:
+            rows.append([b("Гол во втором видео — пришлю время", f"{jobs[1]}:x")])
+        rows.append([b("🔎 Ни то ни другое — искать", f"{j}:s")])
+    else:
+        start = plan["windows"][0][0]
+        rows = [[b(f"Гол на {replay.fmt_clock(t - start)}", f"{j}:t:{t}")] for t in plan.get("cand") or []]
+        rows.append([b("Другое время" if rows else "Гол здесь — пришлю время", f"{j}:x")])
+        rows.append([b("⏪ 3 мин раньше" if kind == "search" else "⏪ Ещё раньше", f"{j}:e"),
+                     b("⏩ 3 мин позже" if kind == "search" else "⏩ Позже", f"{j}:l")])
+        rows.append([b("⚠️ Табло сбилось", f"{j}:w")] if kind == "approx" else [b("🚫 Гола нет в записи", f"{j}:n")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def cut_caption(plan: dict, protocol: list[dict] | None = None) -> list[str]:
+    """Подписи видео: у альбома спора — у каждого своя, у остальных — одна."""
+    head = goal_head(plan["key"], plan["score"], protocol)
+    kind, wins = plan["kind"], plan["windows"]
+    if kind == "exact":
+        lead = plan["t"] - wins[0][0]
+        return [f"{head}\n{SRC_WORD.get(plan.get('src'), '✅')} — гол на {replay.fmt_clock(lead)} этого видео. Видишь "
+                "гол — «✅ Гол виден». Нет — «⏪» или «⏩»: пришлю записи раньше или позже."]
+    if kind == "dispute":
+        out = [f"{head}\n⚠️ Спор: отметка {replay.fmt_clock(plan['t'])} не сходится с табло"
+               + (f" ({html.escape(plan['why'])})" if plan.get("why") else "") + ". Это видео — по отметке."]
+        out += [f"{head}\nВторое видео — {html.escape(w[2])}." for w in wins[1:]]
+        return out
+    what = "Примерное место — " + html.escape(wins[0][2]) if kind == "approx" else \
+        "Где гол, служба не знает: это 3 минуты записи " + html.escape(wins[0][2])
+    return [f"{head}\n{what}. Где в этом видео гол? Нажми момент или пришли время в видео, например 1:05. Гола тут "
+            "нет — «⏪» или «⏩»."]
+
+
+def cut_fallback(plan: dict, err: str) -> str:
+    """Видео не вырезалось: что случилось и ссылка VK с начала окна — тут без неё никак."""
+    url = replay.at_link(plan["video"], plan["windows"][0][0])
+    return (f"{goal_head(plan['key'], plan['score'])}\nВидео не вырезалось: {html.escape(err[:200])}."
+            + (f' Запись в VK: <a href="{html.escape(url)}">с {replay.fmt_clock(plan["windows"][0][0])}</a>.'
+               if url else ""))
+
+
+def cut_jobs_for(plan: dict, now: datetime, prio: int = cutjobs.URGENT) -> list[int]:
+    """Задания службы cuts на окна плана; окна поиска — и соседние, заранее: человек, скорее всего, нажмёт «⏪» или «⏩»."""
+    store = cut_store()
+    kind = {"exact": "review", "dispute": "review", "approx": "preview", "search": "search"}[plan["kind"]]
+    jobs = [store.want(now, plan["video"], s, n, kind, prio=prio, match=plan["key"], score=plan["score"])
+            for s, n, _ in plan["windows"]]
+    if plan["kind"] in ("approx", "search"):
+        s, n, _ = plan["windows"][0]
+        for step in (-1, 1):
+            w = cutjobs.neighbour(s, n, step, plan.get("length"))
+            if w:
+                store.want(now, plan["video"], *w, "search", prio=cutjobs.SEND, match=plan["key"], score=plan["score"])
+    return jobs
+
+
+def cut_state(ids: list[int]) -> tuple[list[dict] | None, str]:
+    """Готовы ли задания: (задания с файлами, «») — все готовы; (None, ошибка) — какое-то не вырежется; (None, «»)
+    — ещё режутся."""
+    store = cut_store()
+    jobs = [store.get(i) for i in ids] if store else []
+    if not jobs or any(j is None for j in jobs):
+        return None, "задание пропало из очереди"
+    for j in jobs:
+        if j["status"] == "error" and j["tries"] >= cutjobs.TRIES:
+            return None, j.get("error") or "ошибка не записана"
+    if all(j["status"] == "done" and store.path(j) for j in jobs):
+        return jobs, ""
+    return None, ""
+
+
+def video_of(job: dict) -> dict:
+    """Размеры для Telegram: без них видео от бота в чате — «0:01» без перемотки (05.10)."""
+    return {"duration": int(job.get("dur") or job.get("len") or 0) or None, "width": int(job.get("w") or 854),
+            "height": int(job.get("h") or 480), "supports_streaming": True}
+
+
+async def cut_send(bot: Bot, cid: int, jobs: list[dict], captions: list[str], kb: InlineKeyboardMarkup | None,
+                   note: str = "") -> None:
+    """Готовые видео в чат: одно — с подписью и кнопками; несколько — альбом, кнопки — сообщением note под ним."""
+    store = cut_store()
+    if len(jobs) == 1:
+        await sending(lambda: bot.send_video(cid, FSInputFile(store.path(jobs[0])), caption=captions[0],
+                                             reply_markup=kb, **video_of(jobs[0])))
+        return
+    media = [InputMediaVideo(media=FSInputFile(store.path(j)), caption=captions[k] if k < len(captions) else None,
+                             parse_mode=ParseMode.HTML, **video_of(j)) for k, j in enumerate(jobs[:ALBUM_MAX])]
+    await sending(lambda: bot.send_media_group(cid, media))
+    if note or kb:
+        await sending(lambda: bot.send_message(cid, note or "Ответ — кнопкой:", reply_markup=kb))
+
+
+async def cut_show(bot: Bot, cid: int, ids: list[int], captions: list[str], kb: InlineKeyboardMarkup | None,
+                   fallback, note: str = "") -> None:
+    """Видео из заданий службы cuts: готовы — сразу; нет — «⏳ Режу видео…», а когда готовы — видео вместо него.
+    Не вырезались — fallback(ошибка): текст со ссылкой VK."""
+    jobs, err = cut_state(ids)
+    if jobs:
+        await cut_send(bot, cid, jobs, captions, kb, note)
+        return
+    if err:
+        await bot.send_message(cid, fallback(err), disable_web_page_preview=True)
+        return
+    wait = await bot.send_message(cid, "⏳ Режу видео…" if len(ids) == 1 else f"⏳ Режу видео: {len(ids)}…")
+    task = asyncio.create_task(cut_wait(bot, cid, wait.message_id, ids, captions, kb, fallback, note))
+    _cut_tasks.add(task)
+    task.add_done_callback(_cut_tasks.discard)
+
+
+async def cut_wait(bot: Bot, cid: int, wait_id: int, ids: list[int], captions: list[str],
+                   kb: InlineKeyboardMarkup | None, fallback, note: str = "") -> None:
+    """Ждём, пока служба cuts вырежет видео, и присылаем его вместо «⏳ Режу видео…»."""
+    deadline = datetime.now(TZ) + CUT_WAIT
+    jobs, err = cut_state(ids)
+    while not jobs and not err and datetime.now(TZ) < deadline:
+        await asyncio.sleep(CUT_POLL)
+        jobs, err = cut_state(ids)
+    try:
+        if jobs:
+            await cut_send(bot, cid, jobs, captions, kb, note)
+            TRACK.add("cuts_shown")
+        else:
+            TRACK.add("cuts_failed")
+            await bot.send_message(cid, fallback(err or f"служба cuts не успела за {CUT_WAIT.seconds // 60} мин"),
+                                   disable_web_page_preview=True)
+    except Exception:
+        logging.exception("video to %s failed", cid)
+    try:
+        await bot.delete_message(cid, wait_id)
+    except Exception:   # уже удалено — не важно
+        pass
+
+
+async def goal_video(bot: Bot, cid: int, plan: dict, protocol: list[dict] | None = None,
+                     prio: int = cutjobs.URGENT) -> list[int]:
+    """Видео гола по плану: задания, подписи, кнопки. После него время, присланное текстом, — время в этом видео."""
+    ids = cut_jobs_for(plan, datetime.now(TZ), prio)
+    if plan["kind"] != "dispute":
+        CUT_ASK[cid] = (ids[0], datetime.now(TZ))
+        PREVIEW_ASK.pop(cid, None)
+    await cut_show(bot, cid, ids, cut_caption(plan, protocol), cut_kb(plan, ids),
+                   lambda err: cut_fallback(plan, err), note="Какое видео верно?" if plan["kind"] == "dispute" else "")
+    return ids
+
+
+async def match_videos(bot: Bot, cid: int, day: str, i: int, g: dict, protocol: list[dict] | None = None) -> None:
+    """«▶️ Все голы матча»: 30 с каждого гола с точной секундой одним альбомом — проверить матч целиком за минуту.
+    Мимо — гол открывают кнопкой под альбомом."""
+    key = match_key(g)
+    plans = [p for p in (goal_plan(key, x["score"], protocol) for x in replay_goals(g, protocol))
+             if p and p["kind"] == "exact"][:ALBUM_MAX] if cut_store() else []
+    if not plans:
+        await bot.send_message(cid, "У голов этого матча пока нет точной секунды — открой гол, пришлю видео для поиска.")
+        return
+    now = datetime.now(TZ)
+    ids = [cut_jobs_for(p, now)[0] for p in plans]
+    caps = [f"{goal_head(key, p['score'], protocol)}\n{SRC_WORD.get(p.get('src'), '✅')} — гол на "
+            f"{replay.fmt_clock(p['t'] - p['windows'][0][0])}" for p in plans]
+    rows, row = [], []
+    for p in plans:
+        row.append(InlineKeyboardButton(text=f"🎯 {p['score']}", callback_data=f"rp:g:{day}:{i}:{p['score']}"))
+        if len(row) == 4:
+            rows.append(row)
+            row = []
+    rows += [row] if row else []
+    note = (f"Голы с точной секундой — {len(plans)}: {', '.join(p['score'] for p in plans)}. Гол мимо или не "
+            "виден — нажми его: пришлю видео с кнопками.")
+    url = replay.at_link(plans[0]["video"], plans[0]["windows"][0][0])
+    await cut_show(bot, cid, ids, caps, InlineKeyboardMarkup(inline_keyboard=rows),
+                   lambda err: f"Видео голов не вырезались: {html.escape(err[:200])}."
+                   + (f' Запись в VK: <a href="{html.escape(url)}">ссылка</a>.' if url else ""), note=note)
+
+
+def window_plan(job: dict, start: int, span: int, kind: str = "search", what: str = "") -> dict:
+    """План окна поиска от видео, которое человек уже смотрел: ⏪, ⏩, «Ни то ни другое — искать»."""
+    length = clips_game(job["match"]).get("length")
+    return {"kind": kind, "video": job["video"], "length": length, "key": job["match"], "score": job["score"],
+            "windows": [(start, span, what or f"с {replay.fmt_clock(start)}")], "cand": []}
+
+
+def video_save(job: dict, sec: int, now: datetime, who: int | None, protocol: list[dict] | None, kind: str = "time",
+               pick: int | None = None) -> str:
+    """Ответ по видео → строка журнала (ADR-033): в `seen` — какое окно человек смотрел и что выбрал. Ошибка или пусто."""
+    g = live_by_key(job["match"])
+    if not g:
+        return "Матч пропал из файла службы live — отметку не записал."
+    seen = {"job": job["id"], "from": job["start"], "len": job["len"], "pick": pick if pick is not None else sec - job["start"]}
+    add_mark(job["match"], job["score"], kind, now, who, "video", protocol, video=job["video"], sec=sec, seen=seen)
+    marks_apply(job["match"], g, now, protocol)
+    return ""
+
+
+async def video_answered(bot: Bot, cid: int, job: dict, sec: int, protocol: list[dict] | None) -> None:
+    """Время записано — 30 с результата: ответ человека сразу становится тем, что увидят болельщики, и его видно."""
+    plan = {"kind": "exact", "video": job["video"], "length": clips_game(job["match"]).get("length"),
+            "key": job["match"], "score": job["score"], "t": sec, "src": "admin",
+            "windows": [(*cutjobs.review_window(sec, clips_game(job["match"]).get("length")), "гол")]}
+    await goal_video(bot, cid, plan, protocol)
+
+
+@dp.callback_query(F.data.startswith("cv:"))
+async def cb_cut(c: CallbackQuery):
+    if not c.from_user or c.from_user.id not in preview_people() or not c.message:
+        await c.answer()
+        return
+    parts = c.data.split(":")
+    try:
+        job = cut_store().get(int(parts[1]))
+    except (sqlite3.Error, ValueError, IndexError, AttributeError):
+        job = None
+    if not job or not job.get("match") or not job.get("score") or len(parts) < 3:
+        await c.answer("Это видео уже не действует — открой гол заново в /replay", show_alert=True)
+        return
+    now, cid, act = datetime.now(TZ), c.message.chat.id, parts[2]
+    arg = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else None
+    g = live_by_key(job["match"])
+    league = await published_league()
+    protocol = protocol_of(league, g) if g else None
+    done = lambda: c.message.edit_reply_markup(reply_markup=None)   # noqa: E731 — ответ дан: кнопки убираем
+    if act in ("t", "y") and arg is not None:
+        err = video_save(job, arg, now, c.from_user.id, protocol, kind="time" if act == "t" else "confirm")
+        if err:
+            await c.answer(err, show_alert=True)
+            return
+        TRACK.add("video_answers" if act == "t" else "video_confirms")
+        await c.answer(f"Записал: гол {job['score']} на {replay.fmt_clock(arg)} записи" if act == "t"
+                       else "Записал: гол виден")
+        await safe_markup(done)
+        if act == "t":
+            await video_answered(c.bot, cid, job, arg, protocol)
+        return
+    if act in ("e", "l", "s"):
+        length = clips_game(job["match"]).get("length")
+        if act == "s":   # «Ни то ни другое — искать»: 3 минуты вокруг отметки
+            w = cutjobs.search_window(job["start"] + job["len"] // 2, length)
+        else:
+            w = cutjobs.neighbour(job["start"], job["len"], -1 if act == "e" else 1, length)
+        if not w:
+            await c.answer("Дальше записи нет", show_alert=True)
+            return
+        await c.answer()
+        TRACK.add("video_steps")
+        await goal_video(c.bot, cid, window_plan(job, *w), protocol)
+        return
+    if act == "x":
+        CUT_ASK[cid] = (job["id"], now)
+        PREVIEW_ASK.pop(cid, None)
+        await c.answer()
+        await c.message.answer(f"Гол <b>{html.escape(job['score'])}</b>: пришли, на какой секунде этого видео гол, — "
+                               f"например 1:05 (видео — {replay.fmt_clock(job['len'])}).")
+        return
+    if act in ("n", "w"):
+        err = replay_mark(job["match"], job["score"], "absent" if act == "n" else "wrong", job["video"], now, protocol,
+                          who=c.from_user.id, via="video")
+        if err:
+            await c.answer(err, show_alert=True)
+            return
+        TRACK.add("video_marks")
+        await c.answer("Записал: гола нет в записи" if act == "n" else "Записал: табло сбилось")
+        await safe_markup(done)
+        return
+    await c.answer()
+
+
+async def safe_markup(call) -> None:
+    """Убрать кнопки под ответом: сообщение старше 48 часов или уже без кнопок — не важно."""
+    try:
+        await call()
+    except Exception:
+        pass
+
+
+def cut_waiting(m: Message) -> bool:
+    """Ждём ли время в видео: видео прислано позже, чем открыт /replay или превью, не дольше REPLAY_WAIT назад."""
+    ask = CUT_ASK.get(m.chat.id)
+    if not (ask and m.text and m.from_user and m.from_user.id in preview_people()
+            and datetime.now(TZ) - ask[1] <= REPLAY_WAIT):
+        return False
+    rp, pv = REPLAY_ASK.get(m.chat.id), PREVIEW_ASK.get(m.chat.id)
+    return not (rp and rp[3] > ask[1]) and not (pv and pv[1] > ask[1])
+
+
+async def h_cut_time(m: Message):
+    job_id, _ = CUT_ASK[m.chat.id]
+    store = cut_store()
+    job = store.get(job_id) if store else None
+    if not job or not job.get("match"):
+        CUT_ASK.pop(m.chat.id, None)
+        await m.answer("Это видео уже не действует — открой гол заново в /replay.")
+        return
+    text = m.text.strip()
+    link = replay.parse_link(text)
+    if link and link[1] is not None and replay.same_video(link[0], job["video"]):
+        sec = link[1]   # ссылка VK «с текущим временем» — время записи, а не видео
+    else:
+        t = replay.parse_clock(text)
+        if t is None or t > job["len"] + 5:
+            await m.answer(f"Не понял время. Пришли, на какой секунде видео гол: например 1:05 (видео — "
+                           f"{replay.fmt_clock(job['len'])}).")
+            return
+        sec = job["start"] + t
+    CUT_ASK.pop(m.chat.id, None)
+    g = live_by_key(job["match"])
+    league = await published_league()
+    protocol = protocol_of(league, g) if g else None
+    err = video_save(job, sec, datetime.now(TZ), m.from_user.id, protocol)
+    if err:
+        await m.answer(err)
+        return
+    TRACK.add("video_answers")
+    await m.answer(f"Записал: гол <b>{html.escape(job['score'])}</b> на {replay.fmt_clock(sec)} записи.")
+    await video_answered(m.bot, m.chat.id, job, sec, protocol)
+
+
+dp.message.register(h_cut_time, cut_waiting)   # раньше h_lost: время в видео — не «непонятое сообщение»
 
 
 # ---------- спор по отметке (ADR-033) ----------
@@ -2649,7 +3148,17 @@ def dispute_todo(clips: dict | None, marked: dict, sent: dict) -> list[tuple[str
     return out
 
 
+def dispute_note(key: str, score: str, c: dict) -> str:
+    """Под альбомом спора: что не сошлось и что делать — без ссылок, видео выше (ADR-036)."""
+    day, home, away = key.split("|")
+    return (f"⚠️ <b>Спор по голу {html.escape(score)}</b> · {html.escape(tname(home))} — {html.escape(tname(away))}, "
+            f"{day[8:10]}.{day[5:7]}\nОтметка {replay.fmt_clock(c['t'])} не сходится с табло: "
+            f"{html.escape(', '.join(c.get('against') or []))}. Первое видео — по отметке, второе — по табло. Пока спор "
+            "не решён, точной секунды у гола нет ни от отметки, ни от табло — у болельщиков «≈».")
+
+
 def dispute_text(key: str, score: str, c: dict, game: dict, video: str) -> str:
+    """Спор ссылками VK — только если видео не вырезалось (VK не отдал запись)."""
     day, home, away = key.split("|")
     lines = [f"⚠️ <b>Спор по голу {html.escape(score)}</b> · {html.escape(tname(home))} — {html.escape(tname(away))}, "
              f"{day[8:10]}.{day[5:7]}",
@@ -2676,6 +3185,7 @@ async def dispute_step(bot: Bot, now: datetime) -> int:
     old = load_disputes(now)
     sent = dict(old)
     n = 0
+    league = None
     for key, score, c in dispute_todo(clips, marked, sent)[:DISPUTE_MAX]:
         game = clips["games"][key]
         video = (marked.get(key) or {}).get("video") or game.get("video")
@@ -2684,13 +3194,36 @@ async def dispute_step(bot: Bot, now: datetime) -> int:
         who = (mark or {}).get("who")
         to = [who] if who in ADMIN_IDS else sorted(ADMIN_IDS)
         place = match_place(key)
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
-            text="🛠 Открыть гол", callback_data=f"rp:g:{place[0]}:{place[1]}:{score}")]]) if place else None
+        opener = [InlineKeyboardButton(text="🛠 Открыть гол", callback_data=f"rp:g:{place[0]}:{place[1]}:{score}")] \
+            if place else None
+        # обе версии видео (ADR-036): вырезаны заранее — альбом и кнопки; ещё режутся — в следующую минуту; VK не
+        # отдал запись — как раньше, ссылками
+        if league is None:
+            league = await published_league()
+        g = live_by_key(key)
+        protocol = protocol_of(league, g) if g else None
+        plan = goal_plan(key, score, protocol) if cut_store() else None
+        jobs, err, ids = None, "нет плана видео", []
+        if plan and plan["kind"] == "dispute":
+            ids = cut_jobs_for(plan, now, cutjobs.SEND)
+            jobs, err = cut_state(ids)
+            first = cut_store().get(ids[0]) or {}
+            if not jobs and not err:
+                if now - datetime.fromisoformat(first.get("at") or admin.iso(now)) < DISPUTE_CUT_WAIT:
+                    continue   # режется — в следующую минуту
+                err = "служба cuts не вырезала видео"   # служба стоит: спор не должен ждать её вечно
         got = 0
         for cid in to:
             try:
-                await sending(lambda: bot.send_message(cid, dispute_text(key, score, c, game, video), reply_markup=kb,
-                                                       disable_web_page_preview=True))
+                if jobs:
+                    kb = cut_kb(plan, ids)
+                    if opener:
+                        kb.inline_keyboard.append(opener)
+                    await cut_send(bot, cid, jobs, cut_caption(plan, protocol), kb, dispute_note(key, score, c))
+                else:
+                    kb = InlineKeyboardMarkup(inline_keyboard=[opener]) if opener else None
+                    await sending(lambda: bot.send_message(cid, dispute_text(key, score, c, game, video),
+                                                           reply_markup=kb, disable_web_page_preview=True))
                 got += 1
             except Exception:
                 logging.exception("dispute to %s failed", cid)

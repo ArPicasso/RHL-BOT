@@ -207,7 +207,8 @@ class Bot(unittest.TestCase):
         text = self.bot.replay_text("2026-10-03", GAME, e)
         self.assertIn("✅", text)
         self.assertIn("≈", text)
-        self.assertIn(html.escape(f"{PLAY}&t=4790"), text)   # в разметке Telegram & — это &amp;
+        self.assertIn("— ✅ 1h19m50s", text)
+        self.assertNotIn("vkvideo.ru", text)   # ADR-036: смотреть гол — видео в боте, ссылок VK админу нет
 
     def test_new_video_resets_anchors(self):
         self.bot.replay_save("2026-10-03", 0, "1:0", f"{VIDEO}?t=30m", self.now)
@@ -408,7 +409,7 @@ class Nag(unittest.TestCase):
         self.assertEqual(e["video"], "https://vk.com/video-1_2")
         text = self.bot.replay_text("2026-10-03", GAME, None, video=VIDEO)
         self.assertIn("Запись лиги", text)
-        self.assertIn("Пришли времена всех", text)
+        self.assertIn("пришли времена всех", text)
 
     def test_once_a_day_after_nine(self):
         self.assertEqual(self.run_step(self.now.replace(hour=20))[0], 0)    # рано
@@ -693,11 +694,16 @@ class Previews(unittest.TestCase):
         import asyncio
         bot = mock.Mock()
         bot.edit_message_caption = mock.AsyncMock()
+        bot.send_message = mock.AsyncMock(return_value=mock.Mock(message_id=9))
         with mock.patch.object(self.bot, "published_league", mock.AsyncMock(return_value=None)):
             asyncio.run(self.bot.preview_answer(bot, 1001, GAME["key"], "1:0", self.ask, VIDEO, 47))
         saved = json.loads((self.dir / "replays.json").read_text(encoding="utf-8"))["games"][GAME["key"]]
         self.assertEqual((saved["video"], saved["anchors"]), (VIDEO, {"1:0": 1547}))
         self.assertEqual(self.bot.preview_todo(self.clips, {GAME["key"]: saved}, {}), [])
+        # ADR-036: ответ — сразу 30 с результата, срочным заданием службе cuts: окно клипа вокруг 1547
+        self.assertEqual(bot.send_message.call_args.args[1], "⏳ Режу видео…")
+        job = self.bot.cut_store().get(self.bot.CUT_ASK[1001][0])
+        self.assertEqual((job["start"], job["len"], job["prio"], job["score"]), (1527, 30, 2, "1:0"))
 
     def test_helper_may_press_but_not_replay(self):
         self.assertIn(761, self.bot.preview_people())

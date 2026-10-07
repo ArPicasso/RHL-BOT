@@ -29,6 +29,10 @@ KEEP_DAYS = 3
 TOUCH = timedelta(hours=1)   # чаще не продлеваем жизнь задания: проход clips просит заготовки каждые минуты
 REVIEW_BEFORE = 20   # с до гола: окно, которое увидят болельщики в клипе (probe_cuts.CLIP_BEFORE)
 REVIEW_AFTER = 10    # и после (probe_cuts.CLIP_AFTER)
+CHANGE_BEFORE = 120  # с записи до смены счёта на табло: оператор меняет счёт через 0–90 с после гола
+CHANGE_AFTER = 5     # и после смены
+RUN_BEFORE, RUN_AFTER = 20, 10   # вокруг окна счёта хода часов (ADR-031)
+SEARCH = 180         # с: окно поиска гола и шаг «⏪ 3 мин раньше / ⏩ позже» (ADR-036, раздел 1)
 DIR = "media/cuts"   # файлы — от корня проекта, по номеру задания
 
 _VIDEO_RE = re.compile(r"(?:video|live)(-?\d{1,12})_(\d{1,12})")   # как replay._VIDEO_RE
@@ -78,6 +82,38 @@ def review_window(t: int, length: float | None = None) -> tuple[int, int]:
     if length:
         end = min(end, int(length))
     return start, max(1, end - start)
+
+
+def _clamp(start: float, end: float, length: float | None) -> tuple[int, int]:
+    start = max(0, int(start))
+    end = min(int(end), int(length)) if length else int(end)
+    return start, max(1, end - start)
+
+
+def change_window(change: float, length: float | None = None) -> tuple[int, int]:
+    """Окно до смены счёта на табло и чуть после — превью гола без секунды: (начало, длина)."""
+    return _clamp(int(change) - CHANGE_BEFORE, int(change) + CHANGE_AFTER, length)
+
+
+def run_window(win: list, length: float | None = None) -> tuple[int, int]:
+    """Окно по счёту хода часов (ADR-031): гол — в окне [от, до], плюс немного до и после."""
+    return _clamp(int(win[0]) - RUN_BEFORE, int(win[1]) + RUN_AFTER, length)
+
+
+def search_window(est: float, length: float | None = None) -> tuple[int, int]:
+    """Окно поиска SEARCH секунд вокруг оценки места гола."""
+    start = max(0, int(est) - SEARCH // 2)
+    if length and start + SEARCH > length:
+        start = max(0, int(length) - SEARCH)
+    return _clamp(start, start + SEARCH, length)
+
+
+def neighbour(start: int, length_: int, step: int, length: float | None = None) -> tuple[int, int] | None:
+    """Соседнее окно поиска: step −1 — SEARCH секунд до начала окна, +1 — SEARCH после его конца. Дальше записи — None."""
+    if step < 0:
+        return None if start <= 0 else _clamp(start - SEARCH, start, length)
+    end = start + length_
+    return None if length and end >= length else _clamp(end, end + SEARCH, length)
 
 
 def _iso(dt: datetime) -> str:

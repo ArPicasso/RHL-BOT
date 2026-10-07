@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 import aiohttp
 import admin
 import clockrun
+import cutjobs
 import marks
 import myplayer
 import predict
@@ -2316,6 +2317,36 @@ async def replay_nag_step(bot: Bot, now: datetime) -> int:
 PREVIEW_ASK: dict[int, tuple[str, datetime]] = {}   # чат → (жетон превью, когда нажал «Другое время»)
 
 
+_cuts: tuple[Path, cutjobs.CutJobs] | None = None
+
+
+def cut_store() -> cutjobs.CutJobs | None:
+    """Очередь службы cuts в state.db (ADR-036): превью режет она. Базы нет — None: служба ещё не запускалась."""
+    global _cuts
+    if _cuts is None or _cuts[0] != STATE_DB:
+        if not STATE_DB.exists():
+            return None
+        conn = sqlite3.connect(STATE_DB, isolation_level=None, check_same_thread=False)
+        conn.execute("PRAGMA busy_timeout=5000")
+        _cuts = (STATE_DB, cutjobs.CutJobs(conn, BASE))
+    return _cuts[1]
+
+
+def preview_file(ask: dict) -> tuple[Path, dict] | None:
+    """Файл превью и его размеры (`w`, `h`, `dur`): у превью с 07.10 — готовое задание службы cuts, у превью до неё —
+    файл службы clips. Не готово — None: пришлём в следующую минуту."""
+    if ask.get("job") is not None:
+        try:
+            store = cut_store()
+            job = store.get(ask["job"]) if store else None
+        except (sqlite3.Error, TypeError, ValueError):
+            return None
+        path = store.path(job) if job else None
+        return (path, {k: job.get(k) for k in ("w", "h", "dur")}) if path else None
+    path = BASE / ask["file"] if ask.get("file") else None
+    return (path, ask) if path and path.is_file() else None
+
+
 def preview_people() -> frozenset[int]:
     return ADMIN_IDS | PREVIEW_IDS
 
@@ -2334,8 +2365,8 @@ def load_previews() -> dict:
 
 
 def preview_todo(clips: dict | None, marked: dict, sent: dict) -> list[tuple[str, str, dict, str]]:
-    """Превью, которые пора прислать: у гола есть `ask` с файлом, секунды нет ни у табло, ни у админа, и превью
-    ещё не уходило. (ключ матча, счёт, ask, ролик) — по порядку матчей и голов."""
+    """Превью, которые пора прислать: у гола есть `ask` с файлом или заданием службы cuts, секунды нет ни у табло, ни
+    у админа, и превью ещё не уходило. (ключ матча, счёт, ask, ролик) — по порядку матчей и голов."""
     out = []
     for key, game in sorted(((clips or {}).get("games") or {}).items()):
         if not isinstance(game, dict):
@@ -2344,7 +2375,8 @@ def preview_todo(clips: dict | None, marked: dict, sent: dict) -> list[tuple[str
         for score, g in sorted((game.get("goals") or {}).items(), key=goal_place):
             ask = (g or {}).get("ask")
             was = sent.get(f"{key}|{score}")
-            if (isinstance(ask, dict) and ask.get("file") and g.get("t") is None and score not in anchors
+            if (isinstance(ask, dict) and (ask.get("file") or ask.get("job") is not None) and g.get("t") is None
+                    and score not in anchors
                     and not (isinstance(was, dict) and (was.get("v", 1) >= PREVIEW_V or "done" in was))):
                 out.append((key, score, ask, game.get("video")))
     return out
@@ -2445,19 +2477,17 @@ async def preview_step(bot: Bot, now: datetime) -> int:
         else:   # запись забываем: появится у гола новое превью — уйдёт как новое
             sent.pop(rec_key)
     n = 0
-    for key, score, ask, video in preview_todo(clips, marked, sent)[:PREVIEW_MAX]:
-        path = BASE / ask["file"]
-        if not path.is_file():
-            continue
+    ready = [(x, got) for x in preview_todo(clips, marked, sent) if (got := preview_file(x[2]))]
+    for (key, score, ask, video), (path, meta) in ready[:PREVIEW_MAX]:
         text, kb = preview_caption(key, score, ask)
         for cid, mid in ((sent.get(f"{key}|{score}") or {}).get("msgs") or {}).items():   # старое превью «0:01»
             try:
                 await bot.delete_message(int(cid), mid)
             except Exception:   # уже удалено или сеть: новое превью всё равно шлём
                 pass
-        # длина и размер — от службы clips; у превью до 05.10 их нет: 360p по ширине 16:9
-        size = {"duration": int(ask.get("dur") or ask.get("len") or 0) or None,
-                "width": int(ask.get("w") or 640), "height": int(ask.get("h") or 360)}
+        # длина и размер — от службы cuts (у превью до 07.10 — от clips); у превью до 05.10 их нет: 360p, 16:9
+        size = {"duration": int(meta.get("dur") or ask.get("len") or 0) or None,
+                "width": int(meta.get("w") or 640), "height": int(meta.get("h") or 360)}
         msgs, file_id = {}, None
         for cid in people:
             try:

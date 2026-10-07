@@ -64,7 +64,7 @@ INDEX_TTL = 300                 # index.json «Раската» — есть л�
 SALT_EVERY = 3600               # сверка соли повторяется раз в час: вдруг секрет поменяли
 ALERTS_EVERY = 120              # тревоги (ADR-022): раз в две минуты пишем список проблем для бота
 AGENT_TOKEN_MIN = 32            # токен агента короче — адрес /api/agent/* выключен: угадывать нечего
-AGENT_FILES = ("bot", "pages", "clips", "alerts")   # status/<файл>.json — только числа, без id (ADR-021)
+AGENT_FILES = ("bot", "pages", "clips", "cuts", "alerts")   # status/<файл>.json — только числа, без id (ADR-021)
 
 LIVE_NAME = r"today|schedule|sources|replays|clips|\d{4}-\d{2}-\d{2}"   # повторы голов (ADR-027), голы по табло (ADR-030)
 
@@ -898,6 +898,7 @@ class Api:
             disk=self.disk(), subs=admin.read_json(self.cfg.subs_file),
             app_counts=self.adm.counts(since), games=admin.game_stats(self.conn, since, now.date()),
             retention=self.adm.retention(now.date()), clips=admin.read_json(self.cfg.status_dir / "clips.json"),
+            cuts=admin.read_json(self.cfg.status_dir / "cuts.json"),
             my_players=self.mp.count())
 
     # ---------- обвязка ----------

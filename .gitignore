@@ -26,6 +26,7 @@ state.db-*
 live/
 status/
 probe/
+media/
 rhl_site.json
 rhockey.json
 rhl_site.tmp

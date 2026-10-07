@@ -244,44 +244,38 @@ class Previews(unittest.TestCase):
             self.assertEqual(clips.clock_stops(vis, clock), [104, 112])
             self.assertEqual(clips.clock_stops(vis[:3] + vis[6:], clock), [112])   # разрыв в кадрах — не остановка
 
-    def test_preview_exact_start(self):
-        with mock.patch.object(clips.sb, "ffmpeg", return_value="ffmpeg"):   # на раннере GitHub ffmpeg нет
-            cmd = clips.preview_cmd("http://x/s.m3u8", {"Referer": "https://vk.com"}, 2849, 125, Path("p.mp4"))
-        self.assertLess(cmd.index("-ss"), cmd.index("-i"))
-        self.assertIn("libx264", cmd)                       # перекодируем: нулевая секунда превью — ровно 2849
-        self.assertEqual(cmd[cmd.index("-t") + 1], "125")
-
     def test_only_goals_without_second(self):
         goals = {"0:2": {"t": 2963, "change": 2969}, "0:1": {"t": None, "change": None}}
-        with mock.patch.object(clips.sb, "stream_of") as stream:
-            clips.add_previews(KEY, VIDEO, goals, None, Path("."))
+        with mock.patch.object(clips.sb, "stream_of") as stream, mock.patch.object(clips, "cut_jobs") as jobs:
+            clips.add_previews(KEY, VIDEO, goals, None)
         stream.assert_not_called()
+        jobs.assert_not_called()
         self.assertNotIn("ask", goals["0:2"])
 
-
-    def test_preview_keeps_size_and_skips_short(self):
-        """05.10: превью без длины Telegram показывал «0:01» — длину и размер кладём в ask, короткое не шлём."""
-        def run(cmd, **kw):
-            Path(cmd[-1]).write_bytes(b"v")
-            return mock.Mock(returncode=0)
-        for info, has_ask in (({"w": 640, "h": 360, "dur": 125}, True), ({"w": 640, "h": 360, "dur": 1}, False)):
-            goals = {"0:1": {"t": None, "change": 6869}}
-            with tempfile.TemporaryDirectory(dir=clips.ROOT) as tmp, \
-                    mock.patch.object(clips.sb, "stream_of", return_value=("http://x", {}, 9123)), \
-                    mock.patch.object(clips.sb, "BOARDS", {}), mock.patch.object(clips.sb, "ffmpeg", return_value="f"), \
-                    mock.patch.object(clips.subprocess, "run", side_effect=run), \
-                    mock.patch.object(clips, "video_info", return_value=info):
-                clips.add_previews(KEY, VIDEO, goals, 9123, Path(tmp))
-            self.assertEqual("ask" in goals["0:1"], has_ask)
-            if has_ask:
-                self.assertEqual({k: goals["0:1"]["ask"][k] for k in ("w", "h", "dur")}, info)
-
-    def test_video_info_from_ffprobe(self):
-        out = json.dumps({"streams": [{"width": 640, "height": 360}], "format": {"duration": "125.000000"}})
-        with mock.patch.object(clips.subprocess, "run", return_value=mock.Mock(stdout=out)):
-            self.assertEqual(clips.video_info(Path("p.mp4")), {"w": 640, "h": 360, "dur": 125})
-        with mock.patch.object(clips.subprocess, "run", side_effect=OSError):
-            self.assertEqual(clips.video_info(Path("p.mp4")), {})
+    def test_preview_is_a_cut_job(self):
+        """07.10 (ADR-036): превью режет служба cuts — у гола окно, задание и моменты часов, своего ffmpeg нет.
+        Одно окно — одно задание: тот же гол на следующем проходе получает то же задание."""
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "STATE_DB", Path(tmp) / "state.db"), \
+                mock.patch.object(clips, "_jobs", None), mock.patch.object(clips.sb, "BOARDS", {}), \
+                mock.patch.object(clips.sb, "stream_of") as stream:
+            goals = {"0:1": {"t": None, "change": 6869}, "0:2": {"t": None, "change": None, "win": [7000, 7040],
+                                                              "wcand": [7012, 7031]}}
+            clips.add_previews(KEY, VIDEO, goals, 9123)
+            again = {"0:1": {"t": None, "change": 6869}}
+            clips.add_previews(KEY, VIDEO, again, 9123)
+            jobs = clips.cut_jobs()
+            first = jobs.get(goals["0:1"]["ask"]["job"])
+            run = jobs.get(goals["0:2"]["ask"]["job"])
+            jobs.conn.close()
+        stream.assert_not_called()   # без разметки часов поток не нужен: окно знаем, моменты — от счёта хода
+        self.assertEqual({k: goals["0:1"]["ask"][k] for k in ("from", "len", "cand")}, {"from": 6749, "len": 125,
+                                                                                        "cand": []})
+        self.assertNotIn("file", goals["0:1"]["ask"])
+        self.assertEqual((first["start"], first["len"], first["kind"], first["prio"], first["match"], first["score"]),
+                         (6749, 125, "preview", clips.cutjobs.SEND, KEY, "0:1"))
+        self.assertEqual(again["0:1"]["ask"]["job"], first["id"])
+        self.assertEqual((run["start"], run["len"]), (6980, 70))
+        self.assertEqual(goals["0:2"]["ask"]["cand"], [32, 51])
 
 
 class Guesses(unittest.TestCase):
@@ -961,6 +955,79 @@ class Gone(unittest.TestCase):
         cov = clips.coverage(store, LEAGUE, {}, date(2026, 10, 5))[KEY]
         self.assertEqual((cov["why"], cov["replays"]), ("gone", 0))
         self.assertIn("gone", clips.WHY)
+
+class Prepared(unittest.TestCase):
+    """ADR-036, раздел 2: после прохода — видео всего, что ждёт человека, служба cuts режет заранее."""
+    now = datetime(2026, 10, 5, 21, 0, tzinfo=TZ)
+
+    def test_what_waits_for_a_human(self):
+        game = {"video": VIDEO, "status": "ok", "length": 9000, "goals": {
+            "1:0": {"t": 2600, "src": "clock", "change": 2620},     # табло, без отметки — один свидетель
+            "1:1": {"t": 3500, "src": "clock", "change": 3520},     # отметка сошлась — два свидетеля
+            "2:1": {"t": None, "change": 4969},                     # спор: отметка против смены счёта
+            "2:2": {"t": 5600, "src": "board", "change": 5640},     # спор: отметка против секунды табло
+            "3:2": {"t": None, "change": 6000},                     # без секунды — превью, не здесь
+            "3:3": {"t": 7000, "src": "clock", "off": "absent"}},   # нет в записи
+            "checks": {"1:1": {"t": 3495, "status": "ok"}, "2:1": {"t": 5100, "status": "conflict"},
+                       "2:2": {"t": 5700, "status": "conflict"}, "4:3": {"t": 8000, "status": "unknown"},
+                       "4:4": {"t": 8500, "status": "pending"}}}
+        admin = {"video": "https://vkvideo.ru/video-100_200", "absent": ["3:3"],
+                 "anchors": {"1:1": 3495, "2:1": 5100, "2:2": 5700, "4:3": 8000, "4:4": 8500}}
+        got = clips.cut_wants(game, admin)
+        self.assertEqual(sorted(got), sorted([
+            (2580, 30, "1:0", "review"),
+            (5080, 30, "2:1", "review"), (4849, 125, "2:1", "preview"),     # обе версии спора
+            (5680, 30, "2:2", "review"), (5580, 30, "2:2", "review"),
+            (7980, 30, "4:3", "review")]))                                    # отметку нечем проверить
+        other = {**admin, "video": "https://vk.com/video-9_9"}               # отметки к другому ролику
+        self.assertEqual(clips.cut_wants(game, other), [(2580, 30, "1:0", "review"), (3480, 30, "1:1", "review"),
+                                                         (5580, 30, "2:2", "review")])
+
+    def test_recent_matches_only_once(self):
+        goals = {"1:0": {"t": 2600, "src": "clock", "change": 2620}}
+        store = {"games": {
+            "2026-10-05|tverichi|metallurg": {"video": VIDEO, "status": "ok", "goals": goals},
+            "2026-10-03|rostov|krasnodar": {"video": "https://vk.com/video-1_2", "status": "ok", "goals": goals},
+            "2026-10-02|kaluga|dinamo-576": {"video": "https://vk.com/video-3_4", "status": "ok", "goals": goals},
+            "2026-10-04|sokol|proton": {"video": "https://vk.com/video-5_6", "status": "ok", "src": "club",
+                                        "goals": goals},
+            "2026-10-04|proton|kristall": {"video": "https://vk.com/video-7_8", "status": "gone", "goals": goals}}}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "STATE_DB", Path(tmp) / "state.db"), \
+                mock.patch.object(clips, "_jobs", None):
+            self.assertEqual(clips.prepare_cuts(store, {}, self.now), 2)
+            self.assertEqual(clips.prepare_cuts(store, {}, self.now), 2)
+            jobs = clips.cut_jobs()
+            rows = [jobs.take(self.now) for _ in range(3)]
+            jobs.conn.close()
+        self.assertEqual([r["match"] for r in rows[:2]], ["2026-10-05|tverichi|metallurg", "2026-10-03|rostov|krasnodar"])
+        self.assertEqual({(r["start"], r["len"], r["kind"], r["prio"]) for r in rows[:2]},
+                         {(2580, 30, "review", clips.cutjobs.PREP)})
+        self.assertIsNone(rows[2])   # каждое окно — одно задание, повторная просьба не множит
+
+    def test_dead_preview_asked_again(self):
+        """Ревью PR #138: превью, у которого кончились попытки, служба просит снова каждый проход — через
+        cutjobs.REVIVE оно пойдёт на новый круг. Готовое превью не трогаем: бот не должен прислать его второй раз."""
+        key = "2026-10-05|tverichi|metallurg"
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "STATE_DB", Path(tmp) / "state.db"), \
+                mock.patch.object(clips, "_jobs", None):
+            jobs = clips.cut_jobs()
+            dead = jobs.want(self.now, VIDEO, 6749, 125, "preview", prio=clips.cutjobs.SEND)
+            jobs.fail(dead, self.now, "HTTP Error 403", final=True)
+            ready = jobs.want(self.now, VIDEO, 7749, 125, "preview", prio=clips.cutjobs.SEND)
+            jobs.take(self.now)
+            jobs.done(ready, self.now, "media/cuts/x.mp4", 854, 480, 125)   # файла нет: «готово», но пропал
+            store = {"games": {key: {"video": VIDEO, "status": "ok", "goals": {
+                "0:1": {"t": None, "change": 6869, "ask": {"from": 6749, "len": 125, "job": dead}},
+                "0:2": {"t": None, "change": 7869, "ask": {"from": 7749, "len": 125, "job": ready}}}}}}
+            later = self.now + clips.cutjobs.REVIVE
+            self.assertEqual(clips.prepare_cuts(store, {}, later), 1)
+            got = (jobs.get(dead)["status"], jobs.get(ready)["status"])
+            answered = {key: {"video": VIDEO, "anchors": {"0:1": 6800}}}
+            jobs.fail(dead, later, "снова", final=True)
+            self.assertEqual(clips.prepare_cuts(store, answered, later + clips.cutjobs.REVIVE), 0)   # уже ответили
+            jobs.conn.close()
+        self.assertEqual(got, ("queued", "done"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -283,6 +283,30 @@ class BuildStatusTest(unittest.TestCase):
                                              "DownloadError: HTTP Error 403. Обычно лечит новый yt-dlp"), got)
         self.assertEqual(self.texts(clips={**vk, "days": {"2026-10-03": {"vk_fail": 2}}}), [])   # рано
 
+    def test_cuts_service_silent_or_failing(self):
+        """ADR-036: служба cuts режет превью и видео для админов — молчит дольше 20 минут или видео подряд не
+        вырезаются (после неудач ни одной удачи) — тревога."""
+        ok = {"beat": ago(minutes=1), "info": {"cut_ok": ago(minutes=3), "queue": {"queued": 2}},
+              "days": {"2026-10-03": {"cuts": 7, "cut_fail": 1}}}
+        st = healthy(cuts=ok)
+        self.assertEqual(st["problems"], [])
+        self.assertEqual((st["system"]["cuts"]["done"], st["system"]["cuts"]["fail"]), (7, 1))
+        self.assertEqual(st["system"]["cuts"]["queue"], {"queued": 2})
+        self.assertIsNone(healthy()["system"]["cuts"])   # службы ещё нет — не тревога
+        self.assertEqual(self.texts(cuts={**ok, "beat": ago(minutes=12)}), [])   # идёт длинное видео
+        got = self.texts(cuts={**ok, "beat": ago(minutes=22)})
+        self.assertEqual(got, [("bad", "Служба нарезки видео молчит 22 мин: превью голов админам не режутся. "
+                                       "Проверь systemctl status cuts")])
+        bad = {"beat": ago(minutes=1), "days": {"2026-10-03": {"cut_fail": 3, "cuts": 2}},
+               "info": {"cut_ok": ago(hours=2), "cut_fail": ago(minutes=4),
+                        "cut_error": "VK не отдал запись: DownloadError: HTTP Error 403"}}
+        got = self.texts(cuts=bad)
+        self.assertEqual(len(got), 1)
+        self.assertTrue(got[0][1].startswith("Нарезка видео не выходит: сегодня не вырезалось 3 видео"), got)
+        self.assertIn("HTTP Error 403", got[0][1])
+        self.assertEqual(self.texts(cuts={**bad, "info": {**bad["info"], "cut_ok": ago(minutes=1)}}), [])   # прошло
+        self.assertEqual(self.texts(cuts={**bad, "days": {"2026-10-03": {"cut_fail": 2}}}), [])          # рано
+
     def test_deleted_recording_is_told_once_per_match(self):
         """Запись удалили из VK (этап 0.3 плана): повторов у матча нет — говорим раз, причина — с матчем."""
         gone = [{"key": "2026-10-05|kaluga|dinamo-576", "title": "05.10 Калужские Ракеты — Динамо",

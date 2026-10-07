@@ -17,13 +17,17 @@ permissions:
   pages: write
   id-token: write
 
+# Новый запуск снимает прежний: 06.10 и 06–07.10 выкладка повисала в ожидании окружения github-pages и держала
+# очередь — все следующие сборки отменялись, мини-апп не обновлялся 4 и 16 часов. Сборка идёт пару минут, а свежие
+# данные важнее недоделанной прошлой выкладки: следующий запуск соберёт их заново.
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20   # сборка — две-три минуты; дольше — что-то повисло, следующий запуск начнёт заново
     steps:
       - uses: actions/checkout@v4
 
@@ -222,6 +226,7 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10   # выкладка — около минуты; зависла — снимается, следующий запуск выложит заново
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

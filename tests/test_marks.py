@@ -83,7 +83,7 @@ class Journal(unittest.TestCase):
         same = "https://vkvideo.ru/video-1_2"                      # тот же ролик другой ссылкой
         s.add(NOW, KEY, "1:0", "time", role="admin", via="replay", video=same, sec=700)
         self.assertEqual(s.state(KEY), {"video": "https://vk.com/video-1_2", "anchors": {"1:0": 700, "1:1": 600},
-                                        "absent": [], "wrong": []})
+                                        "absent": [], "wrong": [], "confirm": {}, "reject": {}})
 
     def test_revoke_match_and_nothing_left(self):
         s = store()
@@ -104,7 +104,21 @@ class Journal(unittest.TestCase):
         self.assertTrue(all(r["role"] == "import" and r["via"] == "import" and r["who"] is None for r in rows))
         self.assertEqual(rows[0]["at"], "2026-10-04T12:00:00+03:00")
         self.assertEqual(s.state(KEY), {"video": VIDEO, "anchors": {"1:0": 1800, "2:1": 4800}, "absent": ["1:1"],
-                                        "wrong": ["2:1"]})
+                                        "wrong": ["2:1"], "confirm": {}, "reject": {}})
+
+    def test_seen_and_objected_last_word_per_second(self):
+        """ADR-033, раздел 4: «✅ Гол виден» и «⏪ / ⏩ гола тут нет» на 30 с гола — у одной секунды действует
+        последнее; у другой секунды — своё."""
+        s = store()
+        s.add(NOW, KEY, "1:0", "time", role="admin", via="replay", video=VIDEO, sec=1800)
+        s.add(NOW, KEY, "1:0", "confirm", role="admin", via="video", video=VIDEO, sec=1800)
+        s.add(NOW, KEY, "1:0", "reject", role="helper", via="video", video=VIDEO, sec=1800)
+        s.add(NOW, KEY, "1:1", "reject", role="admin", via="video", video=VIDEO, sec=2500)
+        st = s.state(KEY)
+        self.assertEqual((st["confirm"], st["reject"]), ({}, {"1:0": [1800], "1:1": [2500]}))
+        s.add(NOW, KEY, "1:0", "confirm", role="admin", via="video", video=VIDEO, sec=1800)
+        self.assertEqual(s.state(KEY)["confirm"], {"1:0": [1800]})
+        self.assertEqual(s.state(KEY)["reject"], {"1:1": [2500]})
 
 
 class BotJournal(unittest.TestCase):

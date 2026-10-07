@@ -120,7 +120,7 @@ class Plan(Base):
     def test_buttons(self):
         exact = self.bot.cut_kb(self.bot.goal_plan(KEY, "1:0", PROTOCOL), [7])
         self.assertEqual([b.callback_data for row in exact.inline_keyboard for b in row],
-                         ["cv:7:y:2600:1-0", "cv:7:e::1-0", "cv:7:l::1-0", "cv:7:n::1-0"])
+                         ["cv:7:y:2600:1-0", "cv:7:e:2600:1-0", "cv:7:l:2600:1-0", "cv:7:n::1-0"])
         approx = self.bot.cut_kb(self.bot.goal_plan(KEY, "1:1", PROTOCOL), [8])
         self.assertEqual([(b.text, b.callback_data) for row in approx.inline_keyboard for b in row][:3],
                          [("Гол на 0:40", "cv:8:t:3420:1-1"), ("Гол на 1:10", "cv:8:t:3450:1-1"),
@@ -331,9 +331,15 @@ class Answers(Base):
 
     def test_exact_steps_are_two_minutes(self):
         job = self.job("1:0")
-        self.press(self.cv(job, "l"))
+        self.press(self.cv(job, "l", 2600))
         nxt = self.bot.cut_store().get(self.bot.CUT_ASK[1001][0])
         self.assertEqual((nxt["start"], nxt["len"]), (2610, 120))         # 2 минуты после клипа (ADR-036, раздел 1)
+        # «⏩ Гол позже» под 30 с точной секунды — ещё и возражение ей (ADR-033, раздел 4): ни клипа, ни точного повтора
+        saved = self.bot.load_replays()["games"][KEY]
+        self.assertEqual(saved["reject"], {"1:0": [2600]})
+        board = self.bot.replay.with_board(saved, json.loads((self.dir / "clips.json").read_text())["games"][KEY])
+        g = next(x for x in board["goals"] if x["score"] == "1:0")
+        self.assertEqual((g["exact"], g["src"]), (False, "change"))
 
     def test_old_recording_button_refused(self):
         """Ревью PR #139: видео из прежней записи — кнопка под ним не переключает матч обратно на неё."""

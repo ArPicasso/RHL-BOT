@@ -99,10 +99,10 @@ def _window(state, anchor: dict, goal: dict) -> list[int] | None:
     return walk(state, snap(state, anchor["t"]), game_sec(goal["time"]) - game_sec(anchor["time"]))
 
 
-def check(goals: list[dict], state) -> tuple[int, dict[str, set[str]]]:
+def check(goals: list[dict], state) -> tuple[int, dict[str, set[str]], set[str]]:
     """Самопроверка: каждый точный гол периода — по каждому другому. (сколько пар сошлось, период → счета голов в
-    несошедшихся парах). Возможных секунд шире RUN_WINDOW — пара ничего не доказывает."""
-    ok, bad = 0, {}
+    несошедшихся парах, счета голов в сошедшихся парах). Возможных секунд шире RUN_WINDOW — пара ничего не доказывает."""
+    ok, bad, good = 0, {}, set()
     for per, gs in _periods(goals).items():
         anchors = [g for g in gs if isinstance(g.get("t"), (int, float))]
         for a in anchors:
@@ -114,17 +114,20 @@ def check(goals: list[dict], state) -> tuple[int, dict[str, set[str]]]:
                     continue
                 if w and w[0] - CHECK_TOL <= b["t"] <= w[-1] + CHECK_TOL:
                     ok += 1
+                    good.update((a["score"], b["score"]))
                 else:
                     bad.setdefault(per, set()).update((a["score"], b["score"]))
-    return ok, bad
+    return ok, bad, good
 
 
 def solve(goals: list[dict], state) -> dict:
     """Голы матча по протоколу → что даёт счёт хода. goals — {"score", "period", "time", "t" (точная секунда или None),
     "src" («admin», «clock», «board»…), "change" (смена счёта на табло или None)}. Ответ: {"found": {счёт: {"win":
     [от, до], "cand": [остановки в окне], "from": счёт опоры, "t"?: точная секунда}}, "drop": [счёт — снять точную
-    секунду табло], "fail": [периоды, где самопроверка не сошлась], "checked": пар сошлось}."""
-    ok, bad = check(goals, state)
+    секунду табло], "fail": [периоды, где самопроверка не сошлась], "checked": пар сошлось, "confirmed": [счета точных
+    голов, которые ход часов подтвердил парой с другим точным голом, а ни одна пара не опровергла] — второй свидетель
+    для клипа (ADR-033, раздел 4)}."""
+    ok, bad, good = check(goals, state)
     drop = sorted({s for per in bad.values() for s in per for g in goals if g["score"] == s})
     found = {}
     for per, gs in _periods(goals).items():
@@ -161,7 +164,7 @@ def solve(goals: list[dict], state) -> dict:
             if len(w) == 1 and (ok or isinstance(change, (int, float))):
                 got["t"] = w[0]
             found[goal["score"]] = got
-    return {"found": found, "drop": drop, "fail": sorted(bad), "checked": ok}
+    return {"found": found, "drop": drop, "fail": sorted(bad), "checked": ok, "confirmed": sorted(set(good) - set(drop))}
 
 
 def check_marks(goals: list[dict], state=None) -> dict[str, dict]:

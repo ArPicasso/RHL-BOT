@@ -648,17 +648,19 @@ class Dense:
 def clock_goals(game: dict, protocol: dict[str, dict], admin_e: dict | None) -> list[dict]:
     """Голы для счёта хода: время и период — из протокола, точная секунда — отметка админа (её ролик тот же) или
     табло (часы, задержка); секунды прошлого счёта хода (`run`) опорой не бывают."""
-    anchors = (admin_e or {}).get("anchors") or {} if replay.same_video((admin_e or {}).get("video"),
-                                                                         game.get("video")) else {}
+    mine = replay.same_video((admin_e or {}).get("video"), game.get("video"))
+    anchors = (admin_e or {}).get("anchors") or {} if mine else {}
+    reject = (admin_e or {}).get("reject") if mine else None
     goals = game.get("goals") or {}
     out = []
     for score, x in sorted(protocol.items(), key=lambda kv: sb.goal_rank(kv[0])):
         b = goals.get(score) or {}
         if b.get("off"):
             continue
-        if isinstance(anchors.get(score), int):
+        if isinstance(anchors.get(score), int) and not replay.objected(reject, score, anchors[score]):
             t, src = anchors[score], "admin"
-        elif isinstance(b.get("t"), (int, float)) and b.get("src") != "run":
+        elif isinstance(b.get("t"), (int, float)) and b.get("src") != "run" \
+                and not replay.objected(reject, score, b["t"]):   # человек сказал «гола тут нет» — не опора
             t, src = b["t"], b.get("src")
         else:
             t, src = None, None
@@ -667,8 +669,11 @@ def clock_goals(game: dict, protocol: dict[str, dict], admin_e: dict | None) -> 
     return out
 
 
+RUN_V = 2   # счёт хода поменялся — пересчитать все матчи (07.10: подтверждённые голы — второй свидетель для клипа)
+
+
 def clock_sig(goals: list[dict]) -> str:
-    return hashlib.sha1(json.dumps([[g["score"], g["time"], g["t"], g["src"], g["change"]] for g in goals],
+    return hashlib.sha1(json.dumps([RUN_V, [[g["score"], g["time"], g["t"], g["src"], g["change"]] for g in goals]],
                                    ensure_ascii=False).encode()).hexdigest()[:12]
 
 
@@ -702,8 +707,11 @@ def clock_pass(store: dict, league: dict | None, marked: dict, track: "admin.Tra
         n += 1
         info: dict = {"sig": sig, "at": now_msk().isoformat(timespec="seconds")}
         people = any(g["src"] == "admin" for g in goals)   # отметки людей проверяем всегда (ADR-033)
-        if not any(g["t"] is not None for g in goals) or all(g["t"] is not None for g in goals) and not people:
-            game["run"] = info   # опор нет или искать нечего
+        exact = sum(g["t"] is not None for g in goals)
+        if not exact or exact == len(goals) == 1 and not people:
+            # опор нет или искать и сверять нечего. Все голы точные — всё равно сверяем их парами: гол табло,
+            # подтверждённый ходом часов, — второй свидетель для клипа (ADR-033, раздел 4)
+            game["run"] = info
             continue
         try:
             src, headers, length = stream(game["video"])
@@ -751,7 +759,8 @@ def clock_pass(store: dict, league: dict | None, marked: dict, track: "admin.Tra
             except Exception as err:
                 log.warning("%s: превью по счёту хода не сделали — %s: %s", key, type(err).__name__, err)
         game["run"] = {**info, "checked": got["checked"], "fail": got["fail"], "drop": got["drop"], "exact": exact,
-                       "windows": sorted(set(got["found"]) - set(exact)), "marks": verdicts}
+                       "windows": sorted(set(got["found"]) - set(exact)), "marks": verdicts,
+                       "confirmed": got.get("confirmed") or []}
         store["updated"] = now_msk().isoformat(timespec="seconds")
         write_atomic(LIVE_DIR / "clips.json", store)
         if track is not None:
@@ -897,7 +906,8 @@ def hidden_goal(x: dict) -> bool:
 
 def goal_seconds(game: dict, admin: dict | None) -> dict[str, tuple[int, str]]:
     """Точная секунда каждого гола в ролике службы: отметка админа (если ролик тот же) главнее часов и табло; гол,
-    которого, по словам админа, в записи нет или у которого табло сбилось (ADR-031), — без секунды."""
+    которого, по словам админа, в записи нет или у которого табло сбилось (ADR-031), — без секунды; секунда, которой
+    человек возразил на её 30 с («⏪ / ⏩ гол раньше / позже»), — тоже."""
     out = {s: (int(g["t"]), g.get("src") or "board") for s, g in (game.get("goals") or {}).items()
            if isinstance(g, dict) and isinstance(g.get("t"), (int, float)) and not g.get("off")}
     if admin and replay.same_video(admin.get("video"), game.get("video")):
@@ -906,17 +916,55 @@ def goal_seconds(game: dict, admin: dict | None) -> dict[str, tuple[int, str]]:
         out.update({s: (int(t), "admin") for s, t in (admin.get("anchors") or {}).items() if isinstance(t, int)})
         for s in replay.disputed(admin, game):   # спор (ADR-033): клип мимо гола хуже никакого
             out.pop(s, None)
+        for s in [s for s, (t, _) in out.items() if replay.objected(admin.get("reject"), s, t)]:
+            out.pop(s)
+    return out
+
+
+WITNESS = {"admin+board": "отметка человека, табло с ней сошлось", "clock+run": "встали часы, ход часов сошёлся",
+           "board+run": "табло, ход часов от другого точного гола", "seen": "человек видел 30 с гола: «✅ Гол виден»"}
+
+
+def clip_witnesses(game: dict, admin: dict | None) -> dict[str, tuple[int, str, str]]:
+    """Голы, у которых точную секунду подтверждают два независимых свидетеля (ADR-033, раздел 4): счёт → (секунда,
+    откуда, какие свидетели). Только такой гол получает клип: клип мимо гола хуже никакого.
+    - отметка человека и проверка табло — «сошлось»;
+    - секунда по ходу часов (`run`): часы встали ровно там, где по протоколу от другого точного гола;
+    - секунда табло (часы, задержка) и ход часов от другого точного гола периода — пара сошлась в самопроверке;
+    - человек посмотрел 30 с вокруг этой секунды и нажал «✅ Гол виден», а ни один свидетель не возражает (спор,
+      «нет в записи», «табло сбилось» и «гола тут нет» goal_seconds уже убрал)."""
+    seconds = goal_seconds(game, admin)
+    mine = bool(admin) and replay.same_video(admin.get("video"), game.get("video"))
+    checks = game.get("checks") or {}
+    confirmed = set((game.get("run") or {}).get("confirmed") or [])
+    seen = (admin.get("confirm") or {}) if mine else {}
+    out = {}
+    for score, (t, src) in seconds.items():
+        c = checks.get(score) or {}
+        if src == "admin" and c.get("status") == "ok" and c.get("t") == t:
+            why = "admin+board"
+        elif src == "run":
+            why = "clock+run"
+        elif src in ("clock", "board") and score in confirmed:
+            why = "board+run"
+        elif any(abs(int(x) - t) <= replay.OBJECT_TOL for x in seen.get(score) or [] if isinstance(x, int)):
+            why = "seen"
+        else:
+            continue
+        out[score] = (t, src, why)
     return out
 
 
 def clip_plan(game: dict, admin: dict | None, protocol: dict[str, dict]) -> tuple[list[tuple[str, int, str]], list[str]]:
-    """Что резать и что убрать: ([(счёт, секунда, откуда)], [счёт клипа к удалению]). Режем гол с секундой и
-    протоколом, без скрытых, если клипа нет или секунда поменялась. Убираем клип скрытого игрока, гол, которого
-    в протоколе нет или он другой команды (лига отменила гол — счета сдвинулись), и гол, у которого секунды больше
-    нет (разбор поправили: 05.10 клип 4:0 вырезали на секунде гола 1:0)."""
+    """Что резать и что убрать: ([(счёт, секунда, откуда)], [счёт клипа к удалению]). Режем гол с секундой, которую
+    подтверждают два свидетеля (clip_witnesses), и протоколом, без скрытых, если клипа нет или секунда поменялась.
+    Убираем клип скрытого игрока, гол, которого в протоколе нет или он другой команды (лига отменила гол — счета
+    сдвинулись), и гол, у которого двух свидетелей больше нет: разбор поправили (05.10 клип 4:0 вырезали на секунде
+    гола 1:0) или свидетель возразил — спор, «гола тут нет» (ADR-033: клип снимается сразу)."""
     have = game.get("clips") or {}
     cut, drop = [], []
-    seconds = goal_seconds(game, admin) if game.get("src") != "club" else {}   # запись клуба — только повтор
+    # два свидетеля (ADR-033, раздел 4); запись клуба — только повтор
+    seconds = {s: (t, src) for s, (t, src, _) in clip_witnesses(game, admin).items()} if game.get("src") != "club" else {}
     for score, (t, src) in sorted(seconds.items(), key=lambda x: x[1][0]):
         x = protocol.get(score)
         if not x or hidden_goal(x):
@@ -1067,7 +1115,7 @@ def catalog(store: dict, league: dict | None, marked: dict, today: date) -> dict
     (лига отменила гол или поправила счёт). `no_board` — матчей с записью, где табло клуба-хозяина не размечено (ни
     секунд, ни превью, пока не разметят), `boards` — сколько таких клубов (ADR-030, дополнение 06.10). Покрытие
     повторами (ADR-031, по coverage): `m_total` сыгранных матчей, `m_full` — повтор у каждого гола, `m_none` — ни у
-    одного, `g_replay` голов с повтором, `run` — точных по ходу часов."""
+    одного, `g_replay` голов с повтором, `run` — точных по ходу часов, `two` — с двумя свидетелями: им клип."""
     days = season_days(today)
     games = store.get("games") or {}
     found = recordings(league, marked, days, games)
@@ -1090,6 +1138,7 @@ def catalog(store: dict, league: dict | None, marked: dict, today: date) -> dict
         scores = set(protocol) or set(board)
         seconds = goal_seconds(game, admin_e) if game else {
             s: (t, "admin") for s, t in ((admin_e or {}).get("anchors") or {}).items() if isinstance(t, int)}
+        two = clip_witnesses(game, admin_e) if game and game.get("src") != "club" else {}
         anchors = (admin_e or {}).get("anchors") or {}
         have = game.get("clips") or {}
         out["goals"] += len(scores)
@@ -1103,6 +1152,8 @@ def catalog(store: dict, league: dict | None, marked: dict, today: date) -> dict
                 out["clips"] += 1
             if seconds.get(score, (0, ""))[1] == "run":
                 out["run"] += 1
+            if score in two and score in protocol:   # клип можно резать (ADR-033, раздел 4)
+                out["two"] += 1
         if protocol:
             out["mismatch"] += sum(1 for s in board if s not in protocol)
     out["boards"] = len(unmarked)

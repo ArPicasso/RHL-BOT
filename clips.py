@@ -28,7 +28,9 @@ league.json («Смотреть» от rhl.fhr.ru) или ссылка адми�
 Отказ «записи больше нет» (удалена, не существует, 404) — не сбой: со второго раза подряд у матча `status: gone`,
 повторов по такой записи сборка не ставит (мёртвая ссылка), а админам уходит тревога — пришли другую запись в
 /replay (этап 0.3 плана). «Нам её не отдали» (приватная, регион, 403, капча) — не `gone`: болельщик в VK её
-откроет, пробуем снова. VK ещё
+откроет, пробуем снова. Разобранную запись VK может удалить и потом, а разбор её больше не трогает — поэтому
+`alive_pass` раз в ALIVE_EVERY спрашивает у VK метаданные ролика (один запрос, без скачивания): свежие матчи —
+каждый проход. VK ещё
 не знает длину записи (эфир идёт или запись обрабатывается) — не разбираем (`wait`), спрашиваем снова через
 WAIT_EVERY до конца следующего дня после матча: 06.10 разбор во время эфира дал кадр табло из заставки до матча.
 Кадры прохода и картинки — в probe/scoreboard/<матч>/ (там же, где у пробника), держатся KEEP_DAYS дней с разбора.
@@ -80,6 +82,9 @@ EVERY = 600         # с между проходами; пока есть нер
 TRIES = 3           # столько раз пробуем матч, который не скачался или упал
 GONE_TRIES = 2      # столько раз подряд VK должен сказать «записи нет», чтобы считать её удалённой (этап 0.3 плана)
 GONE_MAX = 6        # удалённых записей в пульте и тревогах
+ALIVE_EVERY = 6 * 3600   # с: как часто спрашиваем VK, на месте ли уже разобранная запись (ADR-027, доп. 07.10)
+ALIVE_MAX = 3            # записей за проход: один запрос метаданных на запись, без скачивания
+ALIVE_DAYS = 2           # дней после матча запись проверяем каждый проход: в первые дни её и удаляют, и заменяют
 WAIT_EVERY = 1200   # с: VK ещё не знает длину записи (эфир идёт или запись обрабатывается) — спрашиваем снова не чаще
 KEEP_DAYS = 3       # кадры прохода держим столько дней
 VERSION = 9         # разбор поменялся — матчи разбираем заново (05.10: голы по порядку протокола; 06.10: смены
@@ -226,6 +231,55 @@ def wait_over(game: dict, now: datetime) -> bool:
         return (now - datetime.fromisoformat(game["scanned"])).total_seconds() >= WAIT_EVERY
     except (KeyError, TypeError, ValueError):
         return True
+
+
+def alive_due(game: dict, key: str, now: datetime) -> bool:
+    """Пора ли спросить VK, на месте ли запись: сразу — если VK уже раз сказал «записи нет» или матч свежий,
+    иначе раз в ALIVE_EVERY от прошлой проверки (а первый раз — от разбора)."""
+    if game.get("gone_tries") or key[:10] >= (now.date() - timedelta(days=ALIVE_DAYS)).isoformat():
+        return True
+    try:
+        last = datetime.fromisoformat(game.get("alive") or game["scanned"])
+    except (KeyError, TypeError, ValueError):
+        return True
+    return (now - last).total_seconds() >= ALIVE_EVERY
+
+
+def alive_pass(store: dict, now: datetime, check=stream, track: "admin.Tracker | None" = None,
+               league: dict | None = None) -> int:
+    """Запись, которую служба уже разобрала, VK может удалить потом: разбор её больше не трогает, а повторы по ней
+    продолжают висеть в мини-аппе (ADR-027, дополнение 07.10). Поэтому раз в ALIVE_EVERY спрашиваем у VK
+    метаданные ролика — один запрос, без скачивания. Записи больше нет — `status: gone`, как при разборе: голы
+    остаются, вернётся запись — вернутся и повторы. Возвращает, сколько записей проверили."""
+    games = store.get("games") or {}
+    todo = [(k, e) for k, e in games.items()
+            if isinstance(e, dict) and isinstance(e.get("video"), str) and e.get("status") not in ("wait", "gone")
+            and (e.get("status") != "error" or e.get("tries", 0) >= TRIES) and alive_due(e, k, now)]
+    todo.sort(key=lambda x: (x[1].get("alive") or x[1].get("scanned") or "", x[0]))
+    n = 0
+    for key, e in todo[:ALIVE_MAX]:
+        e["alive"] = now.isoformat(timespec="seconds")
+        n += 1
+        try:
+            check(e["video"])
+        except Exception as err:
+            if not (isinstance(err, VkError) and gone_error(err)):
+                log.info("%s: запись не проверилась — %s: %s", key, type(err).__name__, err)
+                e.pop("gone_tries", None)   # сбой — не «записи нет»: счёт отказов подряд начинается заново
+                continue
+            if track is not None:
+                track.add("vk_gone")
+            e["gone_tries"] = e.get("gone_tries", 0) + 1
+            if e["gone_tries"] >= GONE_TRIES:
+                e.update(status="gone", error=f"{type(err).__name__}: {err}"[:300])
+                log.warning("%s: записи %s больше нет в VK — повторов по ней не будет", key, e["video"])
+        else:
+            e.pop("gone_tries", None)
+    if n:
+        gone_note(track, games, league)
+        store["updated"] = now_msk().isoformat(timespec="seconds")
+        write_atomic(LIVE_DIR / "clips.json", store)
+    return n
 
 
 def pending(league: dict | None, marked: dict, store: dict, today: date,
@@ -1141,6 +1195,7 @@ def main() -> None:
             n, left = run_pass(store, league, marked, now, track=track)
             if n:
                 log.info("проход: разобрано матчей %d, ждут разбора %d", n, left)
+            alive_pass(store, now, track=track, league=league)   # не удалили ли VK запись, которую уже разобрали
             counted = clock_pass(store, league, marked, track=track)
             left = left or counted >= CLOCK_MAX   # счёт хода ждёт ещё матчей — следующий проход через минуту
             if n or counted:

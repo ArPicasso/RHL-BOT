@@ -889,6 +889,43 @@ class Gone(unittest.TestCase):
         self.assertEqual(b.apply_replays(games, {KEY: entry}, {KEY: board}), 0)
         self.assertNotIn("replay", games[0]["goals"][0])
 
+    def test_parsed_recording_rechecked_later(self):
+        """Разобранную запись VK может удалить потом: разбор её больше не трогает, поэтому спрашиваем метаданные."""
+        store = {"games": {KEY: {"video": VIDEO, "status": "ok", "tries": 1, "v": clips.VERSION,
+                                 "goals": {"0:1": {"t": 10}}, "scanned": "2026-10-04T23:00:00+03:00"}}}
+        e = store["games"][KEY]
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            # разбор такой матч не берёт
+            self.assertNotIn(KEY, dict(clips.pending(LEAGUE, {}, store["games"], date(2026, 10, 5))))
+            ok = mock.Mock(return_value=("url", {}, 3600))
+            self.assertEqual(clips.alive_pass(store, self.now, check=ok), 1)
+            self.assertEqual((ok.call_args.args[0], e["status"]), (VIDEO, "ok"))
+            # сбой проверки записи не хоронит
+            clips.alive_pass(store, self.now, check=mock.Mock(side_effect=clips.VkError("timed out")))
+            self.assertEqual((e["status"], e.get("gone_tries")), ("ok", None))
+            gone = mock.Mock(side_effect=clips.VkError("Video was deleted"))
+            clips.alive_pass(store, self.now, check=gone)
+            self.assertEqual((e["status"], e["gone_tries"]), ("ok", 1))   # один отказ — ещё не приговор
+            with self.assertLogs(level="WARNING"):
+                clips.alive_pass(store, self.now, check=gone)
+            self.assertEqual((e["status"], e["goals"]), ("gone", {"0:1": {"t": 10}}))
+            self.assertEqual(clips.alive_pass(store, self.now, check=gone), 0)   # уже знаем — не спрашиваем
+            saved = json.loads((Path(tmp) / "clips.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["games"][KEY]["status"], "gone")
+
+    def test_recheck_not_too_often_for_old_matches(self):
+        now = datetime(2026, 10, 20, 12, 0, tzinfo=TZ)
+        e = {"video": VIDEO, "status": "ok", "goals": {}, "scanned": "2026-10-05T12:00:00+03:00",
+             "alive": (now - timedelta(hours=1)).isoformat(timespec="seconds")}
+        self.assertFalse(clips.alive_due(e, KEY, now))
+        self.assertTrue(clips.alive_due({**e, "alive": (now - timedelta(hours=7)).isoformat()}, KEY, now))
+        self.assertTrue(clips.alive_due(e, "2026-10-20|a|b", now))       # матч сегодня — каждый проход
+        self.assertTrue(clips.alive_due({**e, "gone_tries": 1}, KEY, now))   # VK уже сказал «нет» — сразу
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            store = {"games": {KEY: dict(e), "2026-10-05|kaluga|dinamo-576": {"video": "https://vk.com/video-3_4",
+                                                                              "status": "wait", "goals": {}}}}
+            self.assertEqual(clips.alive_pass(store, now, check=mock.Mock()), 0)   # нечего и ждущую не трогаем
+
     def test_coverage_says_why(self):
         store = {"games": {KEY: {"video": VIDEO, "status": "gone", "tries": 2, "goals": {},
                                  "error": "VkError: видео удалено"}}}

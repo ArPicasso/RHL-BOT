@@ -6,9 +6,11 @@
 задание и тот же файл. Первыми режем те, которые ждёт человек (`URGENT`), потом превью, которые бот пришлёт сам
 (`SEND`), потом заготовки (`PREP`).
 
-Упало — ещё раз через RETRY, всего TRIES попыток; дальше заготовка остаётся ошибкой, а человек, попросивший окно
-снова, запускает его заново. Задания и файлы живут KEEP_DAYS с последней просьбы: чистит служба cuts. Id людей в
-таблице нет — только ролик, окно и статус.
+Упало — ещё раз через RETRY, всего TRIES попыток; дальше заготовка остаётся ошибкой, превью снова пробуем не раньше
+чем через REVIVE (VK лечат новым yt-dlp — превью не должно пропасть насовсем), а человек, попросивший окно снова,
+запускает его сразу. Окно за концом записи и удалённая запись — ошибка без повторов. Задание «в работе» дольше STUCK —
+служба упала посреди него, берём снова. Задания и файлы живут KEEP_DAYS с последней просьбы: чистит служба cuts. Id
+людей в таблице нет — только ролик, окно и статус.
 
 Только stdlib, без сети.
 """
@@ -21,6 +23,8 @@ KINDS = ("preview", "review", "search", "clip")   # превью гола без
 PREP, SEND, URGENT = 0, 1, 2   # заготовка; бот пришлёт, когда будет готово; человек ждёт сейчас
 TRIES = 3
 RETRY = (timedelta(minutes=1), timedelta(minutes=10))   # пауза после первой и второй неудачи
+REVIVE = timedelta(hours=2)   # превью, у которого кончились попытки, просят снова не раньше: VK не дёргаем без конца
+STUCK = timedelta(minutes=30)   # задание «в работе» дольше — служба упала посреди него (одно видео — минуты)
 KEEP_DAYS = 3
 TOUCH = timedelta(hours=1)   # чаще не продлеваем жизнь задания: проход clips просит заготовки каждые минуты
 REVIEW_BEFORE = 20   # с до гола: окно, которое увидят болельщики в клипе (probe_cuts.CLIP_BEFORE)
@@ -45,6 +49,7 @@ CREATE TABLE IF NOT EXISTS cut_jobs (
     status  TEXT    NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'work', 'done', 'error')),
     tries   INTEGER NOT NULL DEFAULT 0,
     next    TEXT,
+    began   TEXT,
     file    TEXT,
     w       INTEGER,
     h       INTEGER,
@@ -57,7 +62,7 @@ CREATE INDEX IF NOT EXISTS cut_jobs_status ON cut_jobs (status);
 """
 
 COLUMNS = ("id", "at", "used", "vid", "video", "start", "len", "kind", "match", "score", "prio", "status", "tries",
-           "next", "file", "w", "h", "dur", "error", "done_at")
+           "next", "began", "file", "w", "h", "dur", "error", "done_at")
 
 
 def vid(video: str) -> str:
@@ -105,7 +110,8 @@ class CutJobs:
     def want(self, now: datetime, video: str, start: int, length: int, kind: str, *, prio: int = PREP,
              match: str | None = None, score: str | None = None) -> int:
         """Нужно окно ролика: id задания. Такое окно уже просили — то же задание: срочность — наибольшая из просьб;
-        файл пропал — режем заново; окно упало все TRIES раз, а теперь его ждёт человек, — пробуем снова."""
+        файл пропал — режем заново; окно упало все TRIES раз — пробуем снова, если его ждёт человек, а превью — не
+        раньше чем через REVIVE. Человек ждёт упавшее окно, которое ещё повторится, — повтор сразу, без паузы."""
         if kind not in KINDS:
             raise ValueError(f"вид задания {kind!r} не из {KINDS}")
         start, length = max(0, int(start)), max(1, int(length))
@@ -124,10 +130,13 @@ class CutJobs:
             upd: dict = {}
             if prio > row["prio"]:
                 upd["prio"] = int(prio)
-            again = (row["status"] == "done" and self.path(row) is None) or \
-                (row["status"] == "error" and row["tries"] >= TRIES and prio >= URGENT)
+            failed = row["status"] == "error" and row["tries"] >= TRIES
+            again = (row["status"] == "done" and self.path(row) is None) or (failed and (
+                prio >= URGENT or (prio >= SEND and datetime.fromisoformat(row["done_at"]) <= now - REVIVE)))
             if again:
                 upd.update(status="queued", tries=0, next=None, file=None, error=None, done_at=None)
+            elif row["status"] == "error" and not failed and prio >= URGENT and row["next"]:
+                upd["next"] = None
             if upd or (datetime.fromisoformat(row["used"]) <= now - TOUCH):
                 upd["used"] = stamp
             if upd:
@@ -140,14 +149,16 @@ class CutJobs:
             raise
 
     def take(self, now: datetime) -> dict | None:
-        """Следующее задание в работу: срочные первыми, среди равных — кто раньше попросил. Упавшее — после паузы."""
+        """Следующее задание в работу: срочные первыми, среди равных — кто раньше попросил. Упавшее — после паузы,
+        застрявшее «в работе» дольше STUCK — снова."""
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             row = self._one("status = 'queued' OR (status = 'error' AND tries < ? AND (next IS NULL OR next <= ?)) "
-                            "ORDER BY prio DESC, id LIMIT 1", (TRIES, _iso(now)))
+                            "OR (status = 'work' AND began < ?) ORDER BY prio DESC, id LIMIT 1",
+                            (TRIES, _iso(now), _iso(now - STUCK)))
             if row:
-                self.conn.execute("UPDATE cut_jobs SET status = 'work' WHERE id = ?", (row["id"],))
-                row["status"] = "work"
+                self.conn.execute("UPDATE cut_jobs SET status = 'work', began = ? WHERE id = ?", (_iso(now), row["id"]))
+                row.update(status="work", began=_iso(now))
             self.conn.execute("COMMIT")
             return row
         except BaseException:
@@ -158,12 +169,13 @@ class CutJobs:
         self.conn.execute("UPDATE cut_jobs SET status = 'done', file = ?, w = ?, h = ?, dur = ?, error = NULL, "
                           "next = NULL, done_at = ? WHERE id = ?", (file, w, h, dur, _iso(now), int(job_id)))
 
-    def fail(self, job_id: int, now: datetime, error: str) -> bool:
-        """Задание не вышло: ещё попытка через RETRY или всё. True — попыток больше не будет."""
+    def fail(self, job_id: int, now: datetime, error: str, final: bool = False) -> bool:
+        """Задание не вышло: ещё попытка через RETRY или всё. final — повтор не поможет (окно за концом записи, запись
+        удалена). True — попыток больше не будет."""
         row = self.get(job_id)
         if not row:
             return True
-        tries = row["tries"] + 1
+        tries = TRIES if final else row["tries"] + 1
         final = tries >= TRIES
         nxt = None if final else _iso(now + RETRY[min(tries, len(RETRY)) - 1])
         self.conn.execute("UPDATE cut_jobs SET status = 'error', tries = ?, next = ?, error = ?, done_at = ? "
@@ -175,12 +187,25 @@ class CutJobs:
         return self.conn.execute("UPDATE cut_jobs SET status = 'queued' WHERE status = 'work'").rowcount
 
     def forget(self, now: datetime, keep_days: int = KEEP_DAYS) -> list[str]:
-        """Задания, которых не просили keep_days, — из таблицы; их файлы (от корня) — вернуть: стирает служба."""
+        """Задания, которых не просили keep_days, — из таблицы; их файлы (от корня) — вернуть: стирает служба. Одной
+        транзакцией: просьба между выбором и удалением не должна получить номер удалённого задания."""
         edge = _iso(now - timedelta(days=keep_days))
-        rows = self.conn.execute("SELECT id, file FROM cut_jobs WHERE used < ? AND status != 'work'", (edge,)).fetchall()
-        if rows:
-            self.conn.execute(f"DELETE FROM cut_jobs WHERE id IN ({', '.join('?' * len(rows))})", [r[0] for r in rows])
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self.conn.execute("SELECT id, file FROM cut_jobs WHERE used < ? AND status != 'work'",
+                                     (edge,)).fetchall()
+            if rows:
+                self.conn.execute(f"DELETE FROM cut_jobs WHERE id IN ({', '.join('?' * len(rows))})",
+                                  [r[0] for r in rows])
+            self.conn.execute("COMMIT")
+        except BaseException:
+            self.conn.execute("ROLLBACK")
+            raise
         return [r[1] for r in rows if r[1]]
+
+    def files(self) -> set[str]:
+        """Файлы всех заданий в таблице (от корня): остальное в папке — сироты."""
+        return {r[0] for r in self.conn.execute("SELECT file FROM cut_jobs WHERE file IS NOT NULL")}
 
     def counts(self) -> dict[str, int]:
         """Для пульта: в очереди (и сколько из них ждёт человек), в работе, готово, ошибок."""

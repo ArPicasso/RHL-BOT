@@ -49,7 +49,9 @@ POLL = 2             # с между взглядами в пустую очер
 BEAT = 60            # с между записями пульса, пока очередь пуста
 STREAM_TTL = timedelta(minutes=25)   # адрес потока VK живёт около получаса
 CLEAN_EVERY = timedelta(hours=1)
-TIMEOUT = 900        # с на одно окно: три минуты записи с перекодированием — до минуты
+ORPHAN = timedelta(days=1)   # файл без задания старше — стираем: в работе он минуты
+TIMEOUT = 300        # с на одно окно: три минуты записи с перекодированием — до минуты. Задание целиком (два захода и
+                     # ffprobe) укладывается в admin.CUTS_STALE: пульс между заданиями не замолкает
 MIN_DUR = 15         # с: файл короче min(окно, MIN_DUR) — поток оборвался, такое не отдаём
 
 log = logging.getLogger("cuts")
@@ -129,18 +131,18 @@ def run_job(job: dict, jobs: cutjobs.CutJobs, streams: Streams, mark: tuple, tra
     path = root / rel
     tmp = path.with_name(f"{job['id']}.part.mp4")
     path.parent.mkdir(parents=True, exist_ok=True)
-    err = ""
+    err, hopeless = "", False
     for _ in range(2):
         try:
             (src, headers, length), fresh = streams.get(job["video"])
         except Exception as e:   # VK не отдал запись — ошибка задания, повтор по правилам очереди (ADR-012)
             clips.vk_note(track, e)
-            err = f"VK не отдал запись: {e}"
+            err, hopeless = f"VK не отдал запись: {e}", clips.gone_error(e)   # удалена — повтор не поможет
             break
         if fresh:
             clips.vk_note(track, None)
         if length and job["start"] >= length:
-            err = f"окно с {job['start']} с — за концом записи ({round(length)} с)"
+            err, hopeless = f"окно с {job['start']} с — за концом записи ({round(length)} с)", True
             break
         err = cut(src, headers, job["start"], job["len"], tmp, mark)
         if not err or fresh:
@@ -154,7 +156,7 @@ def run_job(job: dict, jobs: cutjobs.CutJobs, streams: Streams, mark: tuple, tra
     now = now_msk()
     if err:
         tmp.unlink(missing_ok=True)
-        final = jobs.fail(job["id"], now, err)
+        final = jobs.fail(job["id"], now, err, final=hopeless)
         log.warning("задание %s (%s): %s%s", job["id"], what(job), err, " — больше не пробуем" if final else "")
         if track is not None:
             track.add("cut_fail")
@@ -172,15 +174,17 @@ def run_job(job: dict, jobs: cutjobs.CutJobs, streams: Streams, mark: tuple, tra
 
 
 def clean(jobs: cutjobs.CutJobs, now: datetime, root: Path = ROOT) -> int:
-    """Забытые задания — из таблицы, их файлы — с диска; файлы без задания (упало посреди записи) — тоже."""
+    """Забытые задания — из таблицы, их файлы — с диска; файлы без задания старше суток (служба упала посреди
+    записи) — тоже. Файл задания живёт, пока живёт задание: его возраст на диске не важен."""
     gone = jobs.forget(now)
     for rel in gone:
         (root / rel).unlink(missing_ok=True)
     d = root / cutjobs.DIR
     if d.is_dir():
-        edge = (now - timedelta(days=cutjobs.KEEP_DAYS + 1)).timestamp()
+        keep = jobs.files()
+        edge = (now - ORPHAN).timestamp()
         for f in d.glob("*.mp4"):
-            if f.stat().st_mtime < edge:
+            if f"{cutjobs.DIR}/{f.name}" not in keep and f.stat().st_mtime < edge:
                 f.unlink(missing_ok=True)
     return len(gone)
 
@@ -202,26 +206,31 @@ def main() -> None:
     track = admin.Tracker("cuts")
     logging.getLogger().addHandler(admin.ErrorCount(track))
     jobs = open_db(STATE_DB)
-    n = jobs.reset_work()
-    if n:
-        log.info("служба перезапустилась посреди нарезки: %d заданий — снова в очередь", n)
-    for f in (ROOT / cutjobs.DIR).glob("*.part.mp4"):
-        f.unlink(missing_ok=True)
+    if not args.once:   # --once рядом с работающей службой не должен трогать её задание и её файл
+        n = jobs.reset_work()
+        if n:
+            log.info("служба перезапустилась посреди нарезки: %d заданий — снова в очередь", n)
+        for f in (ROOT / cutjobs.DIR).glob("*.part.mp4"):
+            f.unlink(missing_ok=True)
     mark = mark_files(ROOT / cutjobs.DIR)
     streams = Streams()
     cleaned, beat = now_msk() - CLEAN_EVERY, 0.0
     while True:
         now = now_msk()
         job = None
-        try:
-            if now - cleaned >= CLEAN_EVERY:
+        if now - cleaned >= CLEAN_EVERY:
+            cleaned = now   # и при ошибке: чистка не должна держать очередь
+            try:
                 n = clean(jobs, now)
                 if n:
                     log.info("чистка: забыто заданий %d", n)
-                cleaned = now
+            except Exception:
+                log.exception("чистка упала")
+        try:
             job = jobs.take(now)
             if job:
                 track.info(job={"kind": job["kind"], "len": job["len"], "prio": job["prio"]})
+                track.flush()   # пульс — и перед заданием: оно идёт минуты
                 run_job(job, jobs, streams, mark, track)
                 track.info(job=None)
         except Exception:   # служба не падает из-за одного задания

@@ -149,7 +149,7 @@ function system(st, now) {
   if (k) {
     const q = k.queue || {};
     const failing = v(k, "fail") >= 3 && k.fail_at && (!k.ok_at || toDate(k.fail_at) > toDate(k.ok_at));
-    html += row(minsAgo(k.beat, now) > 10 ? "bad" : "ok", "Пульс службы нарезки", k.started ? esc(`запущена ${ago(k.started, now)}`) : "", esc(ago(k.beat, now)));
+    html += row(minsAgo(k.beat, now) > 20 ? "bad" : "ok", "Пульс службы нарезки", k.started ? esc(`запущена ${ago(k.started, now)}`) : "", esc(ago(k.beat, now)));
     html += row(failing ? "bad" : v(k, "fail") ? "warn" : v(k, "done") ? "ok" : "", "Видео для админов",
       esc([`сегодня вырезано ${v(k, "done")}, не вышло ${v(k, "fail")}`, `в очереди ${v(q, "queued")}`, v(k, "fail") && k.error ? k.error : ""].filter(Boolean).join(" · ")),
       k.ok_at ? esc(ago(k.ok_at, now)) : "");

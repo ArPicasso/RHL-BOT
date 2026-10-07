@@ -47,6 +47,10 @@ install -d -m 750 -o rhl -g rhl "$APP/status"
 # не могла писать (05.10). Каталог — службе, пробники — от неё же: sudo -u rhl venv/bin/python tools/…
 install -d -m 750 -o rhl -g rhl "$APP/probe"
 chown -R rhl:rhl "$APP/probe"
+# Видео для админов службы cuts (ADR-036): то же — `cuts.py --once` от root не должен оставить файлы, которые служба
+# не перезапишет
+install -d -m 750 -o rhl -g rhl "$APP/media"
+chown -R rhl:rhl "$APP/media"
 
 # Бэкап состояния раз в сутки (deploy/backup.sh): каталог заводим мы — у rhl нет прав на /var/backups
 if [ -f deploy/backup.timer ]; then

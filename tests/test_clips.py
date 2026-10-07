@@ -956,10 +956,6 @@ class Gone(unittest.TestCase):
         self.assertEqual((cov["why"], cov["replays"]), ("gone", 0))
         self.assertIn("gone", clips.WHY)
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Prepared(unittest.TestCase):
     """ADR-036, раздел 2: после прохода — видео всего, что ждёт человека, служба cuts режет заранее."""
     now = datetime(2026, 10, 5, 21, 0, tzinfo=TZ)
@@ -1007,3 +1003,31 @@ class Prepared(unittest.TestCase):
         self.assertEqual({(r["start"], r["len"], r["kind"], r["prio"]) for r in rows[:2]},
                          {(2580, 30, "review", clips.cutjobs.PREP)})
         self.assertIsNone(rows[2])   # каждое окно — одно задание, повторная просьба не множит
+
+    def test_dead_preview_asked_again(self):
+        """Ревью PR #138: превью, у которого кончились попытки, служба просит снова каждый проход — через
+        cutjobs.REVIVE оно пойдёт на новый круг. Готовое превью не трогаем: бот не должен прислать его второй раз."""
+        key = "2026-10-05|tverichi|metallurg"
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "STATE_DB", Path(tmp) / "state.db"), \
+                mock.patch.object(clips, "_jobs", None):
+            jobs = clips.cut_jobs()
+            dead = jobs.want(self.now, VIDEO, 6749, 125, "preview", prio=clips.cutjobs.SEND)
+            jobs.fail(dead, self.now, "HTTP Error 403", final=True)
+            ready = jobs.want(self.now, VIDEO, 7749, 125, "preview", prio=clips.cutjobs.SEND)
+            jobs.take(self.now)
+            jobs.done(ready, self.now, "media/cuts/x.mp4", 854, 480, 125)   # файла нет: «готово», но пропал
+            store = {"games": {key: {"video": VIDEO, "status": "ok", "goals": {
+                "0:1": {"t": None, "change": 6869, "ask": {"from": 6749, "len": 125, "job": dead}},
+                "0:2": {"t": None, "change": 7869, "ask": {"from": 7749, "len": 125, "job": ready}}}}}}
+            later = self.now + clips.cutjobs.REVIVE
+            self.assertEqual(clips.prepare_cuts(store, {}, later), 1)
+            got = (jobs.get(dead)["status"], jobs.get(ready)["status"])
+            answered = {key: {"video": VIDEO, "anchors": {"0:1": 6800}}}
+            jobs.fail(dead, later, "снова", final=True)
+            self.assertEqual(clips.prepare_cuts(store, answered, later + clips.cutjobs.REVIVE), 0)   # уже ответили
+            jobs.conn.close()
+        self.assertEqual(got, ("queued", "done"))
+
+
+if __name__ == "__main__":
+    unittest.main()

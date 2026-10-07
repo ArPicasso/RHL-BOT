@@ -92,6 +92,36 @@ class Queue(Store):
         got = self.jobs.take(self.now)
         self.assertEqual((got["id"], got["tries"]), (a, 0))
 
+    def test_preview_comes_back_after_pause(self):
+        """Ревью PR #138: превью, у которого кончились попытки (VK не отдавал запись), не пропадает насовсем — через
+        REVIVE оно идёт на новый круг; заготовка — нет."""
+        a = self.jobs.want(self.now, VIDEO, 100, 125, "preview", prio=cutjobs.SEND)
+        b = self.jobs.want(self.now, VIDEO, 300, 30, "review")
+        for job_id in (a, b):
+            self.jobs.fail(job_id, self.now, "HTTP Error 403", final=True)
+        later = self.now + cutjobs.REVIVE
+        self.jobs.want(self.now + timedelta(minutes=30), VIDEO, 100, 125, "preview", prio=cutjobs.SEND)
+        self.assertEqual(self.jobs.get(a)["status"], "error")                     # рано
+        self.jobs.want(later, VIDEO, 100, 125, "preview", prio=cutjobs.SEND)
+        self.jobs.want(later, VIDEO, 300, 30, "review")
+        self.assertEqual((self.jobs.get(a)["status"], self.jobs.get(a)["tries"]), ("queued", 0))
+        self.assertEqual(self.jobs.get(b)["status"], "error")
+
+    def test_human_skips_retry_pause(self):
+        a = self.jobs.want(self.now, VIDEO, 100, 30, "review")
+        self.jobs.take(self.now)
+        self.jobs.fail(a, self.now, "сеть")
+        self.assertIsNone(self.jobs.take(self.now))
+        self.jobs.want(self.now, VIDEO, 100, 30, "review", prio=cutjobs.URGENT)  # человек ждёт — без паузы
+        self.assertEqual(self.jobs.take(self.now)["id"], a)
+
+    def test_stuck_work_taken_again(self):
+        """Служба упала посреди задания и не записала ни «готово», ни ошибку — через STUCK задание берётся снова."""
+        a = self.jobs.want(self.now, VIDEO, 100, 30, "review")
+        self.assertEqual(self.jobs.take(self.now)["began"], self.now.isoformat(timespec="seconds"))
+        self.assertIsNone(self.jobs.take(self.now + timedelta(minutes=10)))
+        self.assertEqual(self.jobs.take(self.now + cutjobs.STUCK + timedelta(seconds=1))["id"], a)
+
     def test_done_file_and_lost_file(self):
         a = self.jobs.want(self.now, VIDEO, 100, 30, "review")
         self.jobs.take(self.now)
@@ -194,14 +224,14 @@ class Service(Store):
 
     def test_vk_refused(self):
         a = self.jobs.want(self.now, VIDEO, 100, 30, "review")
-        self.fetch.side_effect = cuts.clips.VkError("DownloadError: This video has been deleted")
+        self.fetch.side_effect = cuts.clips.VkError("DownloadError: HTTP Error 403: Forbidden")   # не отдали — повторим
         job, ok = self.run_one()
         self.assertFalse(ok)
         self.assertEqual((job["id"], job["status"], job["tries"]), (a, "error", 1))
         self.assertIn("VK не отдал запись", job["error"])
         day = self.track.today()
         self.assertEqual((day["vk_fail"], day["cut_fail"]), (1, 1))
-        self.assertIn("deleted", self.track.info_["cut_error"])
+        self.assertIn("403", self.track.info_["cut_error"])
 
     def test_short_or_outside(self):
         self.jobs.want(self.now, VIDEO, 100, 125, "preview")
@@ -215,6 +245,21 @@ class Service(Store):
         self.assertIn("за концом записи", job["error"])
         cut.assert_not_called()
 
+    def test_hopeless_without_retries(self):
+        """Окно за концом записи и удалённая запись — одна ошибка, а не три: повтор не поможет, а три неудачи — это
+        тревога «нарезка не выходит» на пульте."""
+        a = self.jobs.want(self.now, VIDEO, 9100, 30, "review")
+        job, _ = self.run_one()
+        self.assertEqual((job["status"], job["tries"]), ("error", cutjobs.TRIES))
+        self.fetch.side_effect = cuts.clips.VkError("DownloadError: Video 200 was deleted")
+        self.streams.cache.clear()
+        b = self.jobs.want(self.now, VIDEO, 100, 30, "review")
+        job, _ = self.run_one()
+        self.assertEqual((job["id"], job["tries"]), (b, cutjobs.TRIES))
+        self.assertIsNone(self.jobs.take(self.now + timedelta(hours=1)))
+        self.assertEqual(self.track.today()["cut_fail"], 2)
+        self.assertNotEqual(a, b)
+
     def test_ffmpeg_error_is_job_error(self):
         self.jobs.want(self.now, VIDEO, 100, 30, "review")
         job, ok = self.run_one(self.writes("Server returned 404 Not Found"))
@@ -223,17 +268,24 @@ class Service(Store):
     def test_clean(self):
         a = self.jobs.want(self.now - timedelta(days=5), VIDEO, 100, 30, "review")
         self.run_one()
-        stray = self.dir / cutjobs.DIR / "999.mp4"
-        stray.write_bytes(b"v")
         old = (self.now - timedelta(days=6)).timestamp()
+        stray = self.dir / cutjobs.DIR / "999.part.mp4"   # служба упала посреди записи
+        stray.write_bytes(b"v")
         os.utime(stray, (old, old))
-        fresh = self.dir / cutjobs.DIR / "998.mp4"
+        fresh = self.dir / cutjobs.DIR / "998.part.mp4"   # пишется прямо сейчас
         fresh.write_bytes(b"v")
+        b = self.jobs.want(self.now - timedelta(days=5), VIDEO, 200, 30, "review")
+        self.run_one()
+        self.jobs.want(self.now, VIDEO, 200, 30, "review")   # просили снова — файл живёт, сколько бы ему ни было
+        kept = self.dir / cutjobs.DIR / f"{b}.mp4"
+        os.utime(kept, (old, old))
         self.assertEqual(cuts.clean(self.jobs, self.now, root=self.dir), 1)
         self.assertIsNone(self.jobs.get(a))
         self.assertFalse((self.dir / cutjobs.DIR / f"{a}.mp4").exists())
         self.assertFalse(stray.exists())
         self.assertTrue(fresh.exists())
+        self.assertTrue(kept.exists())
+        self.assertEqual(self.jobs.path(self.jobs.get(b)), kept)
 
 
 class Command(unittest.TestCase):

@@ -284,7 +284,7 @@ class BuildStatusTest(unittest.TestCase):
         self.assertEqual(self.texts(clips={**vk, "days": {"2026-10-03": {"vk_fail": 2}}}), [])   # рано
 
     def test_cuts_service_silent_or_failing(self):
-        """ADR-036: служба cuts режет превью и видео для админов — молчит дольше 10 минут или видео подряд не
+        """ADR-036: служба cuts режет превью и видео для админов — молчит дольше 20 минут или видео подряд не
         вырезаются (после неудач ни одной удачи) — тревога."""
         ok = {"beat": ago(minutes=1), "info": {"cut_ok": ago(minutes=3), "queue": {"queued": 2}},
               "days": {"2026-10-03": {"cuts": 7, "cut_fail": 1}}}
@@ -293,8 +293,9 @@ class BuildStatusTest(unittest.TestCase):
         self.assertEqual((st["system"]["cuts"]["done"], st["system"]["cuts"]["fail"]), (7, 1))
         self.assertEqual(st["system"]["cuts"]["queue"], {"queued": 2})
         self.assertIsNone(healthy()["system"]["cuts"])   # службы ещё нет — не тревога
-        got = self.texts(cuts={**ok, "beat": ago(minutes=12)})
-        self.assertEqual(got, [("bad", "Служба нарезки видео молчит 12 мин: превью голов админам не режутся. "
+        self.assertEqual(self.texts(cuts={**ok, "beat": ago(minutes=12)}), [])   # идёт длинное видео
+        got = self.texts(cuts={**ok, "beat": ago(minutes=22)})
+        self.assertEqual(got, [("bad", "Служба нарезки видео молчит 22 мин: превью голов админам не режутся. "
                                        "Проверь systemctl status cuts")])
         bad = {"beat": ago(minutes=1), "days": {"2026-10-03": {"cut_fail": 3, "cuts": 2}},
                "info": {"cut_ok": ago(hours=2), "cut_fail": ago(minutes=4),

@@ -409,7 +409,11 @@ def add_previews(key: str, video: str, goals: dict[str, dict], length: float | N
             vis = [(t, f) for t, f in dense if not model or sb.on_screen(f, model)]
             stops = [t for t in clock_stops(vis, sb.cell_pixels(board["clock"])) if t <= g["change"]]
             cand = [round(t - start) for t in stops[-CANDIDATES:]]
-        job = cut_jobs().want(now_msk(), video, start, span, "preview", prio=cutjobs.SEND, match=key, score=score)
+        try:
+            job = cut_jobs().want(now_msk(), video, start, span, "preview", prio=cutjobs.SEND, match=key, score=score)
+        except sqlite3.Error as err:   # база занята — без превью этот гол, остальные — как обычно
+            log.warning("%s %s: задание на превью не поставили — %s", key, score, err)
+            continue
         g["ask"] = {"from": start, "len": span, "job": job, "cand": cand}
         log.info("%s %s: превью %s — задание %s, моментов часов %d", key, score, replay.fmt_t(start), job, len(cand))
 
@@ -855,16 +859,31 @@ def cut_wants(game: dict, admin_e: dict | None) -> list[tuple[int, int, str, str
 
 def prepare_cuts(store: dict, marked: dict, now: datetime) -> int:
     """Заготовки службе cuts у разобранных матчей последних PREP_DAYS дней (старые — только по запросу человека).
-    Одно окно — одно задание: повторная просьба каждый проход ничего не режет заново. Сколько окон попросили."""
+    Одно окно — одно задание: повторная просьба каждый проход ничего не режет заново. Превью без ответа, у которого
+    кончились попытки (VK не отдавал запись), просим снова: через cutjobs.REVIVE оно пойдёт на новый круг, иначе гол
+    навсегда остался бы «ждёт превью», которое не придёт. Готовые превью не трогаем: задание живёт KEEP_DAYS с
+    последней просьбы, меньше, чем бот помнит отправленное, — старое превью второй раз не уйдёт. Сколько окон
+    попросили."""
     edge = (now.date() - timedelta(days=PREP_DAYS)).isoformat()
     n = 0
     for key, game in sorted((store.get("games") or {}).items(), reverse=True):   # свежие — первыми в очереди
         if not isinstance(game, dict) or key[:10] < edge or game.get("status") != "ok" or not game.get("video") \
                 or game.get("src") == "club":   # запись клуба — только для повтора (ADR-030)
             continue
-        for start, span, score, kind in cut_wants(game, (marked or {}).get(key)):
+        e = (marked or {}).get(key) or {}
+        for start, span, score, kind in cut_wants(game, e):
             cut_jobs().want(now, game["video"], start, span, kind, prio=cutjobs.PREP, match=key, score=score)
             n += 1
+        for score, g in sorted((game.get("goals") or {}).items()):
+            ask = (g or {}).get("ask")
+            if not (isinstance(ask, dict) and ask.get("job") is not None and g.get("t") is None
+                    and score not in (e.get("anchors") or {})):
+                continue
+            job = cut_jobs().get(ask["job"])
+            if job and job["status"] == "error" and job["tries"] >= cutjobs.TRIES:
+                cut_jobs().want(now, game["video"], ask["from"], ask["len"], "preview", prio=cutjobs.SEND, match=key,
+                                score=score)
+                n += 1
     return n
 
 

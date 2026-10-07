@@ -430,8 +430,11 @@ async def update_media(s: aiohttp.ClientSession, store: dict, site: str, now: da
             continue
         if v:
             g["video"], g["video_kind"] = v["url"], v["kind"]
-        elif g.get("video"):   # ту запись удалили, а новой лига ещё не выложила: мёртвую ссылку не держим
-            g.pop("video", None)
+            g.pop("video_gone", None)
+        elif g.get("video") and any(rhl_media.same_video(g["video"], x) for x in gone or ()):
+            # ту запись удалили, а новой лига ещё не выложила: мёртвую ссылку не держим, но номер помним —
+            # по нему need_video спрашивает вкладку ещё GONE_DAYS дней (этап 0.3 плана)
+            g["video_gone"] = g.pop("video")
             g.pop("video_kind", None)
 
 

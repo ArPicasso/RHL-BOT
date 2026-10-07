@@ -430,6 +430,11 @@ class Nag(unittest.TestCase):
         (self.dir / "clips.json").write_text(json.dumps(clips_), encoding="utf-8")
         text = self.bot.replay_text("2026-10-03", GAME, None, video=VIDEO)
         self.assertIn("Этой записи больше нет в VK", text)
+        # после сборки мёртвой ссылки в league.json уже нет — объяснение всё равно должно быть
+        self.assertIn("Этой записи больше нет в VK", self.bot.replay_text("2026-10-03", GAME, None))
+        # а своя живая запись админа — не про это
+        self.assertNotIn("больше нет в VK",
+                         self.bot.board_state(clips_["games"][GAME["key"]], "https://vk.com/video-7_8"))
         self.assertIn("запись удалили из VK — 1", self.bot.coverage_text(clips_["coverage"]))
         todo, kb = self.bot.coverage_todo(clips_["coverage"])
         self.assertIn("записи больше нет в VK", todo)

@@ -198,6 +198,15 @@ class Loading(unittest.TestCase):
         self.assertIn(f"{SITE}/matchcenter/1432/5/video/", session.asked)
         self.assertNotIn("video", games["5"])                       # мёртвую ссылку не держим
         self.assertNotIn("video_kind", games["5"])
+        # но номер ролика помним: иначе срок схлопнулся бы до VIDEO_DAYS и новую запись мы бы не заметили
+        self.assertEqual(games["5"]["video_gone"], "https://vk.com/video-100_200")
+        self.assertTrue(rhl_media.need_video(games["5"], msk("2026-10-14T12:00:00"), gone))
+        found = FakeSession({f"{SITE}/translations/": "<html></html>",
+                             f"{SITE}/matchcenter/1432/5/video/": page("rhl_video_905111.html")})
+        with mock.patch.object(rhl_site, "PAUSE", 0):
+            asyncio.run(rhl_site.update_media(found, {"games": games}, SITE, msk("2026-10-14T12:00:00"), gone))
+        self.assertEqual(games["5"]["video"], "https://vk.com/video-187307324_456239889")   # лига выложила заново
+        self.assertNotIn("video_gone", games["5"])
 
     def test_gone_videos_from_clips_file(self):
         with tempfile.TemporaryDirectory() as tmp:

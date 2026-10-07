@@ -518,6 +518,7 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
         was = games.get(key) or {}
         same = replay.same_video(was.get("video"), video) and was.get("v", 1) >= VERSION
         tries = (was.get("tries", 0) if same else 0) + 1
+        gone_n = was.get("gone_tries", 0) if same else 0   # отказов «записи нет» подряд: другой исход их обнуляет
         kind = (kinds.get(key) or {}).get("src") or "league"
         log.info("%s: разбираю %s (%s, попытка %d)", key, video, kind, tries)
         try:
@@ -528,11 +529,13 @@ def run_pass(store: dict, league: dict | None, marked: dict, now: datetime, scan
             log.warning("%s: не разобрали — %s: %s", key, type(err).__name__, err)
             got = {"status": "error", "error": f"{type(err).__name__}: {err}"[:300], "goals": was.get("goals") or {}}
             if isinstance(err, VkError) and gone_error(err):
-                # записи больше нет в VK: повторы по ней мёртвые. Говорим это только со второго отказа подряд —
+                # записи больше нет в VK: повторы по ней мёртвые. Говорим это только с GONE_TRIES отказов подряд —
                 # один 404 бывает и от сбоя. Счётчик vk_fail не трогаем: новый yt-dlp тут не поможет (этап 0.3)
                 if track is not None:
                     track.add("vk_gone")
-                if tries >= GONE_TRIES:
+                gone_n += 1
+                got["gone_tries"] = gone_n   # в записи матча — только пока отказы идут подряд: иначе ключа нет
+                if gone_n >= GONE_TRIES:
                     got["status"] = "gone"
                     log.warning("%s: записи %s больше нет в VK — повторов по ней не будет", key, video)
             elif isinstance(err, VkError):

@@ -115,10 +115,13 @@ def need_video(g: dict, now: datetime, gone=()) -> bool:
     а сыгранный — VIDEO_DAYS дней, не чаще раза в VIDEO_EVERY (`video_asked`). Нашлась — больше не спрашиваем.
 
     gone — ролики, которых больше нет в VK (служба clips, этап 0.3 плана): ссылка на такой ролик никуда не ведёт,
-    поэтому вкладку спрашиваем заново — лига могла выложить запись второй раз — и дольше, GONE_DAYS дней."""
+    поэтому вкладку спрашиваем заново — лига могла выложить запись второй раз — и дольше, GONE_DAYS дней. Ссылку на
+    удалённую запись `update_media` стирает, а номер ролика оставляет в `video_gone`: иначе срок схлопнулся бы
+    обратно до VIDEO_DAYS и новую запись мы бы не заметили."""
     if not g.get("t") or not g.get("id") or not g.get("start"):
         return False
-    dead = bool(g.get("video")) and any(same_video(g["video"], v) for v in gone or ())
+    # `video_gone` — удалённая запись, ссылку на которую мы уже стёрли: по ней помним, что спрашивать надо дольше
+    dead = any(same_video(x, v) for x in (g.get("video"), g.get("video_gone")) if x for v in gone or ())
     if g.get("video") and not dead:
         return False
     try:

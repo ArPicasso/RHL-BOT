@@ -833,6 +833,20 @@ class Gone(unittest.TestCase):
             # больше не пробуем: ролик тот же
             self.assertNotIn(KEY, dict(clips.pending(LEAGUE, {}, store["games"], date(2026, 10, 5))))
 
+    def test_only_refusals_in_a_row_count(self):
+        """Сбой, а потом один 404 — это не удалённая запись: считаем отказы «записи нет» подряд, а не попытки."""
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            store = {}
+            clips.run_pass(store, LEAGUE, {}, self.now, scan=mock.Mock(side_effect=clips.VkError("timed out")))
+            self.assertEqual(store["games"][KEY].get("gone_tries"), None)
+            clips.run_pass(store, LEAGUE, {}, self.now, scan=mock.Mock(side_effect=clips.VkError("HTTP Error 404")))
+            self.assertEqual((store["games"][KEY]["status"], store["games"][KEY]["tries"],
+                              store["games"][KEY]["gone_tries"]), ("error", 2, 1))
+            # отказ «записи нет», потом сбой — счёт подряд обнуляется
+            clips.run_pass(store, LEAGUE, {}, self.now, scan=mock.Mock(side_effect=clips.VkError("ffmpeg упал")))
+            self.assertNotIn("gone_tries", store["games"][KEY])
+            self.assertEqual(store["games"][KEY]["status"], "error")
+
     def test_counted_apart_from_vk_refusals(self):
         """Новый yt-dlp тут не поможет — счётчик «VK не отдал ни одной записи» не трогаем."""
         import admin
@@ -844,6 +858,7 @@ class Gone(unittest.TestCase):
             with self.assertLogs(level="WARNING"):
                 clips.run_pass(store, LEAGUE, {}, self.now, scan=scan, track=t)
             self.assertEqual(t.today(), {"vk_gone": 4})
+            self.assertLessEqual(clips.GONE_MAX, admin.GONE_SHOW)   # иначе тревога потеряет причину как «починилось»
             got = json.loads((Path(tmp) / "s.json").read_text(encoding="utf-8"))["info"]["gone"]
             self.assertEqual([e["key"] for e in got], [KEY, "2026-10-04|rostov|krasnodar"])
             self.assertEqual(got[0]["video"], "https://vk.com/video-100_200")
@@ -860,6 +875,11 @@ class Gone(unittest.TestCase):
         self.assertIsNone(replay.with_board(None, board))
         other = {**entry, "video": "https://vk.com/video-7_8"}      # админ прислал другую запись — она жива
         self.assertEqual(replay.with_board(other, board), other)
+        # человек отметил гол уже после разбора: значит запись у него открывается — его опоры главнее (ADR-033)
+        fresh = {**entry, "updated": "2026-10-05T13:00:00+03:00"}
+        dated = {**board, "scanned": "2026-10-05T12:00:00+03:00"}
+        self.assertEqual(replay.with_board(fresh, dated)["goals"][0]["t"], 2690)
+        self.assertIsNone(replay.with_board({**fresh, "updated": "2026-10-05T11:00:00+03:00"}, dated))
         games = [{"date": "2026-10-04", "home": "tverichi", "away": "metallurg", "id": "m1",
                   "goals": [{"score": "0:1", "team": "away", "period": "1"}],
                   "watch": [{"src": "rhl.fhr.ru", "url": "https://vkvideo.ru/video-100_200"},

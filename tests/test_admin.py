@@ -297,7 +297,8 @@ class BuildStatusTest(unittest.TestCase):
         self.assertIn("https://vk.com/video-1_2", got[0][2])
         self.assertIn("/replay", got[0][2])
         many = [{"key": f"2026-10-0{i}|a|b", "video": f"https://vk.com/video-1_{i}"} for i in range(1, 7)]
-        self.assertEqual(len(self.texts(clips={**clips, "info": {"gone": many}})), admin.GONE_SHOW)
+        self.assertEqual(len(self.texts(clips={**clips, "info": {"gone": many}})), len(many))   # все, не часть
+        self.assertEqual(len(self.texts(clips={**clips, "info": {"gone": many * 3}})), admin.GONE_SHOW)
         self.assertEqual(self.texts(clips={**clips, "info": {"gone": [{"video": "x"}, None]}}), [])   # без матча
 
     def test_clips_tiles_from_last_snapshot(self):

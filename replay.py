@@ -257,6 +257,14 @@ def _sec(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= MAX_T
 
 
+def _after(entry: dict | None, board: dict | None) -> bool:
+    """Отметки человека свежее разбора записи: он размечал гол уже после того, как служба не смогла её скачать."""
+    try:
+        return datetime.fromisoformat((entry or {})["updated"]) > datetime.fromisoformat((board or {})["scanned"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def with_board(entry: dict | None, board: dict | None) -> dict | None:
     """Опоры админа и секунды голов по табло службы clips (ADR-030, ADR-031): у гола без отметки админа — точная
     секунда табло (`src` — `clock`, `board` или `run` — по ходу часов), расчётный (≈) ей уступает. Нет точной —
@@ -268,12 +276,15 @@ def with_board(entry: dict | None, board: dict | None) -> dict | None:
     Спор (ADR-033): отметка человека не сошлась с табло или ходом часов (`checks` службы) — точной секунды у гола нет
     ни от человека, ни от табло: повтор примерный, по окну или смене счёта, нет их — с отметки человека, но «≈».
     Записи больше нет в VK (`status: gone` у службы, этап 0.3 плана) — повторов у матча нет совсем: ссылка на удалённый
-    ролик никуда не ведёт. Запись админа — другой ролик: его повторы остаются.
+    ролик никуда не ведёт. Запись админа — другой ролик: его повторы остаются. Человек отметил гол после того, как
+    служба сказала «записи нет» (`updated` отметок позже `scanned` разбора), — значит у него запись открывается:
+    его опоры главнее, повторы возвращаются (ADR-033: отметка человека — показание, и это самое свежее).
     board — запись матча из live/clips.json: {"video", "goals": {счёт: {"t", "src", "team", "change", "win"}},
     "checks": {счёт: {"t", "status"}}}."""
     goals = (board or {}).get("goals") or {}
     video = (board or {}).get("video")
-    if (board or {}).get("status") == "gone" and (not entry or same_video(entry.get("video"), video)):
+    if (board or {}).get("status") == "gone" and (not entry or same_video(entry.get("video"), video)) \
+            and not _after(entry, board):
         return None
     if not goals or not video or (entry and not same_video(entry.get("video"), video)):
         return entry

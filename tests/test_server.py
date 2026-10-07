@@ -527,6 +527,50 @@ class AdminPanel(Base):
         d = await self.call("GET", "/api/admin/goals", fan(1))
         self.assertEqual(d["role"], "admin")
 
+    async def test_goal_video(self):
+        """Карточка гола (ADR-036, раздел 4): те же окна и задания службы cuts, что у бота; файл — только по подписи."""
+        self.api.cfg.helpers = frozenset({1005})
+        self.api.cuts.root = Path(self.tmp.name)
+        key, video = f"{D1}|tambov|sokol", "https://vk.com/video-100_200"
+        self.pub["data/league.json"] = {"games": [{
+            "date": D1, "home": "tambov", "away": "sokol", "score": {"home": 2, "away": 0},
+            "watch": [{"src": "rhl.fhr.ru", "url": video}],
+            "goals": [{"score": "1:0", "period": "1", "time": "05:00"}, {"score": "2:0", "period": "2", "time": "25:00"}]}]}
+        (self.live / "clips.json").write_text(json.dumps({"games": {key: {
+            "video": video, "status": "ok", "length": 5000,
+            "goals": {"1:0": {"t": 2600, "src": "clock"}, "2:0": {"t": None, "change": 4200, "ask": {}}}}}}),
+            encoding="utf-8")
+        await self.call("POST", "/api/admin/goal/video", fan(2), {"key": key, "score": "1:0"}, status=403)
+        await self.call("POST", "/api/admin/goal/video", fan(1), {"key": "x|y", "score": "1:0"}, status=400)
+        await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "1:0", "shift": 99}, status=400)
+        d = await self.call("POST", "/api/admin/goal/video", fan(5), {"key": key, "score": "1:0"})
+        self.assertEqual((d["kind"], d["src"], d["t"], d["windows"][0]["start"], d["windows"][0]["len"]),
+                         ("exact", "clock", 2600, 2580, 30))                 # 30 с: 20 до гола, 10 после
+        job = d["windows"][0]["job"]
+        again = await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "1:0"})
+        self.assertEqual(again["windows"][0]["job"], job)                   # одно окно — одно задание
+        self.assertEqual((await self.call("GET", f"/api/admin/cut/{job}", fan(5)))["status"], "queued")
+        await self.call("GET", f"/api/admin/cut/{job}.mp4", fan(5), status=404)
+        (Path(self.tmp.name) / "c.mp4").write_bytes(b"mp4")
+        self.api.cuts.done(job, self.now, "c.mp4", 854, 480, 30)
+        self.assertEqual((await self.call("GET", f"/api/admin/cut/{job}", fan(1)))["status"], "done")
+        r = await self.client.get(f"/api/admin/cut/{job}.mp4", headers=self.auth(fan(5)))
+        self.assertEqual((r.status, r.headers["Content-Type"], await r.read()), (200, "video/mp4", b"mp4"))
+        r = await self.client.get(f"/api/admin/cut/{job}.mp4")
+        self.assertEqual(r.status, 401)                                      # без подписи файла нет
+        await self.call("GET", f"/api/admin/cut/{job}.mp4", fan(2), status=403)
+        # примерное место листается окнами поиска, точная секунда — нет
+        d = await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "2:0", "shift": -1})
+        self.assertEqual((d["kind"], d["shift"], d["windows"][0]["len"]), ("approx", -1, 180))
+        self.assertIn("раньше", d["windows"][0]["what"])
+        d = await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "1:0", "shift": 2})
+        self.assertEqual(d["windows"][0]["start"], 2580)
+        await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "2:0", "shift": 6},
+                        status=404)                                          # запись кончилась
+        await self.call("POST", "/api/admin/goal/video", fan(1), {"key": f"{D1}|polet|sokol", "score": "1:0"},
+                        status=404)                                          # записи нет — видео не будет
+        await self.call("GET", "/api/admin/cut/999", fan(1), status=404)
+
     def test_helpers_from_env(self):
         with mock.patch.dict(os.environ, {"PREVIEW_IDS": "5, 6 x"}):
             self.assertEqual(server.Config.from_env().helpers, frozenset({5, 6}))

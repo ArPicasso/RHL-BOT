@@ -25,6 +25,7 @@ import aiohttp
 import admin
 import clockrun
 import cutjobs
+import goalplan
 import marks
 import myplayer
 import predict
@@ -2684,9 +2685,6 @@ async def h_preview_time(m: Message):
 CUT_WAIT = timedelta(minutes=4)   # столько ждём, пока служба cuts вырежет видео для человека
 CUT_POLL = 2                      # с между взглядами на задание
 ALBUM_MAX = 10                    # видео в альбоме Telegram
-SEARCH_STRETCH = 1.3              # запись между голами периода дольше часов игры: остановки (оценка для поиска)
-PERIOD_GAP = 1100                 # с записи на перерыв между периодами (оценка для поиска из другого периода)
-PRE_SHOW = 300                    # с записи до вбрасывания: студия, гимн (оценка, когда ни одного гола не нашли)
 CUT_ASK: dict[int, tuple[int, datetime]] = {}   # чат → (задание, когда показали): ждём время в этом видео
 _cut_tasks: set = set()           # фоновые ожидания видео: ссылка держит задачу, пока она не кончилась
 SRC_WORD = {"clock": "⏱ встали часы", "board": "📺 задержка табло клуба", "run": "🕐 ход часов от соседнего гола",
@@ -2697,117 +2695,27 @@ def clips_game(key: str) -> dict:
     return ((read_live("clips.json") or {}).get("games") or {}).get(key) or {}
 
 
+# что показать о голе — общее с пультом (goalplan.py, ADR-036): одно правило, одно окно, одно задание службы cuts
+goal_estimate = goalplan.goal_estimate
+known_second = goalplan.known_second
+CANDIDATE_MAX = goalplan.CANDIDATE_MAX
+
+
+def goal_plan(key: str, score: str, protocol: list[dict] | None = None, video: str | None = None) -> dict | None:
+    """План видео гола (goalplan.plan) по отметкам из replays.json и разбору службы clips."""
+    return goalplan.plan(key, score, load_replays()["games"].get(key), clips_game(key), protocol, video)
+
+
+def cut_jobs_for(plan: dict, now: datetime, prio: int = cutjobs.URGENT) -> list[int]:
+    """Задания службы cuts на окна плана, и соседние окна поиска — заранее (goalplan.jobs_for)."""
+    return goalplan.jobs_for(cut_store(), plan, now, prio)
+
+
 def video_length(key: str, video: str) -> int | None:
     """Длина записи — от службы clips, если она разбирала этот самый ролик: у ссылки админа на другую запись длины
     не знаем, и окна по чужой длине обрезались бы."""
     board = clips_game(key)
     return board.get("length") if replay.same_video(board.get("video"), video) else None
-
-
-def goal_estimate(score: str, known: dict[str, int], protocol: list[dict] | None,
-                  length: float | None = None) -> int | None:
-    """Где гол в записи, если ни табло, ни люди его не нашли: от ближайшего по часам гола с известной секундой —
-    разница по протоколу, растянутая на остановки, между периодами — плюс перерыв. Ни одного известного гола — от
-    начала записи: студия до вбрасывания, время по протоколу с остановками и перерывы (ADR-036, раздел 1: «доля записи
-    по времени протокола»). Оценка для окна поиска, не секунда."""
-    info = {x.get("score"): x for x in protocol or []}
-    me = info.get(score) or {}
-    gs = clockrun.game_sec(me.get("time"))
-    if gs is None:
-        return None
-    best = None
-    for s, t in known.items():
-        o = info.get(s) or {}
-        go = clockrun.game_sec(o.get("time"))
-        if go is None:
-            continue
-        same = str(o.get("period") or "") == str(me.get("period") or "")
-        cost = (0 if same else 1, abs(gs - go))
-        if best is None or cost < best[0]:
-            gap = 0
-            if not same and str(me.get("period")).isdigit() and str(o.get("period")).isdigit():
-                gap = (int(me["period"]) - int(o["period"])) * PERIOD_GAP
-            best = (cost, t + round((gs - go) * SEARCH_STRETCH) + gap)
-    if best:
-        return max(0, best[1])
-    per = int(me["period"]) if str(me.get("period") or "").isdigit() else gs // 1200 + 1
-    est = PRE_SHOW + round(gs * SEARCH_STRETCH) + (per - 1) * PERIOD_GAP
-    return min(est, int(length)) if length else est
-
-
-def goal_plan(key: str, score: str, protocol: list[dict] | None = None, video: str | None = None) -> dict | None:
-    """Что показать человеку о голе (ADR-036, раздел 1): {"kind", "video", "windows": [(начало, длина, что это)], ...}.
-    kind: exact — точная секунда `t` (`src`: человек, часы, табло, ход часов); approx — примерное место, `cand` —
-    моменты, когда вставали часы (секунды записи); dispute — обе версии спора; search — где гол, неизвестно: окно около
-    оценки. video — запись лиги из league.json: её берём, пока у матча нет ни отметок, ни разбора. Записи у матча нет,
-    она удалена или гола в ней нет по словам человека — None: тогда как раньше, просьба прислать ссылку или время."""
-    marked = load_replays()["games"].get(key)
-    board = clips_game(key)
-    entry = replay.with_board(marked, board)
-    if entry is None and board.get("status") != "gone":   # табло не размечено или не разобрано — голов нет, запись есть
-        own = board.get("video") if board.get("status") in ("ok", "no_board", "wait", "error") else None
-        entry = {"video": own or video, "goals": []} if own or video else None
-    if not entry or not entry.get("video") or score in set((marked or {}).get("absent") or []):
-        return None
-    video = entry["video"]
-    same = replay.same_video(board.get("video"), video)
-    length = board.get("length") if same else None
-    bg = ((board.get("goals") or {}).get(score) or {}) if same else {}
-    anchors = (marked or {}).get("anchors") or {} if replay.same_video((marked or {}).get("video"), video) else {}
-    base = {"video": video, "length": length, "score": score, "key": key}
-    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)   # noqa: E731
-    if score in replay.disputed(marked, board) and score in anchors:
-        c = (board.get("checks") or {}).get(score) or {}
-        wins = [(*cutjobs.review_window(anchors[score], length), "по отметке")]
-        tb = None
-        if num(bg.get("t")) and not bg.get("off"):
-            tb = int(bg["t"])
-            wins.append((*cutjobs.review_window(tb, length), "по табло"))
-        elif isinstance(bg.get("win"), list) and len(bg["win"]) == 2:
-            wins.append((*cutjobs.run_window(bg["win"], length), "по ходу часов"))
-        elif num(bg.get("change")):
-            wins.append((*cutjobs.change_window(bg["change"], length), "до смены счёта на табло"))
-        return {**base, "kind": "dispute", "windows": wins, "t": anchors[score], "tb": tb,
-                "why": ", ".join(c.get("against") or [])}
-    r = {x["score"]: x for x in entry.get("goals") or []}.get(score)
-    if r and r.get("exact"):
-        t = anchors[score] if score in anchors else int(bg["t"]) if num(bg.get("t")) else r["t"] + replay.EXACT_LEAD
-        src = "admin" if score in anchors else r.get("src") or "board"
-        return {**base, "kind": "exact", "t": t, "src": src, "windows": [(*cutjobs.review_window(t, length), "гол")]}
-    if r:
-        cand: list[int] = []
-        if r.get("src") == "win" and isinstance(bg.get("win"), list) and len(bg["win"]) == 2:
-            w, how = cutjobs.run_window(bg["win"], length), "по ходу часов от соседнего гола"
-            cand = [int(x) for x in bg.get("wcand") or [] if num(x)]
-        elif r.get("src") == "change" and num(bg.get("change")):
-            w, how = cutjobs.change_window(bg["change"], length), "до смены счёта на табло"
-            ask = bg.get("ask") if isinstance(bg.get("ask"), dict) else {}
-            if ask.get("from") == w[0]:
-                cand = [w[0] + int(x) for x in ask.get("cand") or [] if num(x)]
-        else:   # расчёт от отметки того же периода по времени сайта лиги
-            w, how = cutjobs.search_window(r["t"] + replay.GUESS_LEAD, length), "по времени сайта лиги от соседнего гола"
-        return {**base, "kind": "approx", "windows": [(*w, how)], "cand": cand[-CANDIDATE_MAX:]}
-    known = {x["score"]: known_second(x, ((board.get("goals") or {}).get(x["score"]) or {}) if same else {})
-             for x in entry.get("goals") or [] if num(x.get("t"))}
-    est = goal_estimate(score, known, protocol, length)
-    if est is None:
-        return None
-    return {**base, "kind": "search", "windows": [(*cutjobs.search_window(est, length), "около оценки по протоколу")]}
-
-
-CANDIDATE_MAX = 3   # кнопок «Гол на …» под видео
-
-
-def known_second(x: dict, bg: dict) -> int:
-    """Где в записи гол с повтором, для оценки соседних: точный — его секунда; по ходу часов — середина окна; по смене
-    счёта — за 45 с до неё (оператор меняет счёт через 0–90 с); расчётный — без запаса GUESS_LEAD."""
-    if x.get("exact"):
-        return x["t"] + replay.EXACT_LEAD
-    if x.get("src") == "win" and isinstance(bg.get("win"), list) and len(bg["win"]) == 2:
-        return (int(bg["win"][0]) + int(bg["win"][1])) // 2
-    if x.get("src") == "change" and isinstance(bg.get("change"), (int, float)):
-        return max(0, int(bg["change"]) - 45)
-    return x["t"] + replay.GUESS_LEAD
 
 
 def goal_head(key: str, score: str, protocol: list[dict] | None = None) -> str:
@@ -2885,21 +2793,6 @@ def cut_fallback(plan: dict, err: str) -> str:
     return (f"{goal_head(plan['key'], plan['score'])}\nВидео не вырезалось: {html.escape(err[:200])}."
             + (f' Запись в VK: <a href="{html.escape(url)}">с {replay.fmt_clock(plan["windows"][0][0])}</a>.'
                if url else ""))
-
-
-def cut_jobs_for(plan: dict, now: datetime, prio: int = cutjobs.URGENT) -> list[int]:
-    """Задания службы cuts на окна плана; окна поиска — и соседние, заранее: человек, скорее всего, нажмёт «⏪» или «⏩»."""
-    store = cut_store()
-    kind = {"exact": "review", "dispute": "review", "approx": "preview", "search": "search"}[plan["kind"]]
-    jobs = [store.want(now, plan["video"], s, n, kind, prio=prio, match=plan["key"], score=plan["score"])
-            for s, n, _ in plan["windows"]]
-    if plan["kind"] in ("approx", "search"):
-        s, n, _ = plan["windows"][0]
-        for step in (-1, 1):
-            w = cutjobs.neighbour(s, n, step, plan.get("length"))
-            if w:
-                store.want(now, plan["video"], *w, "search", prio=cutjobs.SEND, match=plan["key"], score=plan["score"])
-    return jobs
 
 
 def cut_split(ids: list[int]) -> tuple[list[dict], list[str], int]:

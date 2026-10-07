@@ -133,4 +133,23 @@ tr.today td { font-weight: 700; }
 .goal small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 :focus-visible { outline: 2px solid var(--blue, #4da2ff); outline-offset: 2px; }
 
-@media (hover: hover) { .btn-round:hover, .more:hover, .row.match:hover, .seg button:not(.on):hover { background: var(--sel); } }
+/* карточка гола (ADR-036, раздел 4): лист снизу поверх вкладки, как листы мини-аппа */
+body.locked { overflow: hidden; }
+.goal-open { cursor: pointer; }
+.sheet-back { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 10; }
+.sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 11; max-width: 640px; max-height: 92vh; margin: 0 auto; overflow-y: auto; background: var(--paper); border: var(--line); border-bottom: 0; border-radius: 20px 20px 0 0; padding: 16px 16px calc(20px + env(safe-area-inset-bottom)); }
+.sheet[hidden], .sheet-back[hidden] { display: none; }
+.sheet-head { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: start; }
+.sheet h2 { margin: 0; font: 700 17px/1.25 var(--ui); }
+.sheet-sub { margin-top: 6px; font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.sheet .plan { margin: 14px 0 10px; font-size: 14px; }
+.sheet video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; border: var(--line); border-radius: 14px; }
+.sheet .vid + .vid { margin-top: 14px; }
+.sheet .pos { margin-top: 6px; font-size: 13px; font-feature-settings: "tnum"; color: var(--muted); }
+.vid-wait { display: grid; place-items: center; min-height: 120px; padding: 16px; text-align: center; color: var(--muted); border: 1px dashed var(--edge); border-radius: 14px; font-size: 14px; }
+.cand, .nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.cand .card-title { margin: 0 4px 0 0; }
+.pill { min-height: 40px; padding: 0 14px; border: var(--line); border-radius: 9999px; background: var(--paper); font-weight: 700; font-size: 14px; cursor: pointer; font-feature-settings: "tnum"; }
+.sheet-foot { margin-top: 16px; }
+
+@media (hover: hover) { .btn-round:hover, .more:hover, .row.match:hover, .goal-open:hover, .pill:hover, .seg button:not(.on):hover { background: var(--sel); } }

@@ -12,6 +12,8 @@ ADR-019 (раздел 3), ADR-020 (раздел 3), docs/raskat/contract.md (р�
     /api/admin/status        пульт админа: здоровье, аудитория, рассылки, игры — только ADMIN_IDS
     /api/admin/goals         вкладка «Голы» пульта (ADR-036, раздел 4): конвейер голов, «Сейчас», «Ждут вас» —
                              ADMIN_IDS и помощники PREVIEW_IDS, только чтение
+    /api/admin/goal/video    видео гола для карточки «Голов»: план окон (goalplan.py) и задания службы cuts — те же,
+                             что у бота; /api/admin/cut/<id> — готово ли, /api/admin/cut/<id>.mp4 — файл по подписи
     /api/agent/status        то же для агента разбора (Claude Code): пульт и status/*.json, только чтение,
                              по токену AGENT_TOKEN (ADR-030, дополнение 06.10, ночь)
 
@@ -39,7 +41,10 @@ from zoneinfo import ZoneInfo
 from aiohttp import ClientSession, ClientTimeout, web
 
 import admin
+import cutjobs
+import goalplan
 import myplayer
+import replay
 import predict
 import raskat
 from raskat import rules
@@ -54,6 +59,8 @@ AUTH_SKEW = 300                 # часы Telegram и сервера могут
 MIN_MS_PER_CELL = 150           # быстрее 0,15 с на клетку — не человек (контракт, раздел 5)
 MAX_MS = 24 * 3600 * 1000
 TOP = 50                        # длина таблицы дня
+MATCH_KEY = re.compile(r"\d{4}-\d{2}-\d{2}\|[a-z0-9-]{1,40}\|[a-z0-9-]{1,40}")   # «<дата>|<хозяева>|<гости>»
+SHIFT_MAX = 20                  # окон поиска в одну сторону: 3 минуты × 20 — час записи
 
 # Полночь. Раскат, начатый до полуночи, досылается ещё 5 минут. Новый день появляется на Pages
 # прогоном в 00:05 (а GitHub запускает его с опозданием), и пока его нет, мини-апп честно
@@ -185,7 +192,8 @@ class Config:
                  webapp_url: str = "https://arpicasso.github.io/RHL-BOT/",
                  origins=("https://arpicasso.github.io",), teams_file: Path | str = BASE / "teams.json",
                  admins=(), status_dir: Path | str = admin.STATUS_DIR,
-                 subs_file: Path | str = BASE / "subscribers.json", agent_token: str = "", helpers=()):
+                 subs_file: Path | str = BASE / "subscribers.json", agent_token: str = "", helpers=(),
+                 media_root: Path | str = BASE):
         self.token = token
         self.agent_token = agent_token if len(agent_token) >= AGENT_TOKEN_MIN else ""
         self.live_dir = Path(live_dir)
@@ -197,6 +205,7 @@ class Config:
         self.helpers = frozenset(helpers)   # помощники (PREVIEW_IDS): на пульте только «Голы» (ADR-036)
         self.status_dir = Path(status_dir)
         self.subs_file = Path(subs_file)
+        self.media_root = Path(media_root)   # от него пути видео службы cuts (cutjobs.DIR)
 
     @staticmethod
     def parse_admins(raw: str, name: str = "ADMIN_IDS") -> frozenset[int]:
@@ -248,6 +257,7 @@ class Api:
         self.pr: predict.PredictStore | None = None
         self.adm: admin.AdminStore | None = None
         self.mp: myplayer.MyPlayerStore | None = None
+        self.cuts: cutjobs.CutJobs | None = None
         teams = json.loads(self.cfg.teams_file.read_text(encoding="utf-8"))
         self.teams = {t["id"]: t["name"] for t in teams}
         # Сверка соли (контракт, раздел 3): None — ещё не сверяли, True — сошлось или не с чем
@@ -272,6 +282,7 @@ class Api:
         self.pr = predict.PredictStore(self.conn)
         self.adm = admin.AdminStore(self.conn)
         self.mp = myplayer.MyPlayerStore(self.conn)
+        self.cuts = cutjobs.CutJobs(self.conn, self.cfg.media_root)
         if self._fetch is None:
             self.session = ClientSession(timeout=ClientTimeout(total=15),
                                          headers={"User-Agent": "rhl-u21-api"})
@@ -859,6 +870,63 @@ class Api:
             clips=admin.read_json(self.cfg.status_dir / "clips.json"),
             cuts=admin.read_json(self.cfg.status_dir / "cuts.json"), role=role))
 
+    async def goal_video(self, request):
+        """Видео гола для карточки «Голов» (ADR-036, раздел 4): что известно о голе → окна записи (goalplan.plan, как
+        у бота) → срочные задания службы cuts. shift — листать запись окнами поиска раньше (−) и позже (+) у примерного
+        места и поиска. Задания те же, что у бота: окно, которое уже вырезали для чата, придёт сразу."""
+        self.goals_user(request)
+        data = await self.body(request)
+        key, score, shift = data.get("key"), data.get("score"), data.get("shift", 0)
+        if not (isinstance(key, str) and MATCH_KEY.fullmatch(key) and isinstance(score, str)
+                and replay.SCORE_RE.fullmatch(score)):
+            raise Fail(400, "Не понял, какой гол.")
+        if not isinstance(shift, int) or isinstance(shift, bool) or abs(shift) > SHIFT_MAX:
+            raise Fail(400, "Так далеко запись не листается.")
+        game = (await self.league()).get(key)
+        marked = ((self.live_file("replays") or {}).get("games") or {}).get(key)
+        board = ((self.live_file("clips") or {}).get("games") or {}).get(key)
+        plan = goalplan.plan(key, score, marked if isinstance(marked, dict) else None,
+                             board if isinstance(board, dict) else None, goalplan.protocol_of(game),
+                             goalplan.league_video(game))
+        if plan is None:
+            raise Fail(404, "Видео этого гола не будет: у матча нет записи, её удалили из VK или гола в ней нет.")
+        moved = goalplan.shifted(plan, shift)
+        if moved is None:
+            raise Fail(404, "Дальше записи нет.")
+        jobs = goalplan.jobs_for(self.cuts, moved, self.now())
+        return reply({"kind": plan["kind"], "shift": shift, "src": plan.get("src"), "t": plan.get("t"),
+                      "tb": plan.get("tb"), "why": plan.get("why") or "", "cand": moved.get("cand") or [],
+                      "length": moved.get("length"),
+                      "windows": [{"start": w[0], "len": w[1], "what": w[2], "job": j}
+                                  for w, j in zip(moved["windows"], jobs)]})
+
+    def cut_job(self, request) -> dict:
+        self.goals_user(request)
+        job = self.cuts.get(int(request.match_info["id"]))
+        if job is None:
+            raise Fail(404, "Этого видео уже нет: видео живут три дня. Открой гол заново.")
+        return job
+
+    async def cut_status(self, request):
+        """Готово ли видео: done — файл можно брать; error с final — не вырежется (VK не отдал, окно за записью)."""
+        job = self.cut_job(request)
+        status, error = job["status"], ""
+        if status == "done" and self.cuts.path(job) is None:   # файл стёрли — заново его режет новая просьба
+            status, error = "error", "файл видео пропал — открой гол заново"
+        elif status == "error" and job["tries"] >= cutjobs.TRIES:
+            error = admin.no_ids(str(job.get("error") or "ошибка не записана"))[:200]
+        elif status == "error":   # ещё будет попытка
+            status = "queued"
+        return reply({"id": job["id"], "status": status, "error": error, "start": job["start"], "len": job["len"],
+                      "dur": job.get("dur")})
+
+    async def cut_file(self, request):
+        """Файл видео — только по подписи Telegram, как и всё в пульте: публичных адресов у видео нет (ADR-036)."""
+        path = self.cuts.path(self.cut_job(request))
+        if path is None:
+            raise Fail(404, "Видео ещё не готово.")
+        return web.FileResponse(path, headers={"Content-Type": "video/mp4", "Cache-Control": "private, max-age=3600"})
+
     async def services(self) -> tuple[dict | None, str]:
         """Состояние служб systemd. Не Linux, нет systemctl или он молчит — (None, почему)."""
         try:
@@ -972,6 +1040,9 @@ def make_app(config: Config | None = None, fetch=None, now=None) -> web.Applicat
     r.add_post("/api/seen", api.seen)
     r.add_get("/api/admin/status", api.admin_status)
     r.add_get("/api/admin/goals", api.admin_goals)
+    r.add_post("/api/admin/goal/video", api.goal_video)
+    r.add_get(r"/api/admin/cut/{id:\d{1,9}}", api.cut_status)
+    r.add_get(r"/api/admin/cut/{id:\d{1,9}}.mp4", api.cut_file)
     r.add_get("/api/agent/status", api.agent_status)
     r.add_get("/api/live/{name:" + LIVE_NAME + "}.json", api.live)
     r.add_get("/api/me/player", api.mp_get)

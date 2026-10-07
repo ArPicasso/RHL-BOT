@@ -793,6 +793,20 @@ class BoardApprox(unittest.TestCase):
         self.assertEqual((got["2:1"]["t"], got["2:1"]["exact"]), (3990, True))
         self.assertEqual(set(replay.by_score({**replay.with_board(None, board)})), {"1:0", "1:1", "2:1"})
 
+    def test_objected_anchor_lets_the_board_in(self):
+        """ADR-033, раздел 4: опоре возразили («⏪ гола тут нет») — она не точная, а секунда табло повтору годится,
+        как и у спора. Табло о той же секунде — возражение и ей: повтор примерный."""
+        e = replay.entry(GAME, VIDEO, {"1:0": 1500}, msk("2026-10-04T12:00:00"), reject={"1:0": [1500]})
+        board = {"video": VIDEO, "goals": {"1:0": {"t": 1800, "src": "clock", "team": "home"}}}
+        got = {g["score"]: g for g in replay.with_board(e, board)["goals"]}
+        self.assertEqual((got["1:0"]["t"], got["1:0"]["exact"], got["1:0"]["src"]), (1790, True, "clock"))
+        same = {"video": VIDEO, "goals": {"1:0": {"t": 1501, "src": "clock", "team": "home"}}}
+        got = {g["score"]: g for g in replay.with_board(e, same)["goals"]}
+        self.assertEqual((got["1:0"]["t"], got["1:0"]["exact"], got["1:0"]["src"]), (1490, False, "dispute"))
+        kept = replay.entry(GAME, VIDEO, {"1:0": 1500}, msk("2026-10-04T12:00:00"), reject={"1:0": [1200]})
+        got = {g["score"]: g for g in replay.with_board(kept, board)["goals"]}   # возражали другой секунде
+        self.assertEqual((got["1:0"]["t"], got["1:0"]["exact"]), (1490, True))
+
     def test_marks_switch_board_off(self):
         board = {"video": VIDEO, "goals": {"1:0": {"t": 100, "src": "clock", "team": "home"},
                                            "1:1": {"t": 300, "src": "clock", "team": "away"},

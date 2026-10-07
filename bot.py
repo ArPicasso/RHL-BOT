@@ -1476,7 +1476,7 @@ ROLE_WORD = {"admin": "админ", "helper": "помощник", "import": "д�
 VIA_WORD = {"replay": "/replay", "preview": "превью", "video": "видео", "confirm": "клип",
             "import": "перенесено, не проверено"}
 KIND_WORD = {"absent": "🚫 нет в записи", "wrong": "⚠️ табло сбилось", "confirm": "✅ гол виден",
-             "reject": "❌ клип неверен"}
+             "reject": "❌ гола тут нет"}
 
 
 def goal_marks() -> marks.MarksStore:
@@ -1513,8 +1513,8 @@ def marks_apply(key: str, g: dict, now: datetime, protocol: list[dict] | None = 
     """Запись матча в replays.json — заново из журнала: что действует сейчас → ссылки по голам. Действующих отметок
     нет — матч из replays.json убирается. Возвращает запись матча или None."""
     st = goal_marks().state(key)
-    entry = replay.entry(g, st["video"], st["anchors"], now, protocol, absent=st["absent"],
-                         wrong=st["wrong"]) if st else None
+    entry = replay.entry(g, st["video"], st["anchors"], now, protocol, absent=st["absent"], wrong=st["wrong"],
+                         confirm=st.get("confirm"), reject=st.get("reject")) if st else None
     data = load_replays()
     if entry is None and key not in data["games"]:
         return None
@@ -1530,8 +1530,8 @@ def marks_apply(key: str, g: dict, now: datetime, protocol: list[dict] | None = 
 def mark_word(r: dict) -> str:
     if r["kind"] == "time" and isinstance(r.get("sec"), int):
         return replay.fmt_clock(r["sec"])
-    if r["kind"] == "confirm" and isinstance(r.get("sec"), int):   # «✅ Гол виден» на видео (ADR-036)
-        return f"✅ гол виден на {replay.fmt_clock(r['sec'])}"
+    if r["kind"] in ("confirm", "reject") and isinstance(r.get("sec"), int):   # ответ на 30 с гола (ADR-036)
+        return f"{KIND_WORD[r['kind']]} на {replay.fmt_clock(r['sec'])}"
     if r["kind"] == "time" and not r.get("score"):   # ссылка на запись без времён (этап 0.4 плана)
         return "🎥 запись матча"
     return KIND_WORD.get(r["kind"], r["kind"])
@@ -1656,18 +1656,25 @@ def replay_text(day: str, g: dict, entry: dict | None, protocol: list[dict] | No
         url = replay.at_link(entry["video"], r["t"]) if r else None   # есть ли повтор: ссылкой его не даём (ADR-036)
         sign = {"clock": "⏱", "board": "📺", "run": "🕐"}.get(r.get("src"), "✅") if r and r["exact"] else "≈"
         mark = f" — {sign} {replay.fmt_t(r['t'])}" if url else ""
+        note = []
         c = checks.get(x["score"]) if x["score"] in anchors else None
-        if isinstance(c, dict) and c.get("t") == anchors[x["score"]]:   # проверка отметки службой (ADR-033)
-            mark += {"ok": " · сошлось", "conflict": " · ⚠️ спор: " + html.escape(", ".join(c.get("against") or [])),
-                     "unknown": " · нечем проверить"}.get(c.get("status"), " · не проверено")
+        if x["score"] in anchors and replay.objected((entry or {}).get("reject"), x["score"], anchors[x["score"]]):
+            note.append("❌ гола тут нет")   # этой секунде возразили на её 30 с: проверять её служба уже не станет
+        elif isinstance(c, dict) and c.get("t") == anchors[x["score"]]:   # проверка отметки службой (ADR-033)
+            note.append({"ok": "сошлось", "conflict": "⚠️ спор: " + html.escape(", ".join(c.get("against") or [])),
+                         "unknown": "нечем проверить"}.get(c.get("status"), "не проверено"))
         elif x["score"] in anchors:
-            mark += " · не проверено"
+            note.append("не проверено")
+        if x["score"] in (board.get("clips") or {}):   # клип у болельщиков (ADR-033, раздел 4: два свидетеля)
+            note.append("🎬 клип")
         if x["score"] in absent:
-            mark = " — 🚫 нет в записи"
+            mark, note = " — 🚫 нет в записи", []
         elif x["score"] in off and not (r and r.get("exact") and r.get("src") in (None, "admin")):
-            mark += " · ⚠️ табло сбилось"
+            note.append("⚠️ табло сбилось")
         elif not url and rejected.get(x["score"]):   # почему табло не взяло гол — чтобы было видно, что чинить
-            mark += f" · табло: {html.escape(str(rejected[x['score']]))}"
+            note.append(f"табло: {html.escape(str(rejected[x['score']]))}")
+        if note:   # без повтора пометка идёт первой: не «0:1 Рязань · клип», а «0:1 Рязань — клип»
+            mark += (" · " if mark else " — ") + " · ".join(note)
         lines.append(f"{k}. <b>{x['score']}</b> {who}{author}{per}{mark}")
     lines.append("")
     if entry:
@@ -2822,10 +2829,11 @@ def cut_kb(plan: dict, jobs: list[int]) -> InlineKeyboardMarkup:
         job, act, *arg = data.split(":")
         return InlineKeyboardButton(text=text, callback_data=cv_data(int(job), act, int(arg[0]) if arg else None, sc))
     kind = plan["kind"]
-    if kind == "exact":
-        rows = [[b("✅ Гол виден", f"{j}:y:{plan['t']}")],
-                [b("⏪ Гол раньше", f"{j}:e"), b("⏩ Гол позже", f"{j}:l")],
-                [b("🚫 Гола нет в записи", f"{j}:n")]]
+    if kind == "exact":   # «⏪ / ⏩» под точной секундой — ещё и возражение ей (ADR-033, раздел 4)
+        # своя же секунда (30 с сразу после отметки): «✅» от отметившего — один свидетель, а не два, — кнопки нет
+        rows = [] if plan.get("own") else [[b("✅ Гол виден", f"{j}:y:{plan['t']}")]]
+        rows += [[b("⏪ Гол раньше", f"{j}:e:{plan['t']}"), b("⏩ Гол позже", f"{j}:l:{plan['t']}")],
+                 [b("🚫 Гола нет в записи", f"{j}:n")]]
     elif kind == "dispute":
         rows = [[b(f"✅ Верно по отметке {replay.fmt_clock(plan['t'])}", f"{j}:y:{plan['t']}")]]
         if plan.get("tb") is not None:
@@ -2849,8 +2857,10 @@ def cut_caption(plan: dict, protocol: list[dict] | None = None) -> list[str]:
     kind, wins = plan["kind"], plan["windows"]
     if kind == "exact":
         lead = plan["t"] - wins[0][0]
-        return [f"{head}\n{SRC_WORD.get(plan.get('src'), '✅')} — гол на {replay.fmt_clock(lead)} этого видео. Видишь "
-                "гол — «✅ Гол виден». Нет — «⏪» или «⏩»: пришлю записи раньше или позже."]
+        return [f"{head}\n{SRC_WORD.get(plan.get('src'), '✅')} — гол на {replay.fmt_clock(lead)} этого видео. "
+                + ("Это твоя отметка — её подтверждает кто-то другой. Гола тут нет — «⏪» или «⏩»: пришлю записи "
+                   "раньше или позже." if plan.get("own") else
+                   "Видишь гол — «✅ Гол виден». Нет — «⏪» или «⏩»: пришлю записи раньше или позже.")]
     if kind == "dispute":
         out = [f"{head}\n⚠️ Спор: отметка {replay.fmt_clock(plan['t'])} не сходится с табло"
                + (f" ({html.escape(plan['why'])})" if plan.get("why") else "") + ". Это видео — по отметке."]
@@ -3073,7 +3083,7 @@ async def video_answered(bot: Bot, cid: int, job: dict, score: str, sec: int, pr
     """Время записано — 30 с результата: ответ человека сразу становится тем, что увидят болельщики, и его видно."""
     length = video_length(job["match"], job["video"])
     plan = {"kind": "exact", "video": job["video"], "length": length, "key": job["match"], "score": score, "t": sec,
-            "src": "admin", "windows": [(*cutjobs.review_window(sec, length), "гол")]}
+            "src": "admin", "own": True, "windows": [(*cutjobs.review_window(sec, length), "гол")]}
     await goal_video(bot, cid, plan, protocol)
 
 
@@ -3093,7 +3103,7 @@ async def cb_cut(c: CallbackQuery):
         return
     now, cid = datetime.now(TZ), c.message.chat.id
     arg = int(arg_s) if arg_s.isdigit() else None
-    if act in ("t", "y", "n", "w") and other_video(job):
+    if act in ("t", "y", "n", "w") and other_video(job) or act in ("e", "l") and arg is not None and other_video(job):
         await c.answer("Это видео из прежней записи матча — открой гол заново в /replay", show_alert=True)
         return
     g = live_by_key(job["match"])
@@ -3112,6 +3122,13 @@ async def cb_cut(c: CallbackQuery):
         if act == "t":
             await video_answered(c.bot, cid, job, score, arg, protocol)
         return
+    if act in ("e", "l") and arg is not None:   # под 30 с точной секунды: гола тут нет — возражение секунде
+        err = video_save(job, score, arg, now, c.from_user.id, protocol, kind="reject")
+        if err:
+            await c.answer(err, show_alert=True)
+            return
+        TRACK.add("video_rejects")
+        await safe_markup(done)
     if act in ("e", "l", "s"):
         length = video_length(job["match"], job["video"])
         if act == "s":   # «Ни то ни другое — искать»: 3 минуты вокруг отметки

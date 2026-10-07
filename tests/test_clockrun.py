@@ -59,6 +59,8 @@ class Solve(unittest.TestCase):
         self.assertEqual(got["checked"], 2)
         self.assertEqual(got["found"]["1:1"]["t"], 659)
         self.assertEqual((got["drop"], got["fail"]), ([], []))
+        # пара сошлась — оба гола подтверждены ходом часов: второй свидетель для клипа (ADR-033, раздел 4)
+        self.assertEqual(got["confirmed"], ["1:0", "2:1"])
 
     def test_unchecked_anchor_gives_window_only(self):
         # опора одна — счёт не проверен: точной секунды нет, только окно и остановки в нём (превью, примерный повтор)
@@ -66,6 +68,7 @@ class Solve(unittest.TestCase):
         got = cr.solve([goal("1:0", "05:00", 399, "clock"), goal("1:1", "08:20")], state)
         self.assertEqual(got["checked"], 0)
         self.assertEqual(got["found"]["1:1"], {"win": [659, 659], "cand": [659], "from": "1:0"})
+        self.assertEqual(got["confirmed"], [])                # одна опора — подтверждать нечем
 
     def test_change_on_board_confirms_unchecked(self):
         state = match(SEG)
@@ -81,6 +84,7 @@ class Solve(unittest.TestCase):
         got = cr.solve(goals, state)
         # ADR-033: отметка человека — тоже показание: пара не сошлась — точность снимается с обоих
         self.assertEqual((got["drop"], got["fail"], got["found"]), (["1:0", "2:0"], ["1"], {}))
+        self.assertEqual(got["confirmed"], [])                # не сошлась — не свидетель
 
     def test_wide_window_or_other_period_gives_nothing(self):
         unknown = set(range(460, 600))

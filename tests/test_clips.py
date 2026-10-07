@@ -210,7 +210,7 @@ class Pulse(unittest.TestCase):
         got = clips.catalog(store, league, marked, date(2026, 10, 5))
         self.assertEqual(got, {"goals": 3, "timed": 2, "timed_auto": 1, "timed_admin": 1, "clips": 1, "ask": 1,
                                "no_video": 0, "mismatch": 1, "no_board": 0, "boards": 0, "m_total": 2, "m_full": 1,
-                               "m_none": 1, "g_replay": 3, "run": 0})
+                               "m_none": 1, "g_replay": 3, "run": 0, "two": 0})
         # rostov — запись клуба, ещё не разобрана: ни одного повтора; 9:9 нет в протоколе
 
     def test_catalog_unmarked_board(self):
@@ -443,9 +443,10 @@ class S3Sign(unittest.TestCase):
 
 
 class Cutting(unittest.TestCase):
-    """Шаг 6: что резать, что убрать, выкладка в бакет и клип у гола протокола."""
+    """Шаг 6: что резать, что убрать, выкладка в бакет и клип у гола протокола. 0:1 — часы встали, и ход часов от
+    другого точного гола подтвердил: два свидетеля (ADR-033, раздел 4)."""
     game = {"video": VIDEO, "goals": {"0:1": {"t": 2600, "src": "clock", "team": "away"},
-                                      "0:2": {"t": None, "change": 2969}}}
+                                      "0:2": {"t": None, "change": 2969}}, "run": {"confirmed": ["0:1"]}}
     protocol = {"0:1": {"score": "0:1", "team": "away", "author": "Иванов", "assists": []},
                 "0:2": {"score": "0:2", "team": "away", "author": "Петров", "assists": ["Игрок скрыт"]}}
 
@@ -456,12 +457,39 @@ class Cutting(unittest.TestCase):
         self.assertEqual(clips.clip_plan(self.game, None, {}), ([], []))  # протокола нет — ждём
         done = {**self.game, "clips": {"0:1": {"t": 2600, "team": "away"}}}
         self.assertEqual(clips.clip_plan(done, None, self.protocol), ([], []))
-        moved = {**done, "goals": {"0:1": {"t": 2610, "src": "clock"}}}
+        moved = {**done, "goals": {"0:1": {"t": 2610, "src": "clock"}}}   # ход часов подтвердил новую секунду
         self.assertEqual(clips.clip_plan(moved, None, self.protocol)[0], [("0:1", 2610, "clock")])
         gone = {**done, "clips": {"0:1": {"t": 2600, "team": "home"}}}   # счета сдвинулись: другой команды
         self.assertEqual(clips.clip_plan(gone, None, self.protocol)[1], ["0:1"])
         lost = {**done, "goals": {"0:1": {"t": None, "src": None}}}   # разбор поправили: секунды у гола нет
         self.assertEqual(clips.clip_plan(lost, None, self.protocol), ([], ["0:1"]))
+
+    def test_two_witnesses(self):
+        """ADR-033, раздел 4: клип — только когда точную секунду подтверждают два независимых свидетеля."""
+        one = {**self.game, "run": {}}                                   # часы встали, хода часов нет — один
+        self.assertEqual(clips.clip_witnesses(one, None), {})
+        self.assertEqual(clips.clip_witnesses(self.game, None), {"0:1": (2600, "clock", "board+run")})
+        run = {**one, "goals": {"0:1": {"t": 2600, "src": "run"}}}      # часы встали там, где по протоколу
+        self.assertEqual(clips.clip_witnesses(run, None)["0:1"][2], "clock+run")
+        admin = {"video": VIDEO, "anchors": {"0:1": 2590}}
+        checked = {**one, "checks": {"0:1": {"t": 2590, "status": "ok"}}}
+        self.assertEqual(clips.clip_witnesses(checked, admin)["0:1"], (2590, "admin", "admin+board"))
+        unknown = {**one, "checks": {"0:1": {"t": 2590, "status": "unknown"}}}
+        self.assertEqual(clips.clip_witnesses(unknown, admin), {})       # нечем проверить — один человек
+        seen = {**admin, "confirm": {"0:1": [2590]}}                     # 30 с посмотрел другой — «✅ Гол виден»
+        self.assertEqual(clips.clip_witnesses(unknown, seen)["0:1"][2], "seen")
+        self.assertEqual(clips.clip_witnesses(one, {"video": VIDEO, "confirm": {"0:1": [2600]}})["0:1"][2], "seen")
+        # «✅» от того, кто сам поставил эту секунду, в confirm не попадает (marks.own_confirm) — тест в test_marks
+
+    def test_objection_takes_clip_down(self):
+        """Свидетель возразил уже выложенному клипу — клип снимается сразу (ADR-033, раздел 4)."""
+        done = {**self.game, "clips": {"0:1": {"t": 2600, "team": "away"}}}
+        self.assertEqual(clips.clip_plan(done, None, self.protocol), ([], []))
+        objected = {"video": VIDEO, "reject": {"0:1": [2600]}}           # «⏪ Гол раньше» под 30 с гола
+        self.assertEqual(clips.clip_plan(done, objected, self.protocol), ([], ["0:1"]))
+        self.assertNotIn("0:1", clips.goal_seconds(done, objected))
+        seen = {"video": VIDEO, "confirm": {"0:1": [2600]}, "reject": {"0:1": [2610]}}   # возражали другой секунде
+        self.assertEqual(clips.clip_plan(done, seen, self.protocol), ([], []))
 
     def test_admin_second_wins(self):
         admin = {"video": VIDEO, "anchors": {"0:1": 2590}}
@@ -645,6 +673,16 @@ class ClockPass(unittest.TestCase):
         n, disk = self.run_pass(marked=marked)
         self.assertEqual(n, 1)
         self.assertGreaterEqual(disk["games"][KEY]["run"]["checked"], 1)     # 0:1 и 0:3 проверили друг друга
+
+    def test_all_exact_still_checked_for_witnesses(self):
+        """ADR-033, раздел 4: все голы точные и людей нет — счёт хода всё равно сверяет их парами: гол табло,
+        подтверждённый ходом часов, — второй свидетель для клипа. Раньше такой матч не пересчитывали вовсе."""
+        self.store["games"][KEY]["goals"]["0:2"] = {"t": 659, "src": "clock", "team": "away", "change": 700}
+        n, disk = self.run_pass()
+        self.assertEqual(n, 1)
+        game = disk["games"][KEY]
+        self.assertEqual(game["run"]["confirmed"], ["0:1", "0:2"])
+        self.assertEqual(sorted(clips.clip_witnesses(game, None)), ["0:1", "0:2"])
 
 
 class Coverage(unittest.TestCase):
@@ -982,6 +1020,16 @@ class Prepared(unittest.TestCase):
         other = {**admin, "video": "https://vk.com/video-9_9"}               # отметки к другому ролику
         self.assertEqual(clips.cut_wants(game, other), [(2580, 30, "1:0", "review"), (3480, 30, "1:1", "review"),
                                                          (5580, 30, "2:2", "review")])
+
+    def test_two_witnesses_wait_only_for_the_clip(self):
+        """1.3 плана: у гола два свидетеля — людям смотреть его не надо, окно в очередь cuts не ставим."""
+        game = {"video": VIDEO, "status": "ok", "length": 9000, "run": {"confirmed": ["2:0"]}, "goals": {
+            "1:0": {"t": 2600, "src": "run", "change": 2620},       # часы встали там, где по протоколу — двое
+            "2:0": {"t": 3500, "src": "clock", "change": 3520},     # табло и ход часов сошлись — двое
+            "3:0": {"t": 4400, "src": "clock", "change": 4420}}}    # табло одно — свидетель один
+        self.assertEqual(clips.cut_wants(game, None), [(4380, 30, "3:0", "review")])
+        seen = {"video": VIDEO, "confirm": {"3:0": [4400]}}          # человек посмотрел 30 с: «✅ Гол виден»
+        self.assertEqual(clips.cut_wants(game, seen), [])
 
     def test_recent_matches_only_once(self):
         goals = {"1:0": {"t": 2600, "src": "clock", "change": 2620}}

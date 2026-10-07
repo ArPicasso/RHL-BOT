@@ -87,6 +87,10 @@ EVERY = 600         # с между проходами; пока есть нер
 TRIES = 3           # столько раз пробуем матч, который не скачался или упал
 GONE_TRIES = 2      # столько раз подряд VK должен сказать «записи нет», чтобы считать её удалённой (этап 0.3 плана)
 GONE_MAX = 6        # удалённых записей в пульте и тревогах
+INV_MAX = 5         # сломанных инвариантов прохода в пульте и тревогах (ADR-034): остальные — в журнале службы
+CLIP_AFTER = 15     # с: клип позже смены счёта на табло — гол не бывает после того, как счёт уже сменился
+CLIP_BEFORE = 180   # с: и не раньше чем за три минуты до смены (оператор меняет счёт через 0–90 с, ADR-031)
+CANARY_EVERY = 20 * 3600   # с: «канарейка» yt-dlp (ADR-034) — раз в сутки, даже когда разбирать нечего
 ALIVE_EVERY = 6 * 3600   # с: как часто спрашиваем VK, на месте ли уже разобранная запись (ADR-027, доп. 07.10)
 ALIVE_FRESH = 1800       # с: у матчей младше ALIVE_DAYS — чаще, но не каждый проход: запросов к VK и так хватает
 ALIVE_MAX = 3            # записей за проход: один запрос метаданных на запись, без скачивания
@@ -1231,6 +1235,134 @@ def coverage(store: dict, league: dict | None, marked: dict, today: date) -> dic
     return out
 
 
+# ---------- сторожа (ADR-034) ----------
+# Служба сама смотрит на то, что сделала: инвариант сломался — об этом знает пульт и тревога админам (ADR-022),
+# а не только тот, кто откроет live/clips.json. И раз в сутки — «канарейка»: жив ли yt-dlp, когда матчей нет.
+
+
+def cover_drop(store: dict, now: datetime) -> list[dict]:
+    """Повторов у матча не становится меньше: разбор только добавляет. Стало меньше — что-то потеряли (разбор
+    переписал секунды, отметку отозвали зря). Считаем по матчам, а не одним числом: у записи, которой больше нет
+    в VK (`gone`), повторы пропадают законно, и о ней своя тревога. Максимум дня — в `cover_top`, новый день
+    начинает счёт заново: законную потерю (человек сказал «гола нет в записи») сторож не помнит вечно."""
+    cover = store.get("coverage") or {}
+    day = now.date().isoformat()
+    top = store.get("cover_top") if isinstance(store.get("cover_top"), dict) else {}
+    was = top.get("games") if top.get("day") == day and isinstance(top.get("games"), dict) else {}
+    was = {k: v for k, v in was.items() if isinstance(v, list) and len(v) == 2}
+    have = {k: [e.get("replays") or 0, e.get("goals") or 0] for k, e in cover.items()
+            if isinstance(e, dict) and e.get("why") != "gone"}
+    # голов у матча стало другое число — лига поправила протокол (гол отменили, счета сдвинулись): это не потеря
+    fell = {k: (was[k][0], n) for k, (n, goals) in have.items()
+            if k in was and goals == was[k][1] and n < was[k][0]}
+    store["cover_top"] = {"day": day, "games": {k: [max(n, was[k][0]) if k in was and goals == was[k][1] else n, goals]
+                                                for k, (n, goals) in have.items()}}
+    if not fell:
+        return []
+    what = ", ".join(f"{k}: было {a}, стало {b}" for k, (a, b) in sorted(fell.items()))
+    return [{"key": "cover", "text": f"Повторов стало меньше ({what}). Разбор что-то потерял — посмотри "
+             "coverage в live/clips.json"}]
+
+
+def invariants(store: dict, league: dict | None, marked: dict, now: datetime) -> list[dict]:
+    """Что после прохода не может быть правдой (ADR-034): список {"key", "text"}.
+
+    - Секунды голов матча идут в порядке протокола: гол, который по протоколу позже, не может быть раньше в записи.
+    - Клип вырезан у смены счёта на табло: не позже неё (гола после смены не бывает) и не раньше чем за CLIP_BEFORE
+      (05.10 клип 4:0 был вырезан на секунде гола 1:0 — именно это и ловим).
+    - Покрытие повторами за день не падает (`cover_drop`)."""
+    out = []
+    for key, game in sorted((store.get("games") or {}).items()):
+        if not isinstance(game, dict):
+            continue
+        e = (marked or {}).get(key) or {}
+        title = match_title(league, key)
+        seconds = goal_seconds(game, e)
+        prev = None
+        for score in [s for s in league_goals(league, key) if s in seconds]:   # порядок — протокола
+            t = seconds[score][0]
+            if prev and t < prev[1]:
+                out.append({"key": f"order:{key}", "text": f"{title}: гол {score} на {replay.fmt_t(t)} раньше гола "
+                            f"{prev[0]} на {replay.fmt_t(prev[1])} — секунды не в порядке протокола"})
+                break
+            prev = (score, t)
+        board = game.get("goals") or {}
+        for score, c in sorted((game.get("clips") or {}).items()):
+            t, change = (c or {}).get("t"), (board.get(score) or {}).get("change")
+            if not isinstance(t, (int, float)) or not isinstance(change, (int, float)):
+                continue
+            if t > change + CLIP_AFTER:
+                out.append({"key": f"clip:{key}:{score}", "text": f"{title}: клип гола {score} на {replay.fmt_t(t)} "
+                            f"позже смены счёта на табло ({replay.fmt_t(change)}) — вырезан мимо гола"})
+            elif t < change - CLIP_BEFORE:
+                out.append({"key": f"clip:{key}:{score}", "text": f"{title}: клип гола {score} на {replay.fmt_t(t)} "
+                            f"раньше смены счёта ({replay.fmt_t(change)}) больше чем на {CLIP_BEFORE // 60} мин — "
+                            "вырезан мимо гола"})
+    return out + cover_drop(store, now)
+
+
+def watch_pass(store: dict, league: dict | None, marked: dict, now: datetime,
+               track: "admin.Tracker | None" = None) -> list[dict]:
+    """Инварианты прохода — в журнал службы и в пульс для пульта и тревог. Новый максимум покрытия — на диск."""
+    before = json.dumps(store.get("cover_top"), sort_keys=True, ensure_ascii=False)
+    try:
+        found = invariants(store, league, marked, now)
+    except Exception:   # сторож не роняет службу
+        log.exception("инварианты прохода не посчитались")
+        return []
+    for p in found:
+        log.warning("сторож: %s", p["text"])
+    if track is not None:
+        track.info(invariants=found[:INV_MAX])
+    if json.dumps(store.get("cover_top"), sort_keys=True, ensure_ascii=False) != before:
+        store["updated"] = now_msk().isoformat(timespec="seconds")
+        write_atomic(LIVE_DIR / "clips.json", store)
+    return found
+
+
+def canary_due(store: dict, now: datetime) -> bool:
+    """Пора ли «канарейке»: раз в CANARY_EVERY от прошлой проверки, а первый раз — сразу."""
+    last = admin.parse_iso((store.get("canary") or {}).get("at"))
+    return last is None or (now - last).total_seconds() >= CANARY_EVERY
+
+
+def canary_pass(store: dict, now: datetime, check=stream, track: "admin.Tracker | None" = None) -> bool | None:
+    """«Канарейка» yt-dlp (ADR-034): раз в сутки спрашиваем VK об одной уже разобранной записи — даже когда
+    разбирать нечего. VK меняет плеер, yt-dlp перестаёт отдавать записи, и в день без матчей об этом некому
+    сказать: проход ничего не качает, счётчики пульта пустые, а на следующем матче повторов уже не будет.
+    Записи больше нет в VK — это ответ по делу, значит yt-dlp жив. None — не пора или спрашивать нечего.
+    Спрашиваем только о записи, которую служба уже разобрала (`ok`, `no_board`): запись, которая и раньше не
+    скачивалась (`error` — приватная, не для этой страны), каждый день давала бы одну и ту же тревогу не о том."""
+    if not canary_due(store, now):
+        return None
+    pick = next(((k, e) for k, e in sorted((store.get("games") or {}).items(), reverse=True)
+                 if isinstance(e, dict) and isinstance(e.get("video"), str)
+                 and e.get("status") in ("ok", "no_board")), None)
+    if pick is None:
+        return None
+    key, game = pick
+    got = {"at": now.isoformat(timespec="seconds"), "key": key, "video": game["video"], "ok": True}
+    try:
+        check(game["video"])
+    except Exception as err:
+        if gone_error(err):   # запись удалили — ответ по делу: yt-dlp работает
+            got["gone"] = True
+            log.info("канарейка: записи %s больше нет в VK — yt-dlp отвечает", game["video"])
+        else:
+            got.update(ok=False, error=f"{type(err).__name__}: {err}"[:200])
+            log.warning("канарейка: VK не отдал запись %s — %s", game["video"], got["error"])
+    else:
+        log.info("канарейка: VK отдал запись %s", game["video"])
+    # счётчики дня (`vk_ok`, `vk_fail`) канарейка не трогает: это запрос о старой записи, а по ним считается
+    # тревога «VK сегодня не отдал ни одной записи» — удачная канарейка глушила бы её на весь день
+    store["canary"] = got
+    store["updated"] = now_msk().isoformat(timespec="seconds")
+    write_atomic(LIVE_DIR / "clips.json", store)
+    if track is not None:
+        track.info(canary={k: v for k, v in got.items() if k != "key"})
+    return got["ok"]
+
+
 def write_coverage(store: dict, league: dict | None, marked: dict, now: datetime) -> bool:
     """Разбор покрытия — в clips.json (`coverage`): по нему бот пишет админам, почему у матчей нет повторов."""
     try:
@@ -1305,6 +1437,8 @@ def main() -> None:
                 cut += cut_pass(store, league, marked, bucket, track=track)
             checks_pass(store, league, marked)   # вердикты по отметкам людей (ADR-033)
             write_coverage(store, league, marked, now)
+            canary_pass(store, now, track=track)   # жив ли yt-dlp, даже когда матчей нет (ADR-034)
+            watch_pass(store, league, marked, now, track=track)   # инварианты прохода (ADR-034)
             try:
                 prepare_cuts(store, marked, now)   # видео для людей — заранее (ADR-036)
             except Exception as err:   # база занята — заготовки в следующий проход, разбор от этого не страдает

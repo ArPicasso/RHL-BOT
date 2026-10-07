@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "tests"))
 
+import admin  # noqa: E402
 import build_data as b  # noqa: E402
 import clips  # noqa: E402
 import probe_scoreboard as sb  # noqa: E402
@@ -1079,3 +1080,111 @@ class Prepared(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Watchdogs(unittest.TestCase):
+    """Сторожа службы (ADR-034): инварианты прохода и «канарейка» yt-dlp."""
+    now = datetime(2026, 10, 8, 12, 0, tzinfo=TZ)
+    league = {"games": [{**LEAGUE["games"][0], "goals": [
+        {"score": "0:1", "team": "away", "period": "1"}, {"score": "0:2", "team": "away", "period": "2"}]}]}
+
+    def test_seconds_out_of_protocol_order(self):
+        store = {"games": {KEY: {"video": VIDEO, "status": "ok", "goals": {
+            "0:1": {"t": 3000, "src": "clock"}, "0:2": {"t": 2600, "src": "clock"}}}}}
+        got = clips.invariants(store, self.league, {}, self.now)
+        self.assertEqual([p["key"] for p in got], [f"order:{KEY}"])
+        self.assertIn("не в порядке протокола", got[0]["text"])
+        store["games"][KEY]["goals"]["0:2"]["t"] = 3600
+        self.assertEqual(clips.invariants(store, self.league, {}, self.now), [])
+
+    def test_clip_cut_past_the_scoreboard(self):
+        """05.10 клип 4:0 был вырезан на секунде гола 1:0 — именно это и ловим."""
+        game = {"video": VIDEO, "status": "ok", "goals": {"0:1": {"t": 2600, "src": "clock", "change": 2620}},
+                "clips": {"0:1": {"t": 2600, "team": "away"}}}
+        self.assertEqual(clips.invariants({"games": {KEY: game}}, self.league, {}, self.now), [])
+        game["clips"]["0:1"]["t"] = 2700                               # позже смены счёта — гола там быть не может
+        got = clips.invariants({"games": {KEY: game}}, self.league, {}, self.now)
+        self.assertEqual([p["key"] for p in got], [f"clip:{KEY}:0:1"])
+        self.assertIn("позже смены счёта", got[0]["text"])
+        game["clips"]["0:1"]["t"] = 2200                               # за семь минут до смены — другой гол
+        got = clips.invariants({"games": {KEY: game}}, self.league, {}, self.now)
+        self.assertIn("раньше смены счёта", got[0]["text"])
+
+    def test_coverage_must_not_drop(self):
+        store = {"coverage": {KEY: {"replays": 5, "goals": 5, "why": "ok"}}}
+        self.assertEqual(clips.cover_drop(store, self.now), [])        # первый счёт — он и максимум
+        self.assertEqual(store["cover_top"], {"day": "2026-10-08", "games": {KEY: [5, 5]}})
+        store["coverage"][KEY]["replays"] = 3
+        got = clips.cover_drop(store, self.now)
+        self.assertEqual([p["key"] for p in got], ["cover"])
+        self.assertIn("было 5, стало 3", got[0]["text"])
+        self.assertEqual(clips.cover_drop(store, self.now + timedelta(days=1)), [])   # новый день — счёт заново
+        store["coverage"][KEY] = {"replays": 0, "goals": 5, "why": "gone"}   # запись удалили — об этом своя тревога
+        self.assertEqual(clips.cover_drop(store, self.now + timedelta(days=1)), [])
+        self.assertNotIn(KEY, store["cover_top"]["games"])              # вернётся запись — потерей это не будет
+
+    def test_protocol_fix_is_not_a_loss(self):
+        """Ревью PR #141: лига отменила гол — голов у матча стало меньше, и повторов тоже. Это не потеря разбора."""
+        store = {"coverage": {KEY: {"replays": 5, "goals": 5, "why": "ok"}}}
+        self.assertEqual(clips.cover_drop(store, self.now), [])
+        store["coverage"][KEY] = {"replays": 4, "goals": 4, "why": "ok"}   # гол отменили, счета сдвинулись
+        self.assertEqual(clips.cover_drop(store, self.now), [])
+        self.assertEqual(store["cover_top"]["games"][KEY], [4, 4])         # считаем от нового протокола
+        store["coverage"][KEY] = {"replays": 2, "goals": 4, "why": "ok"}   # голов столько же, повторов меньше
+        self.assertEqual([p["key"] for p in clips.cover_drop(store, self.now)], ["cover"])
+
+    def test_pass_writes_invariants_to_the_pult(self):
+        store = {"games": {KEY: {"video": VIDEO, "status": "ok", "goals": {
+            "0:1": {"t": 3000, "src": "clock"}, "0:2": {"t": 2600, "src": "clock"}}}}}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            track = admin.Tracker("clips", path=Path(tmp) / "clips.json", clock=lambda: self.now)
+            got = clips.watch_pass(store, self.league, {}, self.now, track=track)
+            track.flush()
+            said = json.loads((Path(tmp) / "clips.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(got), 1)
+        self.assertEqual(said["info"]["invariants"][0]["key"], f"order:{KEY}")   # дальше — пульт и тревога админам
+
+    def test_canary_asks_vk_once_a_day(self):
+        store = {"games": {KEY: {"video": VIDEO, "status": "ok", "goals": {}},
+                           "2026-10-02|sokol|proton": {"video": "https://vk.com/video-5_6", "status": "ok"}}}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            check = mock.Mock(return_value=("http://x", {}, 7200))
+            self.assertIs(clips.canary_pass(store, self.now, check=check), True)
+            self.assertEqual(check.call_args.args[0], VIDEO)            # свежая запись сезона
+            self.assertIsNone(clips.canary_pass(store, self.now + timedelta(hours=2), check=check))
+            self.assertEqual(check.call_count, 1)                       # раз в сутки, не каждый проход
+            dead = mock.Mock(side_effect=clips.VkError("DownloadError: Unable to extract player"))
+            track = admin.Tracker("clips", path=Path(tmp) / "clips.json", clock=lambda: self.now)
+            self.assertIs(clips.canary_pass(store, self.now + timedelta(days=1), check=dead, track=track), False)
+            track.flush()
+            said = json.loads((Path(tmp) / "clips.json").read_text(encoding="utf-8"))
+        self.assertIn("Unable to extract", store["canary"]["error"])
+        self.assertEqual(said["info"]["canary"]["ok"], False)
+        # ревью PR #141: счётчики дня канарейка не трогает — по ним считается «VK сегодня не отдал ни одной записи»
+        self.assertEqual(said["days"], {})
+
+    def test_canary_asks_only_about_a_parsed_recording(self):
+        """Ревью PR #141: запись, которая и раньше не скачивалась (приватная, не для этой страны), каждый день
+        давала бы одну и ту же тревогу не о том — канарейка спрашивает о разобранной."""
+        store = {"games": {
+            "2026-10-07|kaluga|dinamo-576": {"video": "https://vk.com/video-7_7", "status": "error", "tries": 3},
+            KEY: {"video": VIDEO, "status": "no_board", "goals": {}}}}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            check = mock.Mock(return_value=("http://x", {}, 7200))
+            self.assertIs(clips.canary_pass(store, self.now, check=check), True)
+        self.assertEqual(check.call_args.args[0], VIDEO)
+        only_bad = {"games": {"2026-10-07|kaluga|dinamo-576": {"video": "https://vk.com/video-7_7",
+                                                               "status": "error", "tries": 3}}}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            self.assertIsNone(clips.canary_pass(only_bad, self.now, check=mock.Mock()))
+
+    def test_canary_counts_a_deleted_recording_as_an_answer(self):
+        store = {"games": {KEY: {"video": VIDEO, "status": "ok", "goals": {}}}}
+        gone = mock.Mock(side_effect=clips.VkError("VkError: видео удалено"))
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            self.assertIs(clips.canary_pass(store, self.now, check=gone), True)
+        self.assertTrue(store["canary"]["gone"])
+
+    def test_canary_without_recordings(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            self.assertIsNone(clips.canary_pass({"games": {}}, self.now, check=mock.Mock()))

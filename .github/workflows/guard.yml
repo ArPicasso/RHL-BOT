@@ -1,0 +1,63 @@
+name: Сторож
+
+# Смотрит на систему снаружи и пишет админам в Telegram сам, без сервера и без бота (ADR-034):
+# жив ли API на VPS, свежи ли данные мини-аппа на Pages, пишет ли бот пульс.
+# Тревоги бота (ADR-022) идут с того же сервера, за которым следят, — умер сервер или бот, сказать некому.
+#
+# Нужны:
+#   секрет BOT_TOKEN   — тот же бот, что пишет болельщикам (уже есть)
+#   секрет ADMIN_IDS   — кому писать, через запятую, как в /etc/rhl/bot.env
+#   переменная LIVE_API   — адрес API на сервере (есть у сборки мини-аппа)
+#   переменная WEBAPP_URL — адрес мини-аппа на Pages
+#   секрет AGENT_TOKEN (не обязателен) — токен агента: с ним сторож видит и пульс бота
+# Чего-то нет — сторож скажет об этом в журнале запуска и не упадёт.
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # GitHub может запускать с опозданием и терять запуски — пропуски видны в утреннем обходе
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Очередь не нужна: обход занимает секунды, а новый запуск свежее прежнего
+concurrency:
+  group: guard
+  cancel-in-progress: true
+
+jobs:
+  look:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Память сторожа между запусками: про одну поломку он напоминает не чаще раза в час, а когда она прошла —
+      # говорит «Починилось». Кэш Actions — единственное хранилище, которое есть у задания и не зависит от сервера
+      - uses: actions/cache@v4
+        with:
+          path: guard_state.json
+          key: guard-${{ github.run_id }}
+          restore-keys: guard-
+
+      - name: Обход
+        env:
+          VAR_LIVE: ${{ vars.LIVE_API }}
+          WEBAPP_URL: ${{ vars.WEBAPP_URL }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ADMIN_IDS: ${{ secrets.ADMIN_IDS }}
+          AGENT_TOKEN: ${{ secrets.AGENT_TOKEN }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          # Адреса нет в переменных — тот же, что включает deploy/https.sh без своего домена (как в pages.yml)
+          base="${VAR_LIVE%/}"
+          if [ -z "$base" ] && [[ "$HOST" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+            base="https://${HOST//./-}.sslip.io/api"
+          fi
+          if [ -z "$BOT_TOKEN" ] || [ -z "$ADMIN_IDS" ]; then
+            echo "::warning::Сторож обойдёт систему, но писать некому: нет секрета BOT_TOKEN или ADMIN_IDS"
+          fi
+          LIVE_API="$base" python guard.py

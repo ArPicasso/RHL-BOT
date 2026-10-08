@@ -4457,17 +4457,17 @@ function matchSticker(g, side, no, gk) {
   return playerSticker({ team: id, kit: id, role: gk ? "G" : "F", number: no });
 }
 
-// Повтор гола (ADR-027): запись трансляции лиги в VK с секунды гола. Ссылку ставит сборка, только https.
+// Повтор гола — всегда в приложении (ADR-037): своё видео службы, точный клип 30 с (ADR-030) или окно записи,
+// в котором гол есть. Из приложения повтор не уводит: ссылки в VK у него нет, только «Вся трансляция» под плеером.
 // Вторичная пилюля, как «Смотреть»: в разборе, в подписи под «Ходом матча» и в ленте матча (ADR-028)
 function replayBtn(x) {
   const c = x.clip;
-  // свой клип (ADR-030): играет тут же, под строкой гола; ссылка на всю трансляцию — под ним
   if (c && HTTPS.test(c.mp4 || "") && HTTPS.test(c.poster || "")) {
     const full = typeof x.replay === "string" && HTTPS.test(x.replay) ? ` data-full="${esc(x.replay)}"` : "";
-    return `<button type="button" class="go replay" data-clip="${esc(c.mp4)}" data-poster="${esc(c.poster)}"${full} aria-expanded="false" aria-label="${esc(`Повтор гола ${x.score}, ${x.author}`)}">${LV_ICON.watch}<span>Повтор</span></button>`;
+    const wide = c.kind === "window" ? ' data-wide="1"' : "";
+    return `<button type="button" class="go replay" data-clip="${esc(c.mp4)}" data-poster="${esc(c.poster)}"${wide}${full} aria-expanded="false" aria-label="${esc(`Повтор гола ${x.score}, ${x.author}`)}">${LV_ICON.watch}<span>Повтор</span></button>`;
   }
-  if (typeof x.replay !== "string" || !HTTPS.test(x.replay)) return "";
-  return `<button type="button" class="go replay" data-out="${esc(x.replay)}" aria-label="${esc(`Повтор гола ${x.score}, ${x.author}`)}">${LV_ICON.watch}<span>Повтор</span></button>`;
+  return "";   // видео ещё нет — кнопки тоже нет: служба дорежет окно на ближайшем проходе
 }
 
 // Клип под строкой гола: второе нажатие закрывает; открытый в другой строке — останавливаем и убираем
@@ -4479,7 +4479,9 @@ function toggleClip(btn) {
   haptic();
   const full = btn.dataset.full && HTTPS.test(btn.dataset.full)
     ? ` · <button type="button" class="clip-full" data-out="${esc(btn.dataset.full)}">Вся трансляция с этого места</button>` : "";
-  row.insertAdjacentHTML("afterend", `<div class="clip-box"><video src="${esc(btn.dataset.clip)}" poster="${esc(btn.dataset.poster)}" controls playsinline preload="metadata"></video><div class="clip-src">Источник: РХЛ${full}</div></div>`);
+  // окно (ADR-037): секунда гола подтверждена одним свидетелем или примерная — говорим это, а не делаем вид
+  const what = btn.dataset.wide ? "Гол в этом отрезке · Источник: РХЛ" : "Источник: РХЛ";
+  row.insertAdjacentHTML("afterend", `<div class="clip-box"><video src="${esc(btn.dataset.clip)}" poster="${esc(btn.dataset.poster)}" controls playsinline preload="metadata"></video><div class="clip-src">${what}${full}</div></div>`);
   btn.setAttribute("aria-expanded", "true");
   const v = row.nextElementSibling.querySelector("video");
   const p = v.play();
@@ -4489,7 +4491,9 @@ function toggleClip(btn) {
 // «Все голы матча» (ADR-030, раздел 6): клипы голов подряд в одном плеере над списком голов. Кончился клип —
 // следующий; «Дальше» — пропустить. Открыть клип в строке гола — лента закрывается, и наоборот
 function reelClips(g) {
-  return (g.goals || []).filter((x) => x.period !== "РБ" && x.clip && HTTPS.test(x.clip.mp4 || "") && HTTPS.test(x.clip.poster || ""));
+  // лента — только точные клипы по 30 с: окна (ADR-037) идут по две минуты, подряд их не смотрят
+  return (g.goals || []).filter((x) => x.period !== "РБ" && x.clip && x.clip.kind !== "window"
+    && HTTPS.test(x.clip.mp4 || "") && HTTPS.test(x.clip.poster || ""));
 }
 
 function closeClips() {
@@ -4543,7 +4547,9 @@ let reelWanted = null;
 function reelFromLink() {
   if (!reelWanted || recapView.id !== reelWanted) return;
   const btn = document.querySelector(`[data-reel="${CSS.escape(reelWanted)}"]`);
-  const one = !btn && document.querySelectorAll("#recap [data-clip]").length === 1 ? $("#recap [data-clip]") : null;
+  // окна (ADR-037) в ленту не идут: считаем только точные клипы, иначе «Голы матча» из бота не откроют ничего
+  const only = "#recap [data-clip]:not([data-wide])";
+  const one = !btn && document.querySelectorAll(only).length === 1 ? $(only) : null;
   if (!btn && !one) return;   // разбор ещё грузится или клипов пока нет — остаются голы с «Повтором»
   reelWanted = null;
   if (btn) toggleReel(btn, true);

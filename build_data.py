@@ -211,7 +211,8 @@ CLIP_URL = re.compile(r"^https://[^\s\"'<>\\]{4,500}$")
 
 
 def apply_clips(games: list[dict], clips: dict | None) -> int:
-    """Свой клип гола (ADR-030, шаг 6): `clip` у гола протокола — mp4, обложка, длина. Клип садится, только если
+    """Своё видео гола: точный клип 30 с (ADR-030, шаг 6) или окно записи, в котором гол есть (ADR-037, `kind`:
+    `window`) — `clip` у гола протокола: mp4, обложка, длина. Видео садится, только если
     совпали счёт и команда, записанные при нарезке; автор и ассистенты не скрыты по просьбе — иначе клипа нет,
     даже если файл ещё лежит в бакете (служба уберёт его на следующем проходе). Возвращает число голов с клипом."""
     n = 0
@@ -223,7 +224,9 @@ def apply_clips(games: list[dict], clips: dict | None) -> int:
                     or x.get("author") == HIDDEN_NAME or HIDDEN_NAME in (x.get("assists") or [])
                     or not CLIP_URL.match(str(c.get("mp4") or "")) or not CLIP_URL.match(str(c.get("poster") or ""))):
                 continue
-            x["clip"] = {"mp4": c["mp4"], "poster": c["poster"], "dur": c.get("dur")}
+            x["clip"] = {"mp4": c["mp4"], "poster": c["poster"], "dur": c.get("dur"),
+                         # окно повтора (ADR-037): мини-апп подписывает его «Гол в этом отрезке», а не секундой
+                         **({"kind": "window"} if c.get("kind") == "window" else {})}
             n += 1
     return n
 

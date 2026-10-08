@@ -1687,8 +1687,11 @@ def replay_text(day: str, g: dict, entry: dict | None, protocol: list[dict] | No
                          "unknown": "нечем проверить"}.get(c.get("status"), "не проверено"))
         elif x["score"] in anchors:
             note.append("не проверено")
-        if x["score"] in (board.get("clips") or {}):   # клип у болельщиков (ADR-033, раздел 4: два свидетеля)
-            note.append("🎬 клип")
+        made = (board.get("clips") or {}).get(x["score"])
+        if isinstance(made, dict) and made.get("kind") == "window":
+            note.append("🎬 окно")   # у болельщиков окно (ADR-037) — гол всё ещё ждёт второго свидетеля
+        elif made:
+            note.append("🎬 клип")   # клип у болельщиков (ADR-033, раздел 4: два свидетеля)
         if x["score"] in absent:
             mark, note = " — 🚫 нет в записи", []
         elif x["score"] in off and not (r and r.get("exact") and r.get("src") in (None, "admin")):
@@ -3997,8 +4000,10 @@ def my_goals(league: dict | None, stars: list[tuple[int, str, str]], now: dateti
 
 
 def clip_of(x: dict) -> dict | None:
+    """Точный клип гола 30 с. Окно повтора (ADR-037, `kind: window`) не берём: это две минуты записи в 480p, их
+    отметившему не шлют — он получит текст с «Повтором», а клип придёт, когда у гола появится второй свидетель."""
     c = x.get("clip")
-    return c if isinstance(c, dict) and _url(c.get("mp4")) else None
+    return c if isinstance(c, dict) and _url(c.get("mp4")) and c.get("kind") != "window" else None
 
 
 def my_goal_text(g: dict, x: dict) -> str:

@@ -134,6 +134,21 @@ class Step(unittest.TestCase):
         self.assertEqual(self.run_step(tg), 0)   # второй раз тот же гол не шлём
         self.assertIn("1001|n41|0:2", self.reminded["2026-10-04:player"]["sent"])
 
+    def test_window_is_not_a_clip(self):
+        """Ревью PR: окно повтора (ADR-037) — две минуты записи в 480p; видео отметившему уходит только точным
+        клипом. С окном гол ждёт клипа как без видео совсем, а через MY_PLAYER_WAIT уходит текстом с «Повтором»."""
+        tg = mock.Mock()
+        tg.send_video = mock.AsyncMock()
+        tg.send_message = mock.AsyncMock(return_value=mock.Mock(message_id=5))
+        window = {"games": [game(clip=False)]}
+        window["games"][0]["goals"][1]["clip"] = {**CLIP, "kind": "window", "dur": 130.0}
+        self.assertEqual(self.run_step(tg, league=window), 0)   # три часа после начала — ждём клип
+        early = {"games": [game(clip=False, time="09:00")]}     # прошло MY_PLAYER_WAIT — шлём текстом
+        early["games"][0]["goals"][1]["clip"] = {**CLIP, "kind": "window", "dur": 130.0}
+        self.assertEqual(self.run_step(tg, league=early), 1)
+        tg.send_video.assert_not_called()
+        self.assertIn("Иванов Иван", tg.send_message.call_args.args[1])
+
     def test_clip_refused_goes_as_text(self):
         tg = mock.Mock()
         tg.send_video = mock.AsyncMock(side_effect=TelegramBadRequest(mock.Mock(), "failed to get HTTP URL content"))

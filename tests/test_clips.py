@@ -209,9 +209,9 @@ class Pulse(unittest.TestCase):
         marked = {KEY: {"video": "https://vkvideo.ru/video-100_200", "anchors": {"1:2": 4010},
                         "goals": [{"score": "1:2", "t": 4000, "exact": True}]}}
         got = clips.catalog(store, league, marked, date(2026, 10, 5))
-        self.assertEqual(got, {"goals": 3, "timed": 2, "timed_auto": 1, "timed_admin": 1, "clips": 1, "ask": 1,
-                               "no_video": 0, "mismatch": 1, "no_board": 0, "boards": 0, "m_total": 2, "m_full": 1,
-                               "m_none": 1, "g_replay": 3, "run": 0, "two": 0})
+        self.assertEqual(got, {"goals": 3, "timed": 2, "timed_auto": 1, "timed_admin": 1, "clips": 1, "wide": 0,
+                               "ask": 1, "no_video": 0, "mismatch": 1, "no_board": 0, "boards": 0, "m_total": 2,
+                               "m_full": 1, "m_none": 1, "g_replay": 3, "run": 0, "two": 0})
         # rostov — запись клуба, ещё не разобрана: ни одного повтора; 9:9 нет в протоколе
 
     def test_catalog_unmarked_board(self):
@@ -553,6 +553,17 @@ class Cutting(unittest.TestCase):
         self.assertEqual(g["goals"][0]["clip"], {"mp4": url + ".mp4", "poster": url + ".jpg", "dur": 30})
         self.assertNotIn("clip", g["goals"][1])   # скрыт по просьбе
         self.assertNotIn("clip", g["goals"][2])   # клип другой команды — не этот гол
+
+    def test_build_marks_a_window(self):
+        """ADR-037: окно доезжает до мини-аппа с видом — он подпишет его «Гол в этом отрезке»."""
+        g = {"date": "2026-10-04", "home": "tverichi", "away": "metallurg", "goals": [
+            {"period": "1", "score": "0:1", "team": "away", "author": "Иванов", "assists": []}]}
+        url = "https://s3.twcstorage.ru/rhl-clips/clips/x"
+        have = {KEY: {"clips": {"0:1": {"team": "away", "kind": "window", "from": 2480, "len": 125,
+                                        "mp4": url + "w.mp4", "poster": url + "w.jpg", "dur": 125}}}}
+        self.assertEqual(b.apply_clips([g], have), 1)
+        self.assertEqual(g["goals"][0]["clip"], {"mp4": url + "w.mp4", "poster": url + "w.jpg", "dur": 125,
+                                                 "kind": "window"})
 
 
 class Wipe(unittest.TestCase):
@@ -1147,6 +1158,116 @@ class Prepared(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Windows(unittest.TestCase):
+    """ADR-037: повтор у болельщика всегда в приложении — у гола без двух свидетелей своё окно записи."""
+    protocol = {"0:1": {"score": "0:1", "team": "away", "period": "1"},
+                "0:2": {"score": "0:2", "team": "away", "period": "2"}}
+    league = {"games": [{**LEAGUE["games"][0], "goals": list(protocol.values())}]}
+
+    def game(self, **goals):
+        return {"video": VIDEO, "status": "ok", "length": 9000, "goals": goals}
+
+    def test_window_by_scoreboard_change(self):
+        """Секунда примерная — окно по смене счёта: оператор меняет счёт через 0–90 с после гола."""
+        game = self.game(**{"0:1": {"t": None, "change": 2600, "team": "away"}})
+        self.assertEqual(clips.fan_windows(game, None), {"0:1": (2480, 130)})
+        cut, drop = clips.window_plan(game, None, self.protocol)
+        self.assertEqual((cut, drop), ([("0:1", 2480, 130)], []))
+
+    def test_window_by_clock_run(self):
+        game = self.game(**{"0:1": {"t": None, "win": [2600, 2700], "change": 2800, "team": "away"}})
+        self.assertEqual(clips.fan_windows(game, None), {"0:1": (2570, 130)})
+
+    def test_window_around_a_single_witness(self):
+        """Секунда точная, но свидетель один (табло без хода часов) — окно 70 с вокруг неё, а не клип 30 с."""
+        game = self.game(**{"0:1": {"t": 2600, "src": "clock", "change": 2620, "team": "away"}})
+        self.assertEqual(clips.clip_witnesses(game, None), {})
+        self.assertEqual(clips.fan_windows(game, None), {"0:1": (2550, 70)})
+        self.assertEqual(clips.window_plan(game, None, self.protocol)[0], [("0:1", 2550, 70)])
+
+    def test_two_witnesses_get_a_clip_not_a_window(self):
+        game = {**self.game(**{"0:1": {"t": 2600, "src": "clock", "change": 2620, "team": "away"}}),
+                "run": {"confirmed": ["0:1"]}}
+        self.assertIn("0:1", clips.clip_witnesses(game, None))
+        self.assertEqual(clips.window_plan(game, None, self.protocol), ([], []))
+        done = {**game, "clips": {"0:1": {"kind": "window", "from": 2550, "len": 70, "files": ["a.mp4"]}}}
+        self.assertEqual(clips.window_plan(done, None, self.protocol), ([], ["0:1"]))   # окно уступает клипу
+        self.assertEqual(clips.clip_plan(done, None, self.protocol)[1], [])             # и клип его не трогает
+
+    def test_window_waits_for_the_protocol_and_skips_hidden(self):
+        game = self.game(**{"0:1": {"t": None, "change": 2600, "team": "away"}})
+        self.assertEqual(clips.window_plan(game, None, {}), ([], []))   # протокола нет — ни клипа, ни окна
+        hidden = {"0:1": {"score": "0:1", "team": "away", "period": "1", "author": "Игрок скрыт"}}
+        self.assertEqual(clips.window_plan(game, None, hidden), ([], []))
+
+    def test_same_window_is_not_cut_twice(self):
+        game = self.game(**{"0:1": {"t": None, "change": 2600, "team": "away"}})
+        done = {**game, "clips": {"0:1": {"kind": "window", "from": 2480, "len": 130}}}
+        self.assertEqual(clips.window_plan(done, None, self.protocol), ([], []))
+        moved = {**game, "goals": {"0:1": {"t": None, "change": 2700, "team": "away"}},
+                 "clips": {"0:1": {"kind": "window", "from": 2480, "len": 130}}}
+        self.assertEqual(clips.window_plan(moved, None, self.protocol)[0], [("0:1", 2580, 130)])
+
+    def test_review_keeps_windows_safe(self):
+        """Ревью PR: окна нельзя снести ни по пустому протоколу (league.json не скачался), ни у удалённой записи —
+        пересоздать их нечем, а у удалённой записи окно и есть единственный уцелевший повтор."""
+        game = {**self.game(**{"0:1": {"t": None, "change": 2600, "team": "away"}}),
+                "clips": {"0:1": {"kind": "window", "from": 2480, "len": 130, "files": ["a.mp4", "a.jpg"]}}}
+        self.assertEqual(clips.window_plan(game, None, {}), ([], []))          # протокола нет — не трогаем
+        gone = {**game, "status": "gone"}
+        self.assertEqual(clips.window_plan(gone, None, self.protocol), ([], []))
+        bucket = mock.Mock(ok=True)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)), \
+                mock.patch.object(clips, "CUT", True):
+            clips.cut_pass({"games": {KEY: gone}}, self.league, {}, bucket, cut=mock.Mock(), stream=mock.Mock(),
+                           cut_win=mock.Mock())
+        bucket.delete.assert_not_called()
+        self.assertIn("0:1", gone["clips"])
+
+    def test_window_follows_what_the_fan_sees(self):
+        """Ревью PR: окно берём у replay.with_board, а не у табло напрямую — иначе у гола с пометкой «табло
+        сбилось» окно вырезалось бы вокруг отвергнутой смены счёта, в получасе от гола."""
+        game = self.game(**{"0:1": {"t": 1800, "src": "clock", "change": 1820, "team": "away"},
+                            "0:2": {"t": None, "change": 5030, "team": "away"}})
+        admin = {"video": VIDEO, "anchors": {"0:1": 1800}, "wrong": ["0:2"], "goals": []}
+        self.assertNotIn("0:2", clips.fan_windows(game, admin))
+        absent = {"video": VIDEO, "anchors": {}, "absent": ["0:1"], "goals": []}
+        self.assertNotIn("0:1", clips.fan_windows(absent and game, absent))
+
+    def test_pult_does_not_call_a_window_a_clip(self):
+        """Ревью PR: окно у болельщиков не закрывает гол — на пульте он всё ещё ждёт «✅ Гол виден», иначе очередь
+        «Ждут вас» пустеет и второй свидетель не появляется никогда."""
+        game = self.game(**{"0:1": {"t": 2600, "src": "clock", "change": 2620, "team": "away"}})
+        game["clips"] = {"0:1": {"kind": "window", "from": 2550, "len": 70}}
+        game["checks"] = {"0:1": {"t": 2600, "status": "unknown"}}
+        entry = replay.with_board(None, game)
+        got = clips.goal_states(game, None, self.protocol, {"0:1"}, entry, None)
+        self.assertEqual(got, {"0:1": "confirm"})
+        game["clips"] = {"0:1": {"t": 2600, "src": "clock"}}   # точный клип — гол закрыт
+        self.assertEqual(clips.goal_states(game, None, self.protocol, {"0:1"}, entry, None), {"0:1": "clip"})
+
+    def test_pass_cuts_windows_and_marks_them(self):
+        bucket = mock.Mock(ok=True)
+        bucket.put.side_effect = lambda name, body, ct: f"https://s3.twcstorage.ru/rhl-clips/{name}"
+        store = {"games": {KEY: self.game(**{"0:1": {"t": None, "change": 2600, "team": "away"}})}}
+        with tempfile.TemporaryDirectory() as tmp:
+            clip, poster = Path(tmp) / "w.mp4", Path(tmp) / "w.jpg"
+            clip.write_bytes(b"mp4")
+            poster.write_bytes(b"jpg")
+            cut_win = mock.Mock(return_value=(clip, poster, 130.0))
+            stream = mock.Mock(return_value=("src", {}, 9000))
+            with mock.patch.object(clips, "LIVE_DIR", Path(tmp)), mock.patch.object(clips, "WORK", Path(tmp)), \
+                    mock.patch.object(clips.pc, "font_file", return_value="font.ttf"), \
+                    mock.patch.object(clips, "CUT", True):
+                self.assertEqual(clips.cut_pass(store, self.league, {}, bucket, cut=mock.Mock(),
+                                                stream=stream, cut_win=cut_win), 1)
+        got = store["games"][KEY]["clips"]["0:1"]
+        self.assertEqual((got["kind"], got["from"], got["len"], got["team"]), ("window", 2480, 130, "away"))
+        self.assertEqual(cut_win.call_args.args[2:4], (2480, 130))
+        self.assertTrue(got["mp4"].endswith("0-1-2480w.mp4"), got["mp4"])
+        self.assertEqual(clips.catalog(store, self.league, {}, date(2026, 10, 5))["wide"], 1)
 
 
 class Watchdogs(unittest.TestCase):

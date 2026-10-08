@@ -50,8 +50,8 @@ GONE_SHOW = 8       # удалённых записей в тревоге: о к
                     # Не меньше, чем служба их присылает (clips.GONE_MAX): отрезанная причина исчезла бы из тревог
                     # как починенная, а потом пришла бы снова как новая поломка
 # что служба clips считает о каталоге голов (`Tracker.gauge`), плитки пульта — в «Рассылках»
-CLIPS_GAUGES = ("goals", "timed", "timed_auto", "timed_admin", "clips", "ask", "no_video", "mismatch", "no_board",
-                "boards", "m_total", "m_full", "m_none", "g_replay", "run", "two")
+CLIPS_GAUGES = ("goals", "timed", "timed_auto", "timed_admin", "clips", "wide", "ask", "no_video", "mismatch",
+                "no_board", "boards", "m_total", "m_full", "m_none", "g_replay", "run", "two")
 NIGHT_FROM, NIGHT_TO = 2, 7   # с 2:00 до 7:00 МСК сборку не будят (pages_kick.py) — не тревожимся
 
 STATE_WORDS = {"inactive": "остановлена", "failed": "упала", "activating": "запускается",

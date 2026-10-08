@@ -89,6 +89,9 @@ TRIES = 3           # столько раз пробуем матч, котор�
 GONE_TRIES = 2      # столько раз подряд VK должен сказать «записи нет», чтобы считать её удалённой (этап 0.3 плана)
 GONE_MAX = 6        # удалённых записей в пульте и тревогах
 INV_MAX = 5         # сломанных инвариантов прохода в пульте и тревогах (ADR-034): остальные — в журнале службы
+WIDE_BEFORE = 50    # с до секунды с одним свидетелем в окне повтора (ADR-037): отметка ошибается на полминуты
+WIDE_AFTER = 20     # и после
+WIDE_HEIGHT = 480   # окна режем мельче точных клипов: их много, а смотрят их реже
 CLIP_AFTER = 15     # с: клип позже смены счёта на табло — гол не бывает после того, как счёт уже сменился
 CLIP_BEFORE = 180   # с: и не раньше чем за три минуты до смены (оператор меняет счёт через 0–90 с, ADR-031)
 CANARY_EVERY = 20 * 3600   # с: «канарейка» yt-dlp (ADR-034) — раз в сутки, даже когда разбирать нечего
@@ -984,7 +987,8 @@ def clip_plan(game: dict, admin: dict | None, protocol: dict[str, dict]) -> tupl
     Убираем клип скрытого игрока, гол, которого в протоколе нет или он другой команды (лига отменила гол — счета
     сдвинулись), и гол, у которого двух свидетелей больше нет: разбор поправили (05.10 клип 4:0 вырезали на секунде
     гола 1:0) или свидетель возразил — спор, «гола тут нет» (ADR-033: клип снимается сразу)."""
-    have = game.get("clips") or {}
+    # окна повторов (ADR-037) ведёт window_plan — точный клип про них не знает
+    have = {s: c for s, c in (game.get("clips") or {}).items() if (c or {}).get("kind") != "window"}
     cut, drop = [], []
     # два свидетеля (ADR-033, раздел 4); запись клуба — только повтор
     seconds = {s: (t, src) for s, (t, src, _) in clip_witnesses(game, admin).items()} if game.get("src") != "club" else {}
@@ -1000,6 +1004,86 @@ def clip_plan(game: dict, admin: dict | None, protocol: dict[str, dict]) -> tupl
                 or score not in seconds):
             drop.append(score)
     return cut, drop
+
+
+# ---------- окна повторов (ADR-037) ----------
+# Болельщик видит одну кнопку «Повтор», и она всегда играет в приложении. Точную секунду подтвердили двое — клип
+# 30 с; подтвердил один или секунда примерная — окно записи, в котором гол точно есть. Ссылок в VK у повтора нет.
+
+
+def wide_window(t: int, length: float | None = None) -> tuple[int, int]:
+    """Окно вокруг секунды, которой верим не до конца: (начало, длина). Ошибка отметки на полминуты остаётся внутри."""
+    start = max(0, int(t) - WIDE_BEFORE)
+    end = int(t) + WIDE_AFTER
+    if length:
+        end = min(end, int(length))
+    return start, max(1, end - start)
+
+
+def fan_windows(game: dict, admin: dict | None) -> dict[str, tuple[int, int]]:
+    """Окно записи для каждого гола, который видит болельщик (`replay.with_board` — то же, что покажет мини-апп):
+    счёт → (начало, длина). Смена счёта на табло — 125 с (оператор меняет счёт через 0–90 с после гола), окно счёта
+    хода часов — само окно, точная секунда с одним свидетелем и отметка со спором — WIDE секунд вокруг неё."""
+    length = game.get("length")
+    board = game.get("goals") or {}
+    mine = replay.same_video((admin or {}).get("video"), game.get("video"))
+    anchors = ((admin or {}).get("anchors") or {}) if mine else {}
+    out = {}
+    for g in (replay.with_board(admin, game) or {}).get("goals") or []:
+        score = str(g.get("score") or "")
+        if not replay.SCORE_RE.fullmatch(score):
+            continue
+        b = board.get(score) or {}
+        anchor = anchors.get(score)
+        if g.get("exact"):
+            t = anchor if g.get("src") in (None, "admin") else b.get("t")
+            if isinstance(t, (int, float)):
+                out[score] = wide_window(int(t), length)
+        elif isinstance(b.get("win"), list) and len(b["win"]) == 2 and isinstance(b["win"][0], (int, float)):
+            out[score] = cutjobs.run_window(b["win"], length)
+        elif isinstance(b.get("change"), (int, float)):
+            out[score] = cutjobs.change_window(int(b["change"]), length)
+        elif isinstance(anchor, int):   # спор: кроме отметки человека, у гола ничего нет
+            out[score] = wide_window(anchor, length)
+    return out
+
+
+def window_plan(game: dict, admin: dict | None, protocol: dict[str, dict]) -> tuple[list[tuple], list[str]]:
+    """Что резать окнами и какие окна убрать: ([(счёт, начало, длина)], [счёт окна к удалению]). Окна нет у гола,
+    которому положен точный клип (два свидетеля), у скрытого по просьбе игрока и у гола, которого нет в протоколе;
+    окно, которое больше не нужно (появился точный клип, гол отменили, секунда пропала), уходит из бакета."""
+    have = {s: c for s, c in (game.get("clips") or {}).items() if (c or {}).get("kind") == "window"}
+    exact = clip_witnesses(game, admin) if game.get("src") != "club" else {}
+    want = {}
+    if game.get("src") != "club":   # запись клуба — только повтор ссылкой, без своих видео (ADR-030)
+        for score, win in fan_windows(game, admin).items():
+            x = protocol.get(score)
+            if score in exact or not x or hidden_goal(x):
+                continue
+            want[score] = win
+    cut = [(s, *w) for s, w in sorted(want.items())
+           if ((have.get(s) or {}).get("from"), (have.get(s) or {}).get("len")) != w]
+    return cut, [s for s in sorted(have) if s not in want]
+
+
+def cut_window(src: str, headers: dict | None, start: int, span: int, out: Path, score: str,
+               mark: tuple) -> tuple[Path, Path, float]:
+    """Окно записи с голом в mp4 (480p, знак лиги) и обложка из середины окна. Не вышло — исключение."""
+    name = f"{score.replace(':', '-')}-{start}w"
+    clip, poster = out / f"win_{name}.mp4", out / f"win_{name}.jpg"
+    for cmd in (pc.cut_cmd(src, headers, start, span, clip, mark, height=WIDE_HEIGHT),
+                poster_cmd(src, headers, start + span // 2, poster)):
+        run = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        if run.returncode != 0:
+            raise RuntimeError((run.stderr.strip().splitlines() or ["ffmpeg без ошибки"])[-1][:200])
+    return clip, poster, pc.duration(clip) or float(span)
+
+
+def window_names(key: str, score: str, start: int) -> tuple[str, str]:
+    """Имена файлов окна в бакете: начало окна в имени — поменялось окно, появился новый файл."""
+    day, home, away = key.split("|")
+    base = f"clips/{day}/{home}_{away}/{score.replace(':', '-')}-{start}w"
+    return base + ".mp4", base + ".jpg"
 
 
 def clip_names(key: str, score: str, t: int) -> tuple[str, str]:
@@ -1026,10 +1110,10 @@ def cut_goal(src: str, headers: dict | None, t: int, out: Path, score: str, mark
 
 
 def cut_pass(store: dict, league: dict | None, marked: dict, bucket: s3.Store, cut=cut_goal, stream=stream,
-             track: "admin.Tracker | None" = None) -> int:
-    """Нарезка: у каждого разобранного матча — клипы голов с секундой и протоколом, выкладка в бакет, удаление
-    клипов скрытых и отменённых голов. После каждого матча — запись clips.json. Возвращает число новых клипов.
-    Нарезка на паузе (CUT) — ничего: клипов после стирания нет, убирать нечего."""
+             track: "admin.Tracker | None" = None, cut_win=cut_window) -> int:
+    """Нарезка: у каждого разобранного матча — клипы голов с двумя свидетелями и окна остальных повторов (ADR-037),
+    выкладка в бакет, удаление видео скрытых и отменённых голов. После каждого матча — запись clips.json.
+    Возвращает число новых видео. Нарезка на паузе (CUT) — ничего: клипов после стирания нет, убирать нечего."""
     if not bucket.ok or not CUT:
         return 0
     n = 0
@@ -1038,17 +1122,19 @@ def cut_pass(store: dict, league: dict | None, marked: dict, bucket: s3.Store, c
             continue
         protocol = league_goals(league, key)
         todo, drop = clip_plan(game, (marked or {}).get(key), protocol)
-        if not todo and not drop:
+        wins, wdrop = window_plan(game, (marked or {}).get(key), protocol)
+        if not todo and not drop and not wins and not wdrop:
             continue
         clips_ = game.setdefault("clips", {})
-        for score in drop:
+        for score in drop + wdrop:
             for name in clips_.pop(score, {}).get("files") or []:
                 try:
                     bucket.delete(name)
                 except Exception as err:
                     log.warning("%s %s: не удалили %s — %s", key, score, name, err)
-            log.info("%s %s: клип убран (скрыт по просьбе или гола нет в протоколе)", key, score)
-        if todo:
+            log.info("%s %s: видео убрано (точный клип вместо окна, скрытый игрок или гола нет в протоколе)",
+                     key, score)
+        if todo or wins:
             out = WORK / safe_name(key)
             out.mkdir(parents=True, exist_ok=True)
             (out / "mark.txt").write_text(pc.MARK, encoding="utf-8")
@@ -1060,7 +1146,7 @@ def cut_pass(store: dict, league: dict | None, marked: dict, bucket: s3.Store, c
             except Exception as err:   # VK не отдал — в следующий проход (ADR-012)
                 log.warning("%s: поток для клипов не получили — %s: %s", key, type(err).__name__, err)
                 vk_note(track, err)
-                todo = []
+                todo, wins = [], []
             for score, t, how in todo:
                 try:
                     clip, poster, dur = cut(src, headers, t, out, score, mark)
@@ -1083,6 +1169,28 @@ def cut_pass(store: dict, league: dict | None, marked: dict, bucket: s3.Store, c
                     f.unlink(missing_ok=True)
                 n += 1
                 log.info("%s %s: клип %s (%s)", key, score, replay.fmt_t(t), how)
+            for score, start, span in wins:   # окна повторов (ADR-037): гол в приложении и без двух свидетелей
+                try:
+                    clip, poster, dur = cut_win(src, headers, start, span, out, score, mark)
+                    mp4_name, jpg_name = window_names(key, score, start)
+                    mp4 = bucket.put(mp4_name, clip.read_bytes(), "video/mp4")
+                    jpg = bucket.put(jpg_name, poster.read_bytes(), "image/jpeg")
+                except Exception as err:
+                    log.warning("%s %s: окно не вышло — %s: %s", key, score, type(err).__name__, err)
+                    continue
+                for name in (clips_.get(score) or {}).get("files") or []:   # прежнее окно — старые файлы
+                    try:
+                        bucket.delete(name)
+                    except Exception:
+                        pass
+                x = protocol.get(score) or {}
+                clips_[score] = {"kind": "window", "from": start, "len": span, "team": x.get("team"),
+                                 "period": x.get("period"), "mp4": mp4, "poster": jpg, "dur": round(dur, 1),
+                                 "files": [mp4_name, jpg_name], "cut": now_msk().isoformat(timespec="seconds")}
+                for f in (clip, poster):
+                    f.unlink(missing_ok=True)
+                n += 1
+                log.info("%s %s: окно %s, %d с", key, score, replay.fmt_t(start), span)
         store["updated"] = now_msk().isoformat(timespec="seconds")
         write_atomic(LIVE_DIR / "clips.json", store)
         if track is not None:
@@ -1172,7 +1280,7 @@ def catalog(store: dict, league: dict | None, marked: dict, today: date) -> dict
             elif isinstance((board.get(score) or {}).get("ask"), dict) and score not in anchors:
                 out["ask"] += 1
             if score in have:
-                out["clips"] += 1
+                out["wide" if (have.get(score) or {}).get("kind") == "window" else "clips"] += 1
             if seconds.get(score, (0, ""))[1] == "run":
                 out["run"] += 1
             if score in two and score in protocol:   # клип можно резать (ADR-033, раздел 4)

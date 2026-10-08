@@ -35,7 +35,8 @@ import probe_scoreboard as sb  # noqa: E402
 
 OUT = ROOT / "probe" / "record"
 SEGMENT = 10          # с: длина сегмента — столько же, сколько у HLS, и столько же теряем при обрыве
-READ_SEGMENTS = 3     # последних сегментов читаем на табло: 30 с кадр в секунду
+READ_STEP = 2         # с: табло читаем по кадру раз в столько из каждого сегмента — 300 кадров за 10 минут
+FEW_GLYPHS = 3        # картинок цифры в клетке счёта за запись не больше: цифра и следующая после гола (с запасом)
 LIVE_DIR = Path(os.environ.get("LIVE_DIR") or ROOT / "live")
 KEY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\|[a-z0-9-]+\|[a-z0-9-]+$")
 
@@ -76,29 +77,66 @@ def record(src: str, headers: dict | None, out: Path, seconds: int) -> dict:
             "error": (run.stderr.strip().splitlines() or [""])[-1][:200]}
 
 
+def classes(frames: list[bytes], rect, cap: int) -> tuple[int, int]:
+    """Сколько разных картинок цифры в клетке rect: сравнение как у разбора записи лиги (glyph, glyph_diff < SAME),
+    картинка — если держалась хотя бы HOLD кадров (мелькание сжатия — не картинка). И в скольких кадрах картинки нет
+    (клетка без контраста). Больше cap не считаем: это уже не цифра, а часы или фон — и счёт дорогой."""
+    reps: list[list] = []
+    empty = 0
+    for f in frames:
+        g = sb.glyph(f, rect)
+        if g is None:
+            empty += 1
+            continue
+        for r in reps:
+            d = sb.glyph_diff(g, r[0])
+            if d is not None and d < sb.SAME:
+                r[1] += 1
+                break
+        else:
+            if len(reps) > cap:
+                return cap + 1, empty
+            reps.append([g, 1])
+    return sum(1 for r in reps if r[1] >= sb.HOLD), empty
+
+
 def board_check(files: list[Path], club: str) -> dict:
-    """Видно ли табло клуба в своей записи: образец названия хозяев по кадрам последних сегментов (как у разбора
-    записи лиги) и доля кадров, где табло на экране."""
+    """Видно ли табло клуба в своей записи и читаются ли на нём цифры — по всей записи, кадр раз в READ_STEP секунд.
+    Табло на экране — образец названия хозяев (name_model, как у разбора записи лиги). Цифры — разные картинки в
+    клетках счёта среди кадров с табло (classes): за 10 минут их одна-две, а если десятки — клетки не те или цифры
+    прозрачные. Смены счёта за запись — cell_changes, как у разбора. Байты кадров напрямую не сравниваем: от сжатия
+    каждый кадр немного другой (пилот 08.10 на «Ростове» насчитал 28 «разных» картинок счёта в 28 кадрах)."""
     mark = sb.BOARDS.get(club)
     if not mark:
         return {"club": club, "note": "табло клуба не размечено в boards.json — читать нечем"}
-    frames = []
-    for f in files[-READ_SEGMENTS:]:
+    samples: list[tuple[float, bytes]] = []
+    for k, f in enumerate(files):
         try:
-            frames += [raw for _, raw in sb.scan(str(f), None, mark["box"], step=1, keyframes=False)]
+            samples += [(k * SEGMENT + t, raw) for t, raw in sb.scan(str(f), None, mark["box"], step=READ_STEP,
+                                                                       keyframes=False)]
         except subprocess.CalledProcessError as err:
             return {"club": club, "note": f"ffmpeg не прочитал сегмент {f.name}: {err}"}
-    if not frames:
+    if not samples:
         return {"club": club, "note": "кадров нет: сегменты пустые"}
+    frames = [raw for _, raw in samples]
     model = sb.name_model(frames, mark["name"])
     if not model:
         return {"club": club, "frames": len(frames), "note": "название хозяев не нашлось — графика эфира другая"}
-    seen = sum(1 for f in frames if sb.on_screen(f, model))
-    cells = {}
-    for cell in ("home", "away", "clock"):
-        pixels = sb.cell_pixels(mark[cell])
-        cells[cell] = len({bytes(f[p] for p in pixels) for f in frames})
-    return {"club": club, "frames": len(frames), "seen": seen, "share": round(seen / len(frames), 2), "cells": cells}
+    vis = [(t, raw) for t, raw in samples if sb.on_screen(raw, model)]
+    cells = {cell: classes([raw for _, raw in vis], mark[cell], sb.GLYPH_CLASSES) for cell in ("home", "away", "clock")}
+    changes = {cell: len(sb.cell_changes(vis, mark[cell])) for cell in ("home", "away")} if vis else {}
+    return {"club": club, "frames": len(frames), "seen": len(vis), "share": round(len(vis) / len(frames), 2),
+            "cells": cells, "changes": changes}
+
+
+def verdict(board: dict) -> str:
+    if board["share"] < 0.3:
+        return "табло видно редко — сначала проверить разметку клуба на этом эфире"
+    many = [c for c in ("home", "away") if board["cells"][c][0] > FEW_GLYPHS]
+    if many:
+        return (f"табло видно, но цифры счёта ({', '.join(many)}) не различаются — клетки разметки не те или цифры "
+                f"прозрачные: смены пойдут по пикселям, точность хуже. Проверить разметку на кадрах этого эфира")
+    return "табло видно и цифры счёта различаются — шаг 4.2 (служба record) делать можно"
 
 
 def main() -> None:
@@ -106,6 +144,8 @@ def main() -> None:
     ap.add_argument("video", help="ссылка VK на эфир или ключ матча «ГГГГ-ММ-ДД|хозяева|гости»")
     ap.add_argument("--minutes", type=int, default=10, help="сколько минут писать (по умолчанию 10)")
     ap.add_argument("--club", help="чьё табло читать; по умолчанию — хозяева из ключа матча")
+    ap.add_argument("--height", type=int, default=480,
+                    help="качество записи, строк: 480 — как у разбора записи лиги, 720 — как для клипов (ADR-038)")
     args = ap.parse_args()
 
     key = args.video if KEY_RE.match(args.video) else None
@@ -114,9 +154,10 @@ def main() -> None:
         sys.exit(f"У матча {key} нет ссылки «Смотреть»: лига ещё не объявила эфир. Дай ссылку VK прямо.")
     club = args.club or (key.split("|")[1] if key else None)
     name = (key or video).replace("|", "_").replace("/", "_").replace(":", "")[-60:]
-    print(f"Эфир: {video}\nПишем {args.minutes} мин в probe/record/{name}/")
+    print(f"Эфир: {video}\nПишем {args.minutes} мин, до {args.height}p, в probe/record/{name}/")
 
-    src, headers, length = sb.stream_of(video, sb.FORMAT)
+    fmt = sb.FORMAT if args.height == 480 else f"b[height<={args.height}]/b"
+    src, headers, length = sb.stream_of(video, fmt)
     print(f"Поток получен{'' if length is None else f', длительность {length} с (это не эфир, а готовая запись)'}")
 
     got = record(src, headers, OUT / name, args.minutes * 60)
@@ -133,14 +174,19 @@ def main() -> None:
 
     if club:
         board = board_check(got["files"], club)
-        print(f"\nТАБЛО ({board['club']}):", board.get("note") or
-              f"кадров {board['frames']}, табло видно в {board['seen']} ({int(board['share'] * 100)}%), "
-              f"разных картинок в клетках: счёт хозяев {board['cells']['home']}, гостей {board['cells']['away']}, "
-              f"часы {board['cells']['clock']}")
-        if board.get("share"):
-            print("Вердикт: табло читается из своей записи — шаг 4.2 (служба record) делать можно"
-                  if board["share"] >= 0.3 else
-                  "Вердикт: табло видно редко — сначала проверить разметку клуба на этом эфире")
+        if board.get("note"):
+            print(f"\nТАБЛО ({board['club']}): {board['note']}")
+        else:
+            def cell(c: str) -> str:
+                n, empty = board["cells"][c]
+                return f"{'больше ' + str(sb.GLYPH_CLASSES) if n > sb.GLYPH_CLASSES else n}" + (f" (без цифры {empty})" if empty else "")
+            print(f"\nТАБЛО ({board['club']}): кадр раз в {READ_STEP} с по всей записи — {board['frames']}, табло видно "
+                  f"в {board['seen']} ({int(board['share'] * 100)}%)")
+            print(f"Картинок цифры: счёт хозяев {cell('home')}, гостей {cell('away')}, часы {cell('clock')} "
+                  f"(за 10 минут у счёта ждём 1–2, у часов — много)")
+            print(f"Смен счёта за запись: хозяева {board['changes'].get('home', 0)}, гости {board['changes'].get('away', 0)} "
+                  f"— сверь с тем, были ли голы за эти минуты")
+            print(f"Вердикт: {verdict(board)}")
     else:
         print("\nТабло не читали: клуб не задан (--club)")
     print(f"\nСегменты: {OUT / name} — после замера можно удалить: rm -rf {OUT / name}")

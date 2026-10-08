@@ -36,7 +36,7 @@ BEAT_STALE = timedelta(minutes=3)
 PAGES_STALE = timedelta(minutes=90)
 LEAGUE_STALE = timedelta(hours=2)
 SOURCE_ERRORS = 3
-BLOCKED_HOURS = 6   # live.BLOCKED_PAUSE: admin только stdlib и live не импортирует
+BLOCKED_HOURS = 6   # пауза источника после 403 (была у онлайна КХЛ в live до 08.10): admin только stdlib
 UNBLOCK = {"online.khl.ru": "письмо на access_deny@khl.ru"}   # адрес — со страницы 403 онлайна КХЛ
 DISK_LOW = 1 << 30
 CLIPS_STALE = timedelta(hours=1)   # служба clips пишет пульс после каждого матча и прохода (ADR-030, раздел 7)

@@ -313,34 +313,37 @@ class FakeSite:
         return self.pages[url]
 
 
-def pages(**over) -> dict[str, str]:
+REAL = "https://rhl.fhr.ru"
+
+
+def real_pages(**over) -> dict[str, str]:
+    """Настоящие страницы сайта лиги 03.10.2026: календарь, идущий и сыгранный матчи."""
     p = {
-        ko.DAY_URL: fixture("khl_online_day_synthetic.html"),
-        ko.match_url(905001): fixture("khl_online_match_vhl_synthetic.html"),
-        ko.match_url(904950): match_page(5, "Протон-Кристалл", "Матч не начался"),
-        ko.match_url(904951): match_page(6, "Ростов-Краснодар", "Матч окончен", "4:2"),
-        ko.match_url(904952): fixture("khl_online_match_rhl_synthetic.html"),
-        ko.match_url(904953): match_page(7, "Тамбов-Дизелист", "Матч окончен", "3:4 ОТ"),
-        ko.match_url(904954): match_page(8, "Самара-Сокол", "1-й период", "1:0"),
-        f"{SITE}/calendar/": fixture("rhl_calendar_synthetic.html"),
-        f"{SITE}/calendar/2001/": fixture("rhl_calendar_synthetic.html"),
+        f"{REAL}/calendar/": fixture("rhl_calendar_2026_10_03.html"),
+        f"{REAL}/matchcenter/1432/905111/": fixture("rhl_match_905111_live.html"),
+        f"{REAL}/matchcenter/1432/905112/": fixture("rhl_match_905111_live.html").replace(">2:0<", ">0:0<", 1),
+        f"{REAL}/matchcenter/1432/905113/": fixture("rhl_match_905113_final.html"),
     }
     p.update(over)
     return {k: v for k, v in p.items() if v is not None}
 
 
 class Service(unittest.TestCase):
+    """Служба по сайту лиги. Онлайн КХЛ с 08.10 не спрашиваем (ADR-019, дополнение 08.10)."""
+
+    LIVE = "2026-10-03|ryazan-vdv|belgorod"
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
-        self.now = [msk("2026-10-03T16:10:00")]
-        self.site = FakeSite(pages())
+        self.now = [msk("2026-10-03T17:51:00")]
+        self.site = FakeSite(real_pages())
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def make(self, site: str | None = SITE) -> live.Live:
-        return live.Live(self.dir, TEAMS, self.site, clock=lambda: self.now[0], site=site)
+    def make(self) -> live.Live:
+        return live.Live(self.dir, TEAMS, self.site, clock=lambda: self.now[0], site=REAL)
 
     def run_step(self, lv: live.Live, force: bool = False) -> bool:
         return asyncio.run(lv.step(force=force))
@@ -351,118 +354,52 @@ class Service(unittest.TestCase):
     def today(self) -> dict[str, dict]:
         return {g["key"]: g for g in self.read("today.json")["games"]}
 
-    def test_rhl_games_of_the_day(self):
-        self.run_step(self.make())
-        games = self.today()
-        self.assertEqual(sorted(games), ["2026-10-03|ermak|fakel-yamal", "2026-10-03|proton|kristall",
-                                         "2026-10-03|rostov|krasnodar", "2026-10-03|ryazan-vdv|belgorod",
-                                         "2026-10-03|samara|sokol", "2026-10-03|tambov|dizelist"])
-        g = games["2026-10-03|ryazan-vdv|belgorod"]
-        self.assertEqual((g["status"], g["period"], g["clock"], g["time"]), ("live", "2", "12:34", "15:00"))
-        self.assertEqual(g["start"], "2026-10-03T15:00:00+03:00")
-        self.assertEqual(g["score"], {"home": 2, "away": 1, "decision": None})
-        self.assertEqual((g["online"], g["khl_id"], g["src"]), ("https://online.khl.ru/online/904952.html", 904952, "online.khl.ru"))
-        self.assertEqual(len(g["events"]), 7)
-        self.assertEqual(games["2026-10-03|proton|kristall"]["status"], "soon")       # 17:00, меньше часа
-        self.assertIsNone(games["2026-10-03|proton|kristall"]["score"])
-        self.assertEqual(games["2026-10-03|tambov|dizelist"]["score"]["decision"], "ОТ")
-        cal = games["2026-10-03|ermak|fakel-yamal"]   # только в календаре сайта лиги
-        # Календарь даёт местное время арены: Ангарск — МСК+5, 17:00 там — 12:00 по Москве. Начало было
-        # больше трёх часов назад, живых данных нет — статуса нет: не выдумываем
-        self.assertEqual((cal["time"], cal["src"], cal["khl_id"], cal["status"]), ("12:00", "rhl.example", 904960, None))
-
-    def test_vhl_ryazan_is_not_rhl(self):
-        self.run_step(self.make())
-        self.assertFalse(any("ryazan-vdv" in k and "belgorod" not in k for k in self.today()))
-        ids = self.read("khl_ids.json")
-        self.assertEqual((ids["905001"]["league"], ids["905001"]["rhl"]), ("ВХЛ", False))
-        self.assertTrue(ids["904952"]["rhl"])
-        self.assertNotIn(ko.match_url(905100), self.site.asked)   # «ЦСКА — Спартак»: команд РХЛ нет, не спрашиваем
-
-    def test_league_cached_forever(self):
-        self.run_step(self.make())
-        self.site.asked.clear()
-        self.now[0] += timedelta(seconds=31)
-        lv = self.make()   # и после перезапуска: кэш в live/khl_ids.json
-        self.run_step(lv)
-        self.assertNotIn(ko.match_url(905001), self.site.asked)
-        self.assertNotIn(ko.match_url(904950), self.site.asked)   # 17:00 — ещё не окно матча
-        self.assertIn(ko.match_url(904952), self.site.asked)      # идёт — страница раз в 30 секунд
-        self.assertIn(ko.match_url(904954), self.site.asked)
-
-    def test_protocol_link_for_ended(self):
-        self.run_step(self.make())
-        games = self.today()
-        self.assertIsNone(games["2026-10-03|ryazan-vdv|belgorod"]["protocol"])   # ещё идёт
-        # «Ростов — Краснодар» окончен, но его idgame нет в календаре — турнир неизвестен
-        self.assertIsNone(games["2026-10-03|rostov|krasnodar"]["protocol"])
-        self.site.pages[ko.match_url(904952)] = match_page(12, "Рязань-ВДВ-Белгород", "Матч окончен", "4:1")
-        self.now[0] += timedelta(seconds=31)
-        lv = self.make()
-        self.run_step(lv)
-        g = self.today()["2026-10-03|ryazan-vdv|belgorod"]
-        self.assertEqual(g["status"], "ended")
-        self.assertEqual(g["protocol"], f"{SITE}/report/2001/?idgame=904952")
-        self.assertEqual(len(g["events"]), 7)   # лента не пропадает, когда страница её больше не отдаёт
+    def test_online_khl_is_not_asked(self):
+        (self.dir / "sources.json").write_text(json.dumps({"online.khl.ru": {
+            "ok": None, "fail": "2026-10-03T17:00:00+03:00", "errors": 3, "games": 0, "note": "403",
+            "blocked": "2026-10-03T23:00:00+03:00"}}), encoding="utf-8")
+        self.run_step(self.make(), force=True)
+        self.assertFalse(any("online.khl.ru" in u for u in self.site.asked))
+        self.assertEqual(set(self.read("sources.json")), {"rhl.fhr.ru"})   # старая строка «закрыл доступ» ушла
+        self.assertTrue(all(g["src"] == "rhl.fhr.ru" for g in self.today().values()))
 
     def test_schedule(self):
         self.run_step(self.make())
         sched = {g["key"]: g for g in self.read("schedule.json")["games"]}
-        tomorrow = sched["2026-10-04|ryazan-vdv|tambov"]
-        self.assertEqual((tomorrow["time"], tomorrow["start"], tomorrow["khl_id"], tomorrow["src"]),
-                         ("16:00", "2026-10-04T16:00:00+03:00", 904961, "rhl.example"))
-        self.assertEqual(sched["2026-10-03|proton|kristall"]["src"], "online.khl.ru")
-        self.assertEqual(sched["2026-10-03|ryazan-vdv|belgorod"]["src"], "online.khl.ru")   # онлайн старше календаря
-        self.assertFalse(any("proton" in k and k.startswith("2026-10-04") for k in sched))   # «Тайфун СПб» не сопоставлен
-        self.assertIn("Тайфун СПб", self.read("sources.json")["rhl.example"]["note"])
-
-    def test_tomorrow_list(self):
-        tomorrow = ("<html><head><title>Хоккей. Хоккей. Список онлайн трансляций матчей Октябрь 04, 2026</title></head>"
-                    "<body><div><a href='/online/906000.html'>Протон — Кристалл</a> 16:00</div></body></html>")
-        page = match_page(30, "Протон-Кристалл", "Матч не начался").replace("03 окт", "04 окт")
-        self.site = FakeSite(pages(**{f"{ko.DAY_URL}?d=2026-10-04": tomorrow, ko.match_url(906000): page}))
-        lv = live.Live(self.dir, TEAMS, self.site, clock=lambda: self.now[0], site=None,
-                       tomorrow_url=ko.DAY_URL + "?d={date}")
-        self.run_step(lv)
-        sched = {g["key"]: g for g in self.read("schedule.json")["games"]}
-        self.assertEqual(sched["2026-10-04|proton|kristall"]["start"], "2026-10-04T16:00:00+03:00")
-        # по тому же адресу отдали сегодняшний список — завтрашним его не считаем
-        self.site.pages[f"{ko.DAY_URL}?d=2026-10-04"] = fixture("khl_online_day_synthetic.html")
-        lv.last_tomorrow = None
-        self.run_step(lv)
-        self.assertIn("не узнан", self.read("sources.json")["online.khl.ru"]["note"])
+        tomorrow = sched["2026-10-04|ryazan-vdv|belgorod"]
+        self.assertEqual((tomorrow["time"], tomorrow["start"], tomorrow["khl_id"], tomorrow["tournament"], tomorrow["src"]),
+                         ("17:00", "2026-10-04T17:00:00+03:00", 905116, 1432, "rhl.fhr.ru"))
+        self.assertEqual(tomorrow["online"], f"{REAL}/matchcenter/1432/905116/live/")
+        self.assertEqual(sched[self.LIVE]["src"], "rhl.fhr.ru")
 
     def test_stale_live_has_no_minute(self):
         lv = self.make()
         self.run_step(lv)
-        g = lv.games["2026-10-03|ryazan-vdv|belgorod"]
+        g = lv.games[self.LIVE]
         later = lv.render(g, self.now[0] + timedelta(minutes=6))
         self.assertEqual((later["status"], later["period"], later["clock"]), ("live", None, None))
-        self.assertEqual(later["score"], {"home": 2, "away": 1, "decision": None})   # последний счёт остаётся
+        self.assertEqual(later["score"], {"home": 2, "away": 0, "decision": None})   # последний счёт остаётся
 
     def test_one_source_down(self):
-        self.site = FakeSite(pages(**{f"{SITE}/calendar/": None}))
+        self.site = FakeSite(real_pages(**{f"{REAL}/calendar/": None}))
         self.run_step(self.make())
-        src = self.read("sources.json")
-        self.assertEqual(src["rhl.example"]["errors"], 1)
-        self.assertIsNotNone(src["rhl.example"]["fail"])
-        self.assertEqual(src["online.khl.ru"]["errors"], 0)
-        self.assertEqual(src["online.khl.ru"]["games"], 5)
-        self.assertIn("2026-10-03|samara|sokol", self.today())
+        src = self.read("sources.json")["rhl.fhr.ru"]
+        self.assertEqual(src["errors"], 1)
+        self.assertIsNotNone(src["fail"])
+        self.assertEqual(self.today(), {})
 
     def test_page_errors_counted(self):
-        self.site = FakeSite(pages(**{ko.match_url(904954): None}))
+        self.site = FakeSite(real_pages(**{f"{REAL}/matchcenter/1432/905112/": None}))
         self.run_step(self.make())
-        self.now[0] += timedelta(seconds=31)
-        lv = self.make()
-        self.run_step(lv)
-        self.assertGreaterEqual(self.read("sources.json")["online.khl.ru"]["errors"], 1)
+        self.assertIsNotNone(self.read("sources.json")["rhl.fhr.ru"]["fail"])   # отказ страницы виден на пульте
+        self.assertEqual(self.today()[self.LIVE]["status"], "live")              # остальные матчи идут как шли
 
     def test_restart_keeps_state(self):
         self.run_step(self.make())
         lv = self.make()
-        g = lv.render(lv.games["2026-10-03|tambov|dizelist"], self.now[0])
-        self.assertEqual((g["status"], g["score"]["decision"]), ("ended", "ОТ"))
+        g = lv.render(lv.games[self.LIVE], self.now[0])
+        self.assertEqual((g["status"], g["period"], g["score"]["home"]), ("live", "2", 2))
+        self.assertEqual(g["online"], f"{REAL}/matchcenter/1432/905111/live/")
 
     def test_night_is_quiet(self):
         self.now[0] = msk("2026-10-04T03:00:00")
@@ -474,11 +411,15 @@ class Service(unittest.TestCase):
         self.assertEqual(lv.next_delay(self.now[0]), 120.0)
 
     def test_poll_intervals(self):
+        self.now[0] = msk("2026-10-03T10:00:00")
         lv = self.make()
-        self.assertEqual(lv.list_every(self.now[0]), live.LIST_SLOW)   # матчей нет — раз в 10 минут
+        self.assertEqual(lv.calendar_every(self.now[0]), live.CALENDAR_EVERY)   # матчей нет — раз в 6 часов
         self.run_step(lv)
-        self.assertEqual(lv.list_every(self.now[0]), live.LIST_FAST)   # идёт матч РХЛ — раз в 30 секунд
-        self.assertLessEqual(lv.next_delay(self.now[0]), 30.0)
+        self.assertLessEqual(lv.next_delay(self.now[0]), live.IDLE_WAKE.total_seconds())   # окно матча не проспим
+        self.now[0] = msk("2026-10-03T17:51:00")
+        self.run_step(lv)
+        self.assertEqual(lv.calendar_every(self.now[0]), live.SITE_EVERY)       # идёт матч — календарь чаще
+        self.assertLessEqual(lv.next_delay(self.now[0]), 30.0)                 # и страница матча раз в 30 секунд
 
     def test_files_follow_adr_019(self):
         self.run_step(self.make())
@@ -489,6 +430,7 @@ class Service(unittest.TestCase):
         self.assertEqual(day, self.read("today.json"))
         self.assertEqual(set(day), {"date", "updated", "games"})
         self.assertRegex(day["updated"], iso_msk)
+        self.assertTrue(day["games"])
         for g in day["games"]:
             self.assertLessEqual(set(g), allowed)
             self.assertEqual(g["key"], f"{g['date']}|{g['home']}|{g['away']}")
@@ -509,12 +451,46 @@ class Service(unittest.TestCase):
                     self.assertRegex(g[f], iso_msk)
         sched = self.read("schedule.json")
         self.assertEqual(set(sched), {"updated", "games"})
+        self.assertTrue(sched["games"])
         for g in sched["games"]:
             self.assertLessEqual(set(g), {"key", "date", "home", "away", "start", "time", "online", "khl_id", "tournament", "src"})
             self.assertGreaterEqual(g["date"], "2026-10-03")
             self.assertLess(g["date"], "2026-10-17")
         for name, s in self.read("sources.json").items():
             self.assertEqual(set(s), {"ok", "fail", "errors", "games", "note"}, name)
+
+
+class OldEngineCalendar(unittest.TestCase):
+    """Календарь старого движка сайта лиги (league.py): местное время арены, без матч-центра."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.now = msk("2026-10-03T16:10:00")
+        self.site = FakeSite({f"{SITE}/calendar/": fixture("rhl_calendar_synthetic.html"),
+                              f"{SITE}/calendar/2001/": fixture("rhl_calendar_synthetic.html")})
+        self.lv = live.Live(self.dir, TEAMS, self.site, clock=lambda: self.now, site=SITE)
+        asyncio.run(self.lv.step())
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def read(self, name: str) -> dict:
+        return json.loads((self.dir / name).read_text(encoding="utf-8"))
+
+    def test_local_time_and_schedule(self):
+        games = {g["key"]: g for g in self.read("today.json")["games"]}
+        cal = games["2026-10-03|ermak|fakel-yamal"]
+        # Календарь даёт местное время арены: Ангарск — МСК+5, 17:00 там — 12:00 по Москве. Начало было
+        # больше трёх часов назад, живых данных нет — статуса нет: не выдумываем
+        self.assertEqual((cal["time"], cal["src"], cal["khl_id"], cal["status"]), ("12:00", "rhl.example", 904960, None))
+        sched = {g["key"]: g for g in self.read("schedule.json")["games"]}
+        tomorrow = sched["2026-10-04|ryazan-vdv|tambov"]
+        self.assertEqual((tomorrow["time"], tomorrow["start"], tomorrow["khl_id"], tomorrow["src"]),
+                         ("16:00", "2026-10-04T16:00:00+03:00", 904961, "rhl.example"))
+        self.assertFalse(any("proton" in k and k.startswith("2026-10-04") for k in sched))   # «Тайфун СПб» не сопоставлен
+        self.assertIn("Тайфун СПб", self.read("sources.json")["rhl.example"]["note"])
+        self.assertFalse(any("matchcenter" in u for u in self.site.asked))   # без матч-центра страницы не спрашиваем
 
 
 class Statuses(unittest.TestCase):
@@ -587,26 +563,6 @@ class LeagueSite(unittest.TestCase):
         r = games["2026-10-03|rostov|krasnodar"]
         self.assertEqual((r["status"], r["score"]["home"], r["score"]["away"], r["time"]), ("ended", 0, 6, "13:00"))
         self.assertEqual(r["protocol"], "https://rhl.fhr.ru/matchcenter/1432/905113/protocol/")
-
-    def test_online_403_pauses_for_six_hours(self):
-        async def blocked(url):
-            if "online.khl.ru" in url:
-                raise ConnectionError("403, message='Forbidden'")
-            return await self.site(url)
-        self.lv.fetch = blocked
-        asyncio.run(self.lv.step(force=True))
-        self.assertTrue(self.lv.online_blocked(self.now[0]))
-        src = json.loads((self.dir / "sources.json").read_text(encoding="utf-8"))["online.khl.ru"]
-        self.assertIn("не спрашиваем до 03.10 23:51", src["note"])
-        self.assertEqual(src["blocked"], "2026-10-03T23:51:00+03:00")   # пульт: «закрыл доступ», не «сломался»
-        self.now[0] = msk("2026-10-03T18:55:00")
-        self.assertTrue(self.lv.online_blocked(self.now[0]))           # блок частыми попытками не снять
-        self.lv = live.Live(self.dir, TEAMS, self.site, clock=lambda: self.now[0], site="https://rhl.fhr.ru")
-        self.assertTrue(self.lv.online_blocked(self.now[0]))           # и после перезапуска службы
-        self.now[0] = msk("2026-10-03T23:52:00")
-        self.assertFalse(self.lv.online_blocked(self.now[0]))
-        self.lv.ok("online.khl.ru", 1)                                  # открыли — блок с пульта уходит
-        self.assertNotIn("blocked", self.lv.sources["online.khl.ru"])
 
 
 class SiteEvents(unittest.TestCase):

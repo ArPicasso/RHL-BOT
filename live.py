@@ -1,9 +1,10 @@
-"""Служба live: опрос сайта РХЛ и онлайна КХЛ → live/*.json (ADR-019, разделы 4–5).
+"""Служба live: опрос сайта РХЛ → live/*.json (ADR-019, разделы 4–5).
 
-Главный источник с 03.10.2026 — сайт лиги rhl.fhr.ru (rhl_site.py): календарь с временем МСК и лента
+Источник с 03.10.2026 — сайт лиги rhl.fhr.ru (rhl_site.py): календарь с временем МСК и лента
 дней со счётом, а у идущего матча — страница матч-центра со счётом и периодом. Лента событий матча —
-по смене счёта и периода между опросами страницы (site_events). Онлайн КХЛ ботам отвечает 403 даже
-с российского IP; после 403 служба не спрашивает его шесть часов.
+по смене счёта и периода между опросами страницы (site_events). Онлайн КХЛ с 03.10 отвечает серверу 403,
+с 08.10 служба его не спрашивает (ADR-019, дополнение 08.10); khl_online.py остался для сопоставления
+названий команд.
 
     python live.py                                   служба: опрашивает, пока не придёт SIGTERM
     python live.py --once                            один проход и выход
@@ -37,11 +38,9 @@ BASE = Path(__file__).parent
 TZ = ZoneInfo("Europe/Moscow")
 LIVE_DIR = BASE / "live"
 LEAGUE_SITE = "https://rhl.fhr.ru"
-SRC_ONLINE = "online.khl.ru"
+SRC_ONLINE = "online.khl.ru"   # больше не опрашиваем: его старую строку стираем из live/sources.json
 
 DAY_START, DAY_END = time(8, 0), time(1, 0)   # опрос с 08:00 до 01:00 МСК (ADR-019, раздел 4)
-LIST_SLOW = timedelta(minutes=10)              # список дня, когда матчей РХЛ в окне нет
-LIST_FAST = timedelta(seconds=30)              # и когда есть
 PAGE_EVERY = timedelta(seconds=30)             # страница идущего матча
 CALENDAR_EVERY = timedelta(hours=6)            # календарь сайта лиги
 WINDOW_BEFORE = timedelta(minutes=15)          # окно матча: за 15 минут до начала — окончен
@@ -49,11 +48,9 @@ GAME_MAX = timedelta(hours=4)                  # дольше матч не ид
 ENDED_HOLD = timedelta(minutes=15)             # «окончен» перепроверяем: бот ждёт 10 минут подряд (раздел 8)
 SOON = timedelta(hours=1)
 STALE = timedelta(minutes=5)                   # живое без обновления дольше — без минуты (ADR-012)
-LIST_OVER_PAGE = timedelta(seconds=90)         # список свежее страницы на столько — верим списку
+LIST_OVER_PAGE = timedelta(seconds=90)         # лента календаря свежее страницы на столько — верим ленте
+IDLE_WAKE = timedelta(minutes=10)              # без дел просыпаемся хотя бы так: заметить окно матча
 SCHEDULE_DAYS = 14
-TITLE_RETRY = timedelta(hours=1)               # заголовок страницы не разобрался — спросим снова через час
-BLOCKED_PAUSE = timedelta(hours=6)             # онлайн ответил 403 — шесть часов его не спрашиваем: блок
-                                                # «за вредоносную активность» частыми попытками не снять
 SITE_EVERY = timedelta(minutes=10)             # календарь сайта лиги, когда идёт или скоро матч
 # Предположение до проверки probe-командой: календарь сайта лиги, как и протокол (ADR-001), даёт местное
 # время арены. Переводим по поясу хозяев `tz` из teams.json; пояса нет — считаем московским.
@@ -120,7 +117,7 @@ def _norm_text(text: str) -> str:
 
 
 def team_names(teams: build_data.Teams) -> list[str]:
-    """Написания команд РХЛ (нормализованные), длинные первыми."""
+    """Написания команд РХЛ (нормализованные), длинные первыми. Для tools/probe_sources.py."""
     return sorted({n for n in [*teams.by_name, *teams.by_former] if len(n) >= 4}, key=len, reverse=True)
 
 
@@ -204,31 +201,24 @@ def with_authors(events: list[dict], goals: dict | None, hidden: set[int] = froz
 
 
 class Live:
-    """Состояние службы: матчи дня, календарь, кэш лиг по номеру онлайна, здоровье источников.
+    """Состояние службы: матчи дня, календарь, здоровье источников.
 
     fetch — корутина url → текст страницы (в службе — Fetcher, в тестах — словарь), clock — «сейчас»."""
 
-    def __init__(self, out_dir: Path, teams: build_data.Teams, fetch, clock=now_msk, site: str | None = LEAGUE_SITE,
-                 tomorrow_url: str | None = None):
+    def __init__(self, out_dir: Path, teams: build_data.Teams, fetch, clock=now_msk, site: str | None = LEAGUE_SITE):
         self.out, self.teams, self.fetch, self.clock = Path(out_dir), teams, fetch, clock
         self.site = (site or "").rstrip("/")
         self.site_src = urlparse(self.site).netloc or self.site
-        self.tomorrow_url = tomorrow_url
         self.tz = {t["id"]: t.get("tz") for t in teams.all}
-        self.names = team_names(teams)
-        self.khl_ids: dict[str, dict] = read_json(self.out / "khl_ids.json", {})
         self.games: dict[str, dict] = {}      # ключ матча → внутреннее состояние
         self.calendar: dict[str, dict] = {}   # ключ → матч из календаря сайта лиги
-        self.tours: dict[int, int] = {}       # idgame → id турнира: для ссылки на протокол
-        self.title_retry: dict[int, datetime] = {}
         self.warned: set[str] = set()
         self.notes: dict[str, list[str]] = {}
-        self.last_list = self.last_tomorrow = self.last_cal = None
+        self.last_cal = None
         self.last_page: dict[str, datetime] = {}
         self.written: dict[str, str] = {}
         self.sources: dict[str, dict] = read_json(self.out / "sources.json", {})
-        # онлайн КХЛ ответил 403: до этого времени не спрашиваем — и после перезапуска службы (выкладки)
-        self.blocked_until: datetime | None = parse_iso(self.sources.get(SRC_ONLINE, {}).get("blocked"))
+        self.sources.pop(SRC_ONLINE, None)    # строка онлайна КХЛ с «закрыл доступ» — иначе пульт тревожит зря
         self.site_starts: dict[int, datetime | None] = {}   # id матча сайта → начало, со страницы матч-центра
         self.hidden = build_data.load_hidden()   # авторы голов, которых не показываем (ADR-007)
         self.restore()
@@ -241,19 +231,11 @@ class Live:
     def ok(self, name: str, games: int, note: str = "") -> None:
         s = self._src(name)
         s.update(ok=iso(self.clock()), errors=0, games=games, note=note)
-        s.pop("blocked", None)
 
     def fail(self, name: str, err) -> None:
         s = self._src(name)
         s.update(fail=iso(self.clock()), errors=s.get("errors", 0) + 1, note=str(err)[:300])
-        if name == SRC_ONLINE and "403" in str(err):
-            self.blocked_until = self.clock() + BLOCKED_PAUSE
-            s["note"] = f"{s['note']} — не спрашиваем до {self.blocked_until:%d.%m %H:%M}"
-            s["blocked"] = iso(self.blocked_until)   # пульт: «закрыл доступ», а не «сломался» (ADR-021)
         logging.warning("%s: %s", name, err)
-
-    def online_blocked(self, now: datetime) -> bool:
-        return self.blocked_until is not None and now < self.blocked_until
 
     def warn_once(self, src: str, text: str) -> None:
         self.notes.setdefault(src, []).append(text)
@@ -269,14 +251,11 @@ class Live:
                                            "start_src": None, "khl_id": None, "list": None, "page": None,
                                            "ended_at": None, "cal_seen": None, "site_t": None})
 
-    def team_ids(self, home_raw: str | None, away_raw: str | None, pair: str | None = None):
-        home, away = khl_online.match_teams(self.teams, home_raw, away_raw)
-        if (not home or not away) and pair:
-            home, away = khl_online.match_teams(self.teams, *khl_online.split_pair(pair, self.teams))
-        return home, away
+    def team_ids(self, home_raw: str | None, away_raw: str | None):
+        return khl_online.match_teams(self.teams, home_raw, away_raw)
 
     def page_state(self, g: dict) -> dict | None:
-        """Что знаем о ходе матча: страница матча, а если список заметно свежее — список."""
+        """Что знаем о ходе матча: страница матча, а если лента календаря заметно свежее — лента."""
         page, lst = g.get("page"), g.get("list")
         if lst and lst.get("status") and (not page or not page.get("status")
                                           or lst["seen"] - page["seen"] > LIST_OVER_PAGE):
@@ -302,7 +281,7 @@ class Live:
         return start is not None and start - WINDOW_BEFORE <= now
 
     def needs_page(self, g: dict, now: datetime) -> bool:
-        if not g.get("khl_id") or g["date"] < (now.date() - timedelta(days=1)).isoformat():
+        if not (g.get("site_t") and g.get("khl_id")) or g["date"] < (now.date() - timedelta(days=1)).isoformat():
             return False
         if self.status(g, now) == "ended":
             return bool(g.get("ended_at")) and now - g["ended_at"] < ENDED_HOLD
@@ -311,35 +290,7 @@ class Live:
     def active(self, now: datetime) -> bool:
         return any(self.in_window(g, now) for g in self.games.values())
 
-    # ---------- онлайн КХЛ ----------
-
-    def maybe_rhl(self, item: dict) -> bool:
-        """Стоит ли спрашивать страницу матча: в блоке есть название команды РХЛ или названий не видно.
-        «ЦСКА — Спартак» не спрашиваем; «Молот — Рязань-ВДВ» спросим один раз — лига запомнится."""
-        if mentions_team(self.names, item.get("text") or ""):
-            return True
-        return not (item.get("home") and item.get("away"))
-
-    async def league_of(self, item: dict, now: datetime) -> tuple[dict | None, dict | None]:
-        """Лига матча по заголовку его страницы, с кэшем навсегда в live/khl_ids.json."""
-        kid = item["khl_id"]
-        if (info := self.khl_ids.get(str(kid))) is not None:
-            return info, None
-        if not self.maybe_rhl(item) or self.title_retry.get(kid, now) > now:
-            return None, None
-        html = await self.fetch(khl_online.match_url(kid))
-        parsed = khl_online.parse_match(html, self.teams, kid)
-        title = parsed.get("title")
-        if not title:
-            self.title_retry[kid] = now + TITLE_RETRY
-            self.warn_once(SRC_ONLINE, f"заголовок страницы {kid} не разобран")
-            return None, None
-        info = {k: title.get(k) for k in ("league", "stage", "n", "date", "home", "away", "pair")}
-        info["rhl"] = khl_online.is_rhl(title.get("league"))
-        self.khl_ids[str(kid)] = info
-        write_json(self.out / "khl_ids.json", self.khl_ids)
-        logging.info("онлайн %s: %s, %s", kid, info["league"], info["pair"])
-        return info, parsed
+    # ---------- страница матча ----------
 
     def apply_page(self, g: dict, parsed: dict, seen: datetime) -> None:
         page = {"seen": seen, **{k: parsed[k] for k in ("status", "period", "clock", "score") if k in parsed}}
@@ -353,51 +304,9 @@ class Live:
             g["ended_at"] = None
         g["page"] = page
 
-    async def poll_list(self, url: str, now: datetime, expect: date | None = None) -> None:
-        self.notes[SRC_ONLINE] = []
-        html = await self.fetch(url)
-        day = khl_online.parse_day_date(html)
-        if expect is not None and day != expect:
-            raise ValueError(f"список на {expect} не узнан: на странице {day}")
-        day = day or now.date()
-        items = khl_online.parse_day_list(html, self.teams)
-        found = 0
-        for item in items:
-            info, parsed = await self.league_of(item, now)
-            if not info or not info.get("rhl"):
-                continue
-            home, away = self.team_ids(info.get("home"), info.get("away"), info.get("pair"))
-            if not home or not away:
-                self.warn_once(SRC_ONLINE, f"не сопоставлено: {info.get('pair')} ({item['khl_id']})")
-                continue
-            seen = self.clock()
-            g = self.game(info.get("date") or day.isoformat(), home, away)
-            g["khl_id"] = item["khl_id"]
-            started = self.status(g, now) in ("live", "break", "ended") or item.get("status") in ("live", "break", "ended")
-            if item.get("time") and not (started and g.get("start_src") == SRC_ONLINE):
-                h, m = map(int, item["time"].split(":"))
-                g["start"] = datetime.combine(date.fromisoformat(g["date"]), time(h, m), tzinfo=TZ)
-                g["start_src"] = SRC_ONLINE
-            g["list"] = {"seen": seen, "status": item.get("status"), "score": item.get("score")}
-            if parsed:
-                self.apply_page(g, parsed, seen)
-                self.last_page[g["key"]] = seen
-            found += 1
-        note = "; ".join(self.notes.get(SRC_ONLINE, [])) or ("" if items else "в списке дня нет ссылок на матчи")
-        self.ok(SRC_ONLINE, found, note)
-
     async def poll_page(self, g: dict) -> None:
         self.last_page[g["key"]] = self.clock()   # и при ошибке: следующая попытка — через PAGE_EVERY
-        if g.get("site_t"):
-            return await self.poll_site_page(g)
-        html = await self.fetch(khl_online.match_url(g["khl_id"]))
-        parsed = khl_online.parse_match(html, self.teams, g["khl_id"])
-        seen = self.clock()
-        if not parsed.get("status") and not parsed.get("title"):
-            raise ValueError(f"страница матча {g['khl_id']} не разобрана")
-        if not parsed.get("status"):
-            self.warn_once(SRC_ONLINE, f"на странице {g['khl_id']} не найден статус матча")
-        self.apply_page(g, parsed, seen)
+        await self.poll_site_page(g)
 
     # ---------- сайт лиги: rhl.fhr.ru (rhl_site.py) ----------
 
@@ -468,7 +377,6 @@ class Live:
                 continue
             start = start.astimezone(TZ)
             key = f"{start.date().isoformat()}|{home}|{away}"
-            self.tours[r["id"]] = r["t"]
             fresh[key] = {"key": key, "date": start.date().isoformat(), "home": home, "away": away, "start": start,
                           "khl_id": r["id"], "t": r["t"], "seen": seen,
                           "feed": self.site_state(r.get("status"), r.get("score"), None, seen)}
@@ -502,8 +410,6 @@ class Live:
         tour = regular[0] if regular else None
         if tour is not None:
             html = await self.fetch(f"{self.site}/calendar/{tour}/")
-            for gid in league.parse_game_ids(html, tour):
-                self.tours[gid] = tour
         rows = league.parse_calendar_times(html, tour)
         if not rows and tour is None:
             raise ValueError("календарь не узнан: нет списка турниров и матчей")
@@ -514,8 +420,6 @@ class Live:
                 self.warn_once(self.site_src, f"не сопоставлено: {row['home']} — {row['away']} {row['date']}")
                 continue
             key = f"{row['date']}|{home}|{away}"
-            if row.get("idgame") and tour is not None:
-                self.tours[row["idgame"]] = tour
             fresh[key] = {"key": key, "date": row["date"], "home": home, "away": away,
                           "start": self.calendar_start(row, home), "khl_id": row.get("idgame"), "seen": seen}
         self.calendar = fresh
@@ -524,13 +428,13 @@ class Live:
         self.ok(self.site_src, len(fresh), note or f"турнир {tour}, со временем {timed}")
 
     def merge_calendar(self, now: datetime) -> None:
-        """Сегодняшние и завтрашние матчи календаря — в матчи дня: время, если онлайн его не дал."""
+        """Сегодняшние и завтрашние матчи календаря — в матчи дня."""
         days = {(now.date() + timedelta(days=i)).isoformat() for i in (0, 1)}
         for c in self.calendar.values():
             if c["date"] not in days:
                 continue
             g = self.game(c["date"], c["home"], c["away"])
-            if c["start"] and g.get("start_src") != SRC_ONLINE:
+            if c["start"]:
                 g["start"], g["start_src"] = c["start"], self.site_src
             g["khl_id"] = g.get("khl_id") or c.get("khl_id")
             g["cal_seen"] = c["seen"] or g.get("cal_seen")
@@ -541,9 +445,6 @@ class Live:
                 g["list"] = feed
 
     # ---------- проход ----------
-
-    def list_every(self, now: datetime) -> timedelta:
-        return LIST_FAST if self.active(now) else LIST_SLOW
 
     def calendar_every(self, now: datetime) -> timedelta:
         """Календарь сайта лиги: раз в 6 часов, а в игровой день, пока идёт или скоро матч, — чаще:
@@ -572,21 +473,10 @@ class Live:
             self.last_cal = now
             await self.guarded(self.site_src, self.poll_calendar(now))
         self.merge_calendar(now)
-        if (force or self.due(self.last_list, self.list_every(now), now)) and not self.online_blocked(now):
-            self.last_list = now
-            await self.guarded(SRC_ONLINE, self.poll_list(khl_online.DAY_URL, now))
-        if self.tomorrow_url and not self.online_blocked(now) and (force or self.due(self.last_tomorrow, LIST_SLOW, now)):
-            self.last_tomorrow = now
-            tomorrow = now.date() + timedelta(days=1)
-            url = self.tomorrow_url.format(date=tomorrow.isoformat(), dmy=tomorrow.strftime("%d.%m.%Y"))
-            await self.guarded(SRC_ONLINE, self.poll_list(url, now, expect=tomorrow))
         for g in sorted(self.games.values(), key=lambda g: g["key"]):
             now = self.clock()
             if self.needs_page(g, now) and self.due(self.last_page.get(g["key"]), PAGE_EVERY, now):
-                if g.get("site_t"):
-                    await self.guarded(self.site_src, self.poll_page(g))
-                elif not self.online_blocked(now):
-                    await self.guarded(SRC_ONLINE, self.poll_page(g))
+                await self.guarded(self.site_src, self.poll_page(g))
         self.write(self.clock())
         return True
 
@@ -595,7 +485,7 @@ class Live:
         if quiet(now) and not self.active(now):
             wake = datetime.combine(now.date(), DAY_START, tzinfo=TZ)
             return max(1.0, min((wake - now).total_seconds(), 900.0))
-        waits = [(self.last_list + self.list_every(now) - now) if self.last_list else timedelta(0)]
+        waits = [IDLE_WAKE]
         if self.site:
             waits.append((self.last_cal + self.calendar_every(now) - now) if self.last_cal else timedelta(0))
         for g in self.games.values():
@@ -625,11 +515,8 @@ class Live:
         site_t = g.get("site_t")
         if status == "ended" and site_t and self.site:
             protocol = self.site_url(site_t, g["khl_id"], "protocol/")
-        elif status == "ended" and g.get("khl_id") in self.tours and self.site:
-            protocol = f"{self.site}/report/{self.tours[g['khl_id']]}/?idgame={g['khl_id']}"
         live_parts = [x for x in (g.get("page"), g.get("list")) if x and x.get("seen")]
         seen = [x["seen"] for x in live_parts]
-        online = any(x.get("src") != "site" for x in live_parts)
         seen = max(seen) if seen else g.get("cal_seen")
         return {"key": g["key"], "date": g["date"], "home": g["home"], "away": g["away"],
                 "start": iso(start), "time": start.strftime("%H:%M") if start else None,
@@ -640,7 +527,7 @@ class Live:
                            else khl_online.match_url(g["khl_id"]) if g.get("khl_id") else None),
                 "khl_id": g.get("khl_id"), "tournament": site_t,
                 "protocol": protocol, "seen": iso(seen),
-                "src": SRC_ONLINE if online else (self.site_src if (g.get("cal_seen") or live_parts) else None)}
+                "src": self.site_src if (g.get("cal_seen") or live_parts) else None}
 
     def day(self, d: str, now: datetime) -> dict:
         games = [self.render(g, now) for g in self.games.values() if g["date"] == d]
@@ -657,16 +544,6 @@ class Live:
                                  "online": (self.site_url(c["t"], c["khl_id"], "live/") if c.get("t")
                                             else khl_online.match_url(c["khl_id"]) if c.get("khl_id") else None),
                                  "khl_id": c.get("khl_id"), "tournament": c.get("t"), "src": self.site_src}
-        for g in self.games.values():
-            if not (first <= g["date"] <= last) or g.get("start_src") != SRC_ONLINE and not g.get("list"):
-                continue
-            row = out.setdefault(g["key"], {"key": g["key"], "date": g["date"], "home": g["home"], "away": g["away"],
-                                            "start": None, "time": None, "online": None, "khl_id": None})
-            if g.get("start") and (g.get("start_src") == SRC_ONLINE or not row["start"]):
-                row.update(start=iso(g["start"]), time=g["start"].strftime("%H:%M"))
-            if g.get("khl_id"):
-                row.update(online=khl_online.match_url(g["khl_id"]), khl_id=g["khl_id"])
-            row["src"] = SRC_ONLINE
         games = sorted(out.values(), key=lambda x: (x["date"], x["start"] or "~", x["key"]))
         return {"updated": iso(now), "games": games}
 
@@ -684,8 +561,8 @@ class Live:
             if d == today:
                 write_json(self.out / "today.json", data)
         write_json(self.out / "schedule.json", self.schedule(now))
-        for name in (SRC_ONLINE, self.site_src) if self.site else (SRC_ONLINE,):
-            self._src(name)
+        if self.site:
+            self._src(self.site_src)
         write_json(self.out / "sources.json", self.sources)
 
     def restore(self) -> None:
@@ -701,15 +578,9 @@ class Live:
                 g["khl_id"] = x.get("khl_id")
                 g["site_t"] = x.get("tournament")
                 seen = parse_iso(x.get("seen"))
-                if x.get("src") == SRC_ONLINE and seen:
-                    g["list"] = {"seen": seen, "status": None, "score": None}
-                elif seen:
+                if seen:
                     g["cal_seen"] = seen
-                if x.get("src") == SRC_ONLINE and seen and x.get("status") in LIVE_STATUSES:
-                    g["page"] = {"seen": seen, "status": x["status"], "period": x.get("period"),
-                                 "clock": x.get("clock"), "score": x.get("score"), "events": x.get("events") or []}
-                    g["ended_at"] = seen if x["status"] == "ended" else None
-                elif x.get("src") == self.site_src and seen and x.get("status") in LIVE_STATUSES:
+                if x.get("src") == self.site_src and seen and x.get("status") in LIVE_STATUSES:
                     # сайт лиги: последний счёт — точка отсчёта голов, лента событий — не пропадает
                     events = x.get("events") or []
                     g["page"] = {"seen": seen, "status": x["status"], "period": x.get("period"), "clock": None,
@@ -749,18 +620,18 @@ def session() -> aiohttp.ClientSession:
                                  trust_env=True)
 
 
-async def serve(out_dir: Path, site: str, clock, once: bool, tomorrow_url: str | None) -> None:
+async def serve(out_dir: Path, site: str, clock, once: bool) -> None:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, stop.set)
     async with session() as s:
-        live = Live(out_dir, build_data.load_teams(), Fetcher(s).get, clock, site=site, tomorrow_url=tomorrow_url)
+        live = Live(out_dir, build_data.load_teams(), Fetcher(s).get, clock, site=site)
         if once:
             await live.step(force=True)
             return
-        logging.info("live: опрос онлайна и %s → %s", site or "без сайта лиги", out_dir)
+        logging.info("live: опрос %s → %s", site or "без сайта лиги", out_dir)
         while not stop.is_set():
             task = asyncio.create_task(live.step())
             waiter = asyncio.create_task(stop.wait())
@@ -782,15 +653,12 @@ async def serve(out_dir: Path, site: str, clock, once: bool, tomorrow_url: str |
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    ap = argparse.ArgumentParser(description="Служба live: онлайн КХЛ и календарь сайта РХЛ → live/*.json (ADR-019)")
+    ap = argparse.ArgumentParser(description="Служба live: календарь и матч-центр сайта РХЛ → live/*.json (ADR-019)")
     ap.add_argument("--once", action="store_true", help="один проход и выход, без ночной тишины")
     ap.add_argument("--now", type=datetime.fromisoformat, help="«сейчас» с поясом, например 2026-10-03T16:50+03:00")
     ap.add_argument("--dir", type=Path, default=LIVE_DIR, help=f"каталог вывода, по умолчанию {LIVE_DIR}")
     ap.add_argument("--site", default=os.environ.get("LEAGUE_SITE") or LEAGUE_SITE,
                     help="сайт лиги для календаря (переменная LEAGUE_SITE); пусто — без календаря")
-    ap.add_argument("--tomorrow-url", default=os.environ.get("ONLINE_TOMORROW_URL") or None,
-                    help="адрес списка онлайна на завтра с {date} (2026-10-04) или {dmy} (04.10.2026), "
-                         "если probe его нашёл (переменная ONLINE_TOMORROW_URL)")
     args = ap.parse_args()
     if args.now and args.now.tzinfo is None:
         ap.error("--now нужен с поясом: 2026-10-03T16:50+03:00")
@@ -798,7 +666,7 @@ def main() -> None:
 
     def clock() -> datetime:
         return datetime.now(TZ) + shift
-    asyncio.run(serve(args.dir, args.site, clock, args.once, args.tomorrow_url))
+    asyncio.run(serve(args.dir, args.site, clock, args.once))
 
 
 if __name__ == "__main__":

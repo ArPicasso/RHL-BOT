@@ -146,17 +146,19 @@ def plan(key: str, score: str, marked: dict | None, board: dict | None, protocol
 
 
 def shifted(p: dict, steps: int) -> dict | None:
-    """План, сдвинутый на steps окон поиска раньше (−) или позже (+): пульт листает запись вокруг примерного места или
-    оценки — как «⏪ / ⏩» под видео в боте. Точную секунду и спор не листаем. Дальше записи — None."""
-    if not steps or p["kind"] not in ("approx", "search"):
+    """План, сдвинутый на steps окон раньше (−) или позже (+) — как «⏪ / ⏩» под видео в боте: у примерного места и
+    поиска шаг — окно поиска (3 минуты), у точной секунды первый шаг — 2 минуты до или после 30 с гола (там «⏪ / ⏩» —
+    ещё и «гола тут нет», ADR-033, раздел 4), дальше — тоже по 3 минуты. Спор не листаем. Дальше записи — None."""
+    if not steps or p["kind"] not in ("approx", "search", "exact"):
         return p
     s, n, _ = p["windows"][0]
-    for _ in range(abs(steps)):
-        w = cutjobs.neighbour(s, n, -1 if steps < 0 else 1, p.get("length"))
+    for i in range(abs(steps)):
+        span = cutjobs.STEP_EXACT if p["kind"] == "exact" and i == 0 else cutjobs.SEARCH
+        w = cutjobs.neighbour(s, n, -1 if steps < 0 else 1, p.get("length"), span)
         if not w:
             return None
         s, n = w
-    what = f"на {cutjobs.SEARCH * abs(steps) // 60} мин {'раньше' if steps < 0 else 'позже'}"
+    what = f"{'раньше' if steps < 0 else 'позже'}: {replay.fmt_clock(s)}–{replay.fmt_clock(s + n)} записи"
     return {**p, "kind": "search", "windows": [(s, n, what)], "cand": []}
 
 

@@ -1482,7 +1482,7 @@ HISTORY_MAX = 6    # строк истории у гола в /replay
 REVOKE_MAX = 3     # кнопок «Отозвать» у гола: последние действующие отметки
 ROLE_WORD = {"admin": "админ", "helper": "помощник", "import": "до журнала"}
 VIA_WORD = {"replay": "/replay", "preview": "превью", "video": "видео", "confirm": "клип",
-            "import": "перенесено, не проверено"}
+            "import": "перенесено, не проверено", "panel": "пульт"}
 KIND_WORD = {"absent": "🚫 нет в записи", "wrong": "⚠️ табло сбилось", "confirm": "✅ гол виден",
              "reject": "❌ гола тут нет"}
 
@@ -1533,6 +1533,30 @@ def marks_apply(key: str, g: dict, now: datetime, protocol: list[dict] | None = 
     data["updated"] = admin.iso(now)
     write_atomic(REPLAYS_FILE, data)
     return entry
+
+
+async def marks_sync_step(now: datetime) -> int:
+    """Отметки из пульта (ADR-036, раздел 5): журнал пишут бот и API, а live/replays.json — только бот. Раз в минуту
+    матчи, у которых в журнале появились строки новее последней пересборки (`applied`), пересобираются. Свои отметки
+    бот пересобирает сразу — повторная сборка ничего не меняет. Сколько матчей пересобрано."""
+    store = goal_marks()
+    last = store.last_id()   # до выборки: строка, дописанная между ними, попадёт в следующий проход
+    was = store.meta("applied")
+    keys = store.changed_since(int(was)) if was is not None and was.isdigit() else []
+    league = await published_league() if keys else None
+    n = 0
+    for key in keys:   # один сломанный матч не держит остальные: его ошибка — в журнале службы
+        g = live_by_key(key)
+        if not g:
+            logging.warning("журнал отметок: матча %s нет в файле службы live — повторы не пересобраны", key)
+            continue
+        try:
+            marks_apply(key, g, now, protocol_of(league, g))
+            n += 1
+        except Exception:
+            logging.exception("журнал отметок: повторы матча %s не пересобрались", key)
+    store.set_meta("applied", str(last))
+    return n
 
 
 def mark_word(r: dict) -> str:
@@ -4179,6 +4203,10 @@ async def status_loop(bot: Bot):
             await dispute_step(bot, now)
         except Exception:
             logging.exception("dispute step failed")
+        try:
+            await marks_sync_step(now)   # отметки из пульта → replays.json (ADR-036, раздел 5)
+        except Exception:
+            logging.exception("marks sync step failed")
         await asyncio.sleep(STATUS_EVERY)
 
 

@@ -12,8 +12,10 @@
 
 Что сейчас действует у матча (`resolve`): ролик — тот, к которому относится последняя отметка; у гола — последняя
 неотменённая отметка этого ролика: время или «нет в записи»; «табло сбилось» — пометки этого ролика. Из этого бот
-собирает live/replays.json в прежнем формате (ADR-027): сборка, API и служба clips читают его, как раньше. Пишет журнал
-только бот; отметки из replays.json, сделанные до журнала, переносятся в него один раз (`import_replays`, кто — неизвестен).
+собирает live/replays.json в прежнем формате (ADR-027): сборка, API и служба clips читают его, как раньше. Пишут журнал
+бот и API (пульт, ADR-036, раздел 5): replays.json — по-прежнему только бот, раз в минуту он пересобирает матчи, у
+которых в журнале появились строки новее `applied` (`changed_since`). Отметки из replays.json, сделанные до журнала,
+переносятся в него один раз (`import_replays`, кто — неизвестен).
 
 Только stdlib, без сети.
 """
@@ -181,6 +183,22 @@ class MarksStore:
         for r in rows:
             self.add(now, match, r["score"], "revoke", role=role, via=via, who=who, target=r["id"])
         return len(rows)
+
+    def last_id(self) -> int:
+        return self.conn.execute("SELECT coalesce(max(id), 0) FROM goal_marks").fetchone()[0]
+
+    def changed_since(self, mark_id: int) -> list[str]:
+        """Матчи, у которых в журнале есть строки новее mark_id: их replays.json бот пересобирает (ADR-036, раздел 5)."""
+        return [r[0] for r in self.conn.execute(
+            "SELECT DISTINCT match FROM goal_marks WHERE id > ? ORDER BY match", (int(mark_id),))]
+
+    def meta(self, key: str) -> str | None:
+        row = self.conn.execute("SELECT value FROM goal_marks_meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.conn.execute("INSERT INTO goal_marks_meta (key, value) VALUES (?, ?) "
+                          "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value))
 
     def forget(self, who: int) -> int:
         """Стереть Telegram id отметившего во всех строках: остаётся роль. Сколько строк."""

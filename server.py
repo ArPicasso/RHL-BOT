@@ -14,6 +14,8 @@ ADR-019 (раздел 3), ADR-020 (раздел 3), docs/raskat/contract.md (р�
                              ADMIN_IDS и помощники PREVIEW_IDS, только чтение
     /api/admin/goal/video    видео гола для карточки «Голов»: план окон (goalplan.py) и задания службы cuts — те же,
                              что у бота; /api/admin/cut/<id> — готово ли, /api/admin/cut/<id>.mp4 — файл по подписи
+    /api/admin/goal/mark     отметка гола из пульта — строка журнала marks.py (ADR-036, раздел 5): «Гол здесь», ✅,
+                             «гола тут нет», 🚫, ⚠️; /api/admin/goal/revoke — «Отозвать». Вход не старше часа
     /api/agent/status        то же для агента разбора (Claude Code): пульт и status/*.json, только чтение,
                              по токену AGENT_TOKEN (ADR-030, дополнение 06.10, ночь)
 
@@ -43,6 +45,7 @@ from aiohttp import ClientSession, ClientTimeout, web
 import admin
 import cutjobs
 import goalplan
+import marks
 import myplayer
 import replay
 import predict
@@ -61,6 +64,9 @@ MAX_MS = 24 * 3600 * 1000
 TOP = 50                        # длина таблицы дня
 MATCH_KEY = re.compile(r"\d{4}-\d{2}-\d{2}\|[a-z0-9-]{1,40}\|[a-z0-9-]{1,40}")   # «<дата>|<хозяева>|<гости>»
 SHIFT_MAX = 20                  # окон поиска в одну сторону: 3 минуты × 20 — час записи
+MARK_TTL = 3600                 # отметку из пульта пишем по входу не старше часа (ADR-036, раздел 5), читаем — сутки
+MARK_KINDS = ("time", "confirm", "reject", "absent", "wrong")
+HISTORY_SHOW = 8                # строк истории гола в карточке
 
 # Полночь. Раскат, начатый до полуночи, досылается ещё 5 минут. Новый день появляется на Pages
 # прогоном в 00:05 (а GitHub запускает его с опозданием), и пока его нет, мини-апп честно
@@ -258,6 +264,7 @@ class Api:
         self.adm: admin.AdminStore | None = None
         self.mp: myplayer.MyPlayerStore | None = None
         self.cuts: cutjobs.CutJobs | None = None
+        self.marks: marks.MarksStore | None = None
         teams = json.loads(self.cfg.teams_file.read_text(encoding="utf-8"))
         self.teams = {t["id"]: t["name"] for t in teams}
         # Сверка соли (контракт, раздел 3): None — ещё не сверяли, True — сошлось или не с чем
@@ -283,6 +290,7 @@ class Api:
         self.adm = admin.AdminStore(self.conn)
         self.mp = myplayer.MyPlayerStore(self.conn)
         self.cuts = cutjobs.CutJobs(self.conn, self.cfg.media_root)
+        self.marks = marks.MarksStore(self.conn)   # второй писатель журнала после бота (ADR-036, раздел 5)
         if self._fetch is None:
             self.session = ClientSession(timeout=ClientTimeout(total=15),
                                          headers={"User-Agent": "rhl-u21-api"})
@@ -853,15 +861,26 @@ class Api:
                             "в ADMIN_IDS на сервере.")
         return user
 
-    def goals_user(self, request) -> str:
-        """Вкладка «Голы»: админы и помощники, которые и так отвечают на превью (ADR-036, раздел 4). → роль."""
+    def goals_user(self, request, fresh: bool = False) -> str:
+        """Вкладка «Голы»: админы и помощники, которые и так отвечают на превью (ADR-036, раздел 4). → роль.
+        fresh — для отметок: вход не старше MARK_TTL (раздел 5), иначе забытый открытым пульт пишет от чужих рук."""
+        return self.goals_who(request, fresh)[1]
+
+    def goals_who(self, request, fresh: bool = False) -> tuple[int, str]:
         user = self.user(request)
         if user["id"] in self.cfg.admins:
-            return "admin"
-        if user["id"] in self.cfg.helpers:
-            return "helper"
-        raise Fail(403, f"«Голы» — для админов и помощников. Твой Telegram id {user['id']} — его вписывают "
-                        "в ADMIN_IDS или PREVIEW_IDS на сервере.")
+            role = "admin"
+        elif user["id"] in self.cfg.helpers:
+            role = "helper"
+        else:
+            raise Fail(403, f"«Голы» — для админов и помощников. Твой Telegram id {user['id']} — его вписывают "
+                            "в ADMIN_IDS или PREVIEW_IDS на сервере.")
+        if fresh:
+            data = dict(parse_qsl(request.headers.get("Authorization", "").partition(" ")[2].strip()))
+            if self.now().timestamp() - int(data.get("auth_date") or 0) > MARK_TTL:
+                raise Fail(401, "Пульт открыт больше часа назад: закрой его и открой снова из бота — тогда отметка "
+                                "запишется.")
+        return user["id"], role
 
     async def admin_goals(self, request):
         role = self.goals_user(request)
@@ -894,13 +913,105 @@ class Api:
         if moved is None:
             raise Fail(404, "Дальше записи нет.")
         jobs = goalplan.jobs_for(self.cuts, moved, self.now())
-        # kind и shift — того, что показано; base — что известно о голе (у сдвинутого — к чему возвращаться)
+        uid = self.user(request)["id"]
+        # kind и shift — того, что показано; base — что известно о голе (у сдвинутого — к чему возвращаться);
+        # own — точная секунда — отметка этого же человека: его «✅» не второй свидетель (marks.own_confirm)
+        last = self.last_place(key, score)
+        own = (plan["kind"] == "dispute" or plan["kind"] == "exact" and plan.get("src") == "admin") \
+            and self.mine(last, plan.get("t"), uid)
         return reply({"kind": moved["kind"], "base": plan["kind"], "shift": shift if moved is not plan else 0,
+                      "own": own, "history": self.goal_history(key, score, uid),
                       "src": plan.get("src"), "t": plan.get("t"),
                       "tb": plan.get("tb"), "why": plan.get("why") or "", "cand": moved.get("cand") or [],
                       "length": moved.get("length"),
                       "windows": [{"start": w[0], "len": w[1], "what": w[2], "job": j}
                                   for w, j in zip(moved["windows"], jobs)]})
+
+    def last_place(self, key: str, score: str) -> dict | None:
+        """Действующая отметка места гола: последнее время или «нет в записи» (marks.resolve берёт её же)."""
+        return next((r for r in reversed(marks.active(self.marks.of(key), score)) if r["kind"] in ("time", "absent")),
+                    None)
+
+    @staticmethod
+    def mine(last: dict | None, sec, uid: int) -> bool:
+        """«✅ Гол виден» этого человека на этой секунде — не второй свидетель: секунду поставил он сам или неизвестно
+        кто (перенос до журнала, /marks_forget). Правило то же, что у marks.resolve (own_confirm): такой ✅ журнал всё
+        равно не засчитает."""
+        return bool(last) and last["kind"] == "time" and isinstance(sec, int) \
+            and marks.own_confirm(last.get("sec"), last.get("who"), sec, uid)
+
+    def goal_history(self, key: str, score: str, uid: int) -> list[dict]:
+        """История отметок гола для карточки: что, когда, чья роль, откуда, отозвана ли и можно ли отозвать. Чужих id
+        нет — только «моя» ли отметка."""
+        rows = self.marks.of(key)
+        off = marks.revoked(rows)
+        admin_ = uid in self.cfg.admins
+        out = []
+        for r in [r for r in rows if r["score"] == score and r["kind"] != "revoke"][-HISTORY_SHOW:]:
+            mine = r.get("who") == uid
+            out.append({"id": r["id"], "at": r["at"], "kind": r["kind"], "sec": r.get("sec"), "role": r["role"],
+                        "via": r["via"], "mine": mine, "revoked": r["id"] in off,
+                        "can_revoke": r["id"] not in off and (admin_ or mine)})
+        return out
+
+    async def goal_mark(self, request):
+        """Отметка гола из пульта (ADR-036, раздел 5) — та же строка журнала, что из бота по видео (`video_save`,
+        `replay_mark`): ролик и окно — из задания службы cuts, которое человек смотрел, в `seen` — окно и выбор.
+        replays.json пересоберёт бот в течение минуты: файл по-прежнему пишет только он."""
+        uid, role = self.goals_who(request, fresh=True)
+        data = await self.body(request)
+        key, score, kind, sec = data.get("key"), data.get("score"), data.get("kind"), data.get("sec")
+        if not (isinstance(key, str) and MATCH_KEY.fullmatch(key) and isinstance(score, str)
+                and replay.SCORE_RE.fullmatch(score) and kind in MARK_KINDS):
+            raise Fail(400, "Не понял, какой гол и что отметить.")
+        try:
+            job = self.cuts.get(int(data.get("job")))
+        except (TypeError, ValueError):
+            job = None
+        if not job or job.get("match") != key:
+            raise Fail(400, "Отметка — по видео этого гола: открой гол заново.")
+        day = self.live_file(key[:10]) or {}
+        if not any(predict.key_of(g) == key for g in day.get("games") or [] if isinstance(g, dict)):
+            # повторы бот считает от матча службы live (marks_apply): без него отметке некуда лечь — как в боте
+            raise Fail(409, "Этого матча нет у службы live — отметку некуда применить. Напиши в бот /replay.")
+        cur = (self.marks.state(key) or {}).get("video")
+        if cur and not replay.same_video(cur, job["video"]):   # как other_video в боте
+            raise Fail(409, "Это видео из прежней записи матча — открой гол заново.")
+        timed = kind in ("time", "confirm", "reject")
+        if timed and not (isinstance(sec, int) and not isinstance(sec, bool)
+                          and job["start"] <= sec <= job["start"] + job["len"] + 5):
+            raise Fail(400, "Секунда — вне этого видео. Открой гол заново.")
+        if kind == "confirm":
+            if self.mine(self.last_place(key, score), sec, uid):
+                raise Fail(409, "Эту секунду отметил ты (или неизвестно кто — до журнала): «✅» на ней не второй "
+                                "свидетель. Подтверждает её кто-то другой.")
+        game = (await self.league()).get(key)
+        p = next((x for x in goalplan.protocol_of(game) or [] if x.get("score") == score), {})
+        seen = {"job": job["id"], "from": job["start"], "len": job["len"]}
+        if timed:
+            seen["pick"] = sec - job["start"]
+        mid = self.marks.add(self.now(), key, score, kind, role=role, via="panel", who=uid, video=job["video"],
+                             sec=sec if timed else None, period=p.get("period"), time=p.get("time"), seen=seen)
+        return reply({"id": mid, "history": self.goal_history(key, score, uid),
+                      "note": "Записано. Повтор и статус гола обновятся в течение минуты."})
+
+    async def goal_revoke(self, request):
+        """«Отозвать» отметку гола: строка `revoke` журнала (ADR-033). Админ — любую, помощник — свою."""
+        uid, role = self.goals_who(request, fresh=True)
+        data = await self.body(request)
+        key = data.get("key")
+        try:
+            mark = self.marks.get(int(data.get("id")))
+        except (TypeError, ValueError):
+            mark = None
+        if not mark or mark["match"] != key or mark["kind"] == "revoke":
+            raise Fail(404, "Такой отметки у гола нет.")
+        if role != "admin" and mark.get("who") != uid:
+            raise Fail(403, "Помощник отзывает только свои отметки.")
+        if self.marks.revoke(self.now(), mark["id"], role=role, via="panel", who=uid) is None:
+            raise Fail(409, "Эта отметка уже отозвана.")
+        return reply({"history": self.goal_history(key, mark["score"], uid),
+                      "note": "Отозвано. Повтор и статус гола обновятся в течение минуты."})
 
     def cut_job(self, request) -> dict:
         self.goals_user(request)
@@ -1043,6 +1154,8 @@ def make_app(config: Config | None = None, fetch=None, now=None) -> web.Applicat
     r.add_get("/api/admin/status", api.admin_status)
     r.add_get("/api/admin/goals", api.admin_goals)
     r.add_post("/api/admin/goal/video", api.goal_video)
+    r.add_post("/api/admin/goal/mark", api.goal_mark)
+    r.add_post("/api/admin/goal/revoke", api.goal_revoke)
     r.add_get(r"/api/admin/cut/{id:\d{1,9}}", api.cut_status)
     r.add_get(r"/api/admin/cut/{id:\d{1,9}}.mp4", api.cut_file)
     r.add_get("/api/agent/status", api.agent_status)

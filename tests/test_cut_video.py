@@ -473,5 +473,23 @@ class Dispute(Base):
                                  "🛠 Открыть гол"])
 
 
+
+class PanelMarks(Base):
+    """Отметки из пульта (ADR-036, раздел 5): журнал пишет и API, а replays.json — только бот, раз в минуту."""
+
+    def test_panel_mark_reaches_replays(self):
+        store = self.bot.goal_marks()
+        sync = lambda: asyncio.run(self.bot.marks_sync_step(self.now))   # noqa: E731
+        with mock.patch.object(self.bot, "published_league", mock.AsyncMock(return_value=None)):
+            self.assertEqual(sync(), 0)                                       # первый проход только запоминает
+            store.add(self.now, KEY, "1:1", "time", role="helper", via="panel", who=761, video=VIDEO, sec=3500)
+            self.assertNotIn(KEY, self.bot.load_replays()["games"])          # API в replays.json не пишет
+            self.assertEqual(sync(), 1)
+            self.assertEqual(self.bot.load_replays()["games"][KEY]["anchors"], {"1:1": 3500})
+            self.assertEqual(sync(), 0)                                       # пересобран — второй раз не трогаем
+        history, _ = self.bot.goal_history(KEY, "1:1", 1001)
+        self.assertIn("пульт", history[-1])                                   # в /replay видно, откуда отметка
+
+
 if __name__ == "__main__":
     unittest.main()

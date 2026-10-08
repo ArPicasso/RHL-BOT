@@ -2,6 +2,7 @@
 // Данные — GET ${LIVE_API}/admin/status с подписью Telegram, пускает только ADMIN_IDS на сервере.
 // Вкладка «Голы» (ADR-036, раздел 4): где каждый гол на пути к клипу — GET ${LIVE_API}/admin/goals, пускает ADMIN_IDS
 // и помощников PREVIEW_IDS; помощник видит только её. ?tab=goals — открыть сразу на ней (так её открывает бот).
+// Гол открывает лист с видео и отметками — строки журнала marks.py через ${LIVE_API}/admin/goal/mark (ADR-036, раздел 5).
 // Для разработки: ?admin_mock=1 — выдуманный ответ data/admin/mock/status.json и goals.json, =bad — с проблемами,
 // =helper — как у помощника.
 // Всё, что пришло с сервера, — только через esc(): там названия источников, ошибки и имена команд.
@@ -404,7 +405,11 @@ function goalsTab(gd, now) {
 const CUT_POLL_MS = 2000;
 const CUT_WAIT_MS = 4 * 60e3;
 const SRC_WORDS = { clock: "⏱ встали часы", board: "📺 задержка табло клуба", run: "🕐 ход часов от соседнего гола", admin: "✅ отметка человека" };
-const card = { key: "", score: "", shift: 0, plan: null, error: "", note: "", vids: {}, token: 0, back: null };
+const card = { key: "", score: "", shift: 0, plan: null, error: "", note: "", done: "", busy: false, history: [], vids: {}, token: 0, back: null };
+// история отметок гола — те же слова, что в /replay (bot.py: ROLE_WORD, VIA_WORD, KIND_WORD)
+const ROLE_WORDS = { admin: "админ", helper: "помощник", import: "до журнала" };
+const VIA_WORDS = { replay: "/replay", preview: "превью", video: "видео", confirm: "клип", import: "перенесено, не проверено", panel: "пульт" };
+const MARK_WORDS = { absent: "🚫 нет в записи", wrong: "⚠️ табло сбилось", confirm: "✅ гол виден", reject: "❌ гола тут нет" };
 
 function clock(sec) {
   sec = Math.max(0, Math.floor(sec || 0));
@@ -422,7 +427,7 @@ function goalOf(key, score) {
 function planText(p) {
   if (!p) return "";
   const w = p.windows || [];
-  if (p.shift) return `Листаешь запись: ${w[0] ? w[0].what : ""}. Где гол, не знает никто.`;
+  if (p.shift) return `Запись ${w[0] ? w[0].what : ""}. Увидишь гол — поставь видео на паузу и нажми «Гол здесь».`;
   if (p.kind === "exact") return `${SRC_WORDS[p.src] || "✅"} — гол на ${clock(p.t - w[0].start)} этого видео: так его увидят болельщики.`;
   if (p.kind === "dispute") return `⚠️ Спор: отметка ${clock(p.t)} записи не сходится с табло${p.why ? ` (${p.why})` : ""}. Первое видео — по отметке, второе — ${w[1] ? w[1].what : "другой версии нет"}.`;
   if (p.kind === "approx") return `Примерное место — ${w[0] ? w[0].what : ""}.`;
@@ -441,9 +446,11 @@ function vidBlock(w, k) {
   } else {
     body = `<div class="vid-wait">⏳ Режу видео… обычно 10–40 секунд</div>`;
   }
+  const here = v.url && card.plan.kind !== "exact"
+    ? `<button type="button" class="pill act" data-here="${esc(w.job)}" data-start="${esc(w.start)}"${card.busy ? " disabled" : ""}>Гол здесь — 0:00 видео</button>` : "";
   const cand = k === 0 && v.url && (card.plan.cand || []).length
     ? `<div class="cand"><span class="card-title">Часы вставали:</span>${card.plan.cand.map((t) => `<button type="button" class="pill" data-seek="${esc(t - w.start)}" data-job="${esc(w.job)}">${esc(clock(t - w.start))}</button>`).join("")}</div>` : "";
-  return `<div class="vid" data-vid="${esc(w.job)}">${head}${body}${cand}</div>`;
+  return `<div class="vid" data-vid="${esc(w.job)}">${head}${body}${cand}${here ? `<div class="nav">${here}</div>` : ""}</div>`;
 }
 
 // одно видео готово: меняем только его блок — второе видео спора, если уже играет, не сбрасывается
@@ -469,20 +476,95 @@ function renderCard() {
   else if (!p) html += `<div class="vid-wait">⏳ Смотрю, что известно о голе…</div>`;
   else {
     html += `<p class="plan">${esc(planText(p))}</p>` + (p.windows || []).map(vidBlock).join("");
+    html += markButtons(p);
     if (p.kind === "approx" || p.kind === "search") {
       if (card.note) html += `<div class="card-title">${esc(card.note)}</div>`;
       html += `<div class="nav"><button type="button" class="pill" data-shift="-1">⏪ 3 мин раньше</button><button type="button" class="pill" data-shift="1">⏩ 3 мин позже</button></div>`;
-      if (card.shift) html += `<button type="button" class="more" data-shift="0">Вернуться к ${p.base === "approx" ? "примерному месту" : "оценке"}</button>`;
+      if (card.shift) html += `<button type="button" class="more" data-shift="0">Вернуться к ${p.base === "approx" ? "примерному месту" : p.base === "exact" ? "30 с гола" : "оценке"}</button>`;
     }
   }
-  html += `<div class="card-title sheet-foot">Время записи — для бота: ${state.role === "helper" ? "ответь им на превью в чате" : "пришли его в /replay → матч → гол"}. Отмечать прямо в пульте можно будет следующим шагом.</div>`;
+  html += `<div class="marks">${marksBlock()}</div>`;
   // фокус с клавиатуры переживает перерисовку: та же кнопка или ✕
   const f = document.activeElement && el.contains(document.activeElement) ? document.activeElement : null;
-  const again = f && (f.dataset.shift !== undefined ? `[data-shift="${f.dataset.shift}"]` : f.dataset.close !== undefined ? "[data-close]" : "");
+  // та же кнопка — по её data-атрибутам; кнопки, которой после перерисовки нет, — фокус остаётся у листа
+  const again = !f ? "" : f.dataset.shift !== undefined ? `[data-shift="${f.dataset.shift}"]`
+    : f.dataset.mark !== undefined ? `[data-mark="${f.dataset.mark}"]${f.dataset.step ? `[data-step="${f.dataset.step}"]` : ""}`
+    : f.dataset.close !== undefined ? "[data-close]" : "";
   el.innerHTML = html;
   el.hidden = false;
   $("#card-back").hidden = false;
   if (again) { const x = el.querySelector(again); if (x) x.focus(); }
+}
+
+// ответ человека — строка журнала отметок (ADR-036, раздел 5): кнопки как под видео в боте (ADR-036, раздел 1)
+function markButtons(p) {
+  const w = p.windows || [];
+  const b = (label, attrs) => `<button type="button" class="pill"${attrs}${card.busy ? " disabled" : ""}>${esc(label)}</button>`;
+  let out = "";
+  if (p.kind === "exact" && w[0]) {
+    if (!p.own) out += b("✅ Гол виден", ` data-mark="confirm" data-job="${esc(w[0].job)}" data-sec="${esc(p.t)}"`);
+    out += b("⏪ Гол раньше", ` data-mark="reject" data-step="-1" data-job="${esc(w[0].job)}" data-sec="${esc(p.t)}"`)
+      + b("⏩ Гол позже", ` data-mark="reject" data-step="1" data-job="${esc(w[0].job)}" data-sec="${esc(p.t)}"`)
+      + b("🚫 Гола нет в записи", ` data-mark="absent" data-job="${esc(w[0].job)}"`);
+  } else if (p.kind === "dispute" && w[0]) {
+    if (!p.own) out += b(`✅ Верно по отметке ${clock(p.t)}`, ` data-mark="confirm" data-job="${esc(w[0].job)}" data-sec="${esc(p.t)}"`);
+    if (p.tb != null && w[1]) out += b(`✅ Верно по табло ${clock(p.tb)}`, ` data-mark="time" data-job="${esc(w[1].job)}" data-sec="${esc(p.tb)}"`);
+  } else if (w[0]) {
+    out += p.kind === "approx" && !p.shift ? b("⚠️ Табло сбилось", ` data-mark="wrong" data-job="${esc(w[0].job)}"`)
+      : b("🚫 Гола нет в записи", ` data-mark="absent" data-job="${esc(w[0].job)}"`);
+  }
+  const own = p.own ? `<div class="card-title">Эту секунду отметил ты (или неизвестно кто — до журнала): «✅» на ней ставит кто-то другой.</div>` : "";
+  return out ? `${own}<div class="nav">${out}</div>` : "";
+}
+
+function historyLine(r) {
+  const when = toDate(r.at);
+  const what = r.kind === "time" && typeof r.sec === "number" ? `гол на ${clock(r.sec)} записи`
+    : r.kind === "confirm" || r.kind === "reject" ? `${MARK_WORDS[r.kind]} на ${clock(r.sec)}` : MARK_WORDS[r.kind] || r.kind;
+  return [when ? when.toLocaleString("ru-RU", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).replace(",", "") : "",
+    r.mine ? "ты" : ROLE_WORDS[r.role] || r.role, what, VIA_WORDS[r.via] || r.via].filter(Boolean).join(" · ");
+}
+
+function marksBlock() {
+  let html = card.done ? `<div class="done" role="status">${esc(card.done)}</div>` : "";
+  const h = card.history || [];
+  if (h.length) {
+    html += `<div class="card-title">Отметки этого гола</div><div class="hist">${h.map((r) => `<div class="hist-row${r.revoked ? " off" : ""}"><span>${esc(historyLine(r))}${r.revoked ? " — отозвано" : ""}</span>${r.can_revoke ? `<button type="button" class="more" data-revoke="${esc(r.id)}"${card.busy ? " disabled" : ""}>Отозвать</button>` : ""}</div>`).join("")}</div>`;
+  }
+  return html + `<div class="card-title sheet-foot">Отметка — та же, что в боте: служба сверит её с табло, а повтор и статус гола обновятся в течение минуты.</div>`;
+}
+
+function renderMarks() {
+  const el = $("#card .marks");
+  if (el) el.innerHTML = marksBlock();
+  for (const x of document.querySelectorAll("#card [data-mark], #card [data-here]")) x.disabled = card.busy;
+}
+
+function mockMark(body) {   // ?admin_mock: отметка не уходит на сервер, только в историю на экране
+  if (body.id) return { history: card.history.map((r) => (r.id === body.id ? { ...r, revoked: true, can_revoke: false } : r)), note: "Отозвано (мок)." };
+  const row = { id: Date.now(), at: new Date().toISOString(), kind: body.kind, sec: body.sec, role: "admin", via: "panel", mine: true, revoked: false, can_revoke: true };
+  return { history: [...card.history, row].slice(-8), note: "Записано (мок): повтор и статус гола обновятся в течение минуты." };
+}
+
+async function sendMark(body, after) {
+  if (card.busy) return;
+  const was = { key: card.key, score: card.score };
+  card.busy = true;
+  card.done = "";
+  renderMarks();
+  try {
+    const d = mock ? mockMark(body) : await api(body.id ? "goal/revoke" : "goal/mark", { body: { ...was, ...body } });
+    if (card.key !== was.key || card.score !== was.score) return;   // лист закрыли или открыли другой гол — ответ не его
+    card.history = d.history || card.history;
+    card.done = d.note || "Записано.";
+  } catch (e) {
+    if (card.key === was.key && card.score === was.score) card.done = `Не записалось: ${e.message}`;
+    after = null;
+  } finally {
+    card.busy = false;
+    renderMarks();
+  }
+  if (after) after();
 }
 
 async function api(path, opts = {}) {
@@ -570,6 +652,7 @@ async function loadCard(prevShift) {
   if (token !== card.token) return;
   dropVideos();   // прежнее видео играло, пока ждали новый план
   card.plan = plan;
+  card.history = plan.history || card.history || [];
   if (mock) for (const w of plan.windows) card.vids[w.job] = { error: "в моке видео не режется" };
   renderCard();
   if (!mock) for (const w of card.plan.windows) waitCut(w.job, token);
@@ -579,6 +662,8 @@ function openCard(key, score, from) {
   card.key = key;
   card.score = score;
   card.shift = 0;
+  card.done = "";
+  card.history = [];
   card.back = from || null;
   document.body.classList.add("locked");
   loadCard();
@@ -600,6 +685,8 @@ document.addEventListener("timeupdate", (e) => {
   if (!(v instanceof HTMLVideoElement) || !v.closest("#card")) return;
   const pos = v.nextElementSibling;
   if (pos && pos.dataset.pos) pos.textContent = `${clock(v.currentTime)} видео = ${clock(Number(v.dataset.start) + v.currentTime)} записи`;
+  const here = v.closest(".vid").querySelector("[data-here]");
+  if (here) here.textContent = `Гол здесь — ${clock(v.currentTime)} видео = ${clock(Number(v.dataset.start) + v.currentTime)} записи`;
 }, true);
 
 // ---------- загрузка ----------
@@ -719,6 +806,22 @@ document.addEventListener("click", (e) => {
     if (v) { v.currentTime = Number(seek.dataset.seek); v.play().catch(() => {}); }
     return;
   }
+  const mark = e.target.closest("[data-mark]");
+  if (mark) {
+    const sec = mark.dataset.sec !== undefined ? Number(mark.dataset.sec) : undefined;
+    const step = Number(mark.dataset.step || 0);
+    // «⏪ / ⏩» под точной секундой: гола тут нет — и сразу запись раньше или позже, как в боте
+    return sendMark({ kind: mark.dataset.mark, job: Number(mark.dataset.job), sec }, step ? () => { card.shift = step; loadCard(0); } : null);
+  }
+  const here = e.target.closest("[data-here]");
+  if (here) {
+    const v = here.closest(".vid").querySelector("video");
+    if (!v) return;
+    v.pause();
+    return sendMark({ kind: "time", job: Number(here.dataset.here), sec: Number(here.dataset.start) + Math.floor(v.currentTime) });
+  }
+  const revoke = e.target.closest("[data-revoke]");
+  if (revoke) return sendMark({ id: Number(revoke.dataset.revoke) });
   const shift = e.target.closest("[data-shift]");
   if (shift) {
     const was = card.shift;

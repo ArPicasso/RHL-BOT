@@ -6,6 +6,9 @@
  "t": null,
  "tb": null,
  "why": "",
+ "own": false,
+ "history": [{"id": 7, "at": "2026-10-07T21:05:00+03:00", "kind": "wrong", "sec": null, "role": "helper", "via": "video", "mine": false, "revoked": true, "can_revoke": false},
+             {"id": 9, "at": "2026-10-07T21:40:00+03:00", "kind": "time", "sec": 3441, "role": "admin", "via": "panel", "mine": true, "revoked": false, "can_revoke": true}],
  "cand": [3436, 3461],
  "length": 9120,
  "windows": [{"start": 3380, "len": 125, "what": "до смены счёта на табло", "job": 41}]

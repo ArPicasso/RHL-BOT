@@ -4547,7 +4547,9 @@ let reelWanted = null;
 function reelFromLink() {
   if (!reelWanted || recapView.id !== reelWanted) return;
   const btn = document.querySelector(`[data-reel="${CSS.escape(reelWanted)}"]`);
-  const one = !btn && document.querySelectorAll("#recap [data-clip]").length === 1 ? $("#recap [data-clip]") : null;
+  // окна (ADR-037) в ленту не идут: считаем только точные клипы, иначе «Голы матча» из бота не откроют ничего
+  const only = "#recap [data-clip]:not([data-wide])";
+  const one = !btn && document.querySelectorAll(only).length === 1 ? $(only) : null;
   if (!btn && !one) return;   // разбор ещё грузится или клипов пока нет — остаются голы с «Повтором»
   reelWanted = null;
   if (btn) toggleReel(btn, true);

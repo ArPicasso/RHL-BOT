@@ -91,6 +91,8 @@ GONE_MAX = 6        # удалённых записей в пульте и тр�
 INV_MAX = 5         # сломанных инвариантов прохода в пульте и тревогах (ADR-034): остальные — в журнале службы
 WIDE_BEFORE = 50    # с до секунды с одним свидетелем в окне повтора (ADR-037): отметка ошибается на полминуты
 WIDE_AFTER = 20     # и после
+APPROX_BEFORE = 20  # с до начала показа у примерной секунды: расчёт от опоры и спор могут указать позже гола
+APPROX_AFTER = 110  # и после: оператор меняет счёт через 0–90 с после гола (ADR-031), окно хода часов короче
 WIDE_HEIGHT = 480   # окна режем мельче точных клипов: их много, а смотрят их реже
 CLIP_AFTER = 15     # с: клип позже смены счёта на табло — гол не бывает после того, как счёт уже сменился
 CLIP_BEFORE = 180   # с: и не раньше чем за три минуты до смены (оператор меняет счёт через 0–90 с, ADR-031)
@@ -1020,31 +1022,33 @@ def wide_window(t: int, length: float | None = None) -> tuple[int, int]:
     return start, max(1, end - start)
 
 
+def approx_window(t: int, length: float | None = None) -> tuple[int, int]:
+    """Окно вокруг примерной секунды: гол может быть и чуть раньше начала показа, и в двух минутах после."""
+    start = max(0, int(t) - APPROX_BEFORE)
+    end = int(t) + APPROX_AFTER
+    if length:
+        end = min(end, int(length))
+    return start, max(1, end - start)
+
+
 def fan_windows(game: dict, admin: dict | None) -> dict[str, tuple[int, int]]:
-    """Окно записи для каждого гола, который видит болельщик (`replay.with_board` — то же, что покажет мини-апп):
-    счёт → (начало, длина). Смена счёта на табло — 125 с (оператор меняет счёт через 0–90 с после гола), окно счёта
-    хода часов — само окно, точная секунда с одним свидетелем и отметка со спором — WIDE секунд вокруг неё."""
+    """Окно записи для каждого гола, который видит болельщик: счёт → (начало, длина).
+
+    Что видит болельщик, решает `replay.with_board` — от неё и идём, своих правил не выдумываем: гол, которого там
+    нет (человек сказал «нет в записи», «табло сбилось», запись удалили из VK), окна не получает, а секунду окна мы
+    берём ту же, что стоит у болельщика. Окно — вокруг неё, с запасом на то, чем эта секунда получена:
+    точная (`exact`) — WIDE секунд, она может ошибиться на полминуты; примерная — до смены счёта на табло (оператор
+    меняет счёт через 0–90 с после гола), окно счёта хода часов или расчёт от опоры: гол в ближайшие пару минут."""
     length = game.get("length")
-    board = game.get("goals") or {}
-    mine = replay.same_video((admin or {}).get("video"), game.get("video"))
-    anchors = ((admin or {}).get("anchors") or {}) if mine else {}
     out = {}
     for g in (replay.with_board(admin, game) or {}).get("goals") or []:
-        score = str(g.get("score") or "")
-        if not replay.SCORE_RE.fullmatch(score):
+        score, t = str(g.get("score") or ""), g.get("t")
+        if not replay.SCORE_RE.fullmatch(score) or not isinstance(t, (int, float)):
             continue
-        b = board.get(score) or {}
-        anchor = anchors.get(score)
-        if g.get("exact"):
-            t = anchor if g.get("src") in (None, "admin") else b.get("t")
-            if isinstance(t, (int, float)):
-                out[score] = wide_window(int(t), length)
-        elif isinstance(b.get("win"), list) and len(b["win"]) == 2 and isinstance(b["win"][0], (int, float)):
-            out[score] = cutjobs.run_window(b["win"], length)
-        elif isinstance(b.get("change"), (int, float)):
-            out[score] = cutjobs.change_window(int(b["change"]), length)
-        elif isinstance(anchor, int):   # спор: кроме отметки человека, у гола ничего нет
-            out[score] = wide_window(anchor, length)
+        if g.get("exact"):   # у болельщика t — за EXACT_LEAD до гола: окно считаем от самого гола
+            out[score] = wide_window(int(t) + replay.EXACT_LEAD, length)
+        else:   # примерная: гол — около начала показа, в пределах APPROX секунд в обе стороны
+            out[score] = approx_window(int(t), length)
     return out
 
 
@@ -1053,6 +1057,10 @@ def window_plan(game: dict, admin: dict | None, protocol: dict[str, dict]) -> tu
     которому положен точный клип (два свидетеля), у скрытого по просьбе игрока и у гола, которого нет в протоколе;
     окно, которое больше не нужно (появился точный клип, гол отменили, секунда пропала), уходит из бакета."""
     have = {s: c for s, c in (game.get("clips") or {}).items() if (c or {}).get("kind") == "window"}
+    if not protocol or game.get("status") == "gone":
+        # протокол не скачался (league.json по сети) или записи больше нет в VK — окна оставляем как есть: по
+        # пустому протоколу мы бы снесли все окна сезона, а у удалённой записи окно — единственный уцелевший повтор
+        return [], []
     exact = clip_witnesses(game, admin) if game.get("src") != "club" else {}
     want = {}
     if game.get("src") != "club":   # запись клуба — только повтор ссылкой, без своих видео (ADR-030)
@@ -1330,6 +1338,9 @@ def goal_states(game: dict, admin_e: dict | None, protocol: dict[str, dict], sco
         elif why == "gone":
             # повторов по удалённой записи нет, что бы ни помнил разбор; отметил человек после удаления — его повтор
             out[s] = ("confirm" if links[s].get("exact") else "approx") if s in links else "stuck"
+        elif (have.get(s) or {}).get("kind") == "window":
+            # окно (ADR-037) у болельщика есть, но гол всё ещё ждёт второго свидетеля: статус — по тому, что знаем
+            out[s] = "dispute" if s in spor else "confirm" if s in seconds else "approx"
         elif s in have:
             out[s] = "clip"
         elif s in two:   # клип режут только голу протокола (clip_plan): протокола нет — пока «точно»

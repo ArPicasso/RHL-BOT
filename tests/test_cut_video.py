@@ -366,6 +366,14 @@ class Answers(Base):
         self.assertNotIn("не проверено", first)
         self.assertTrue(next(x for x in lines if x.startswith("3. ")).endswith(" — 🎬 клип"))
 
+    def test_window_is_not_called_a_clip_in_replay(self):
+        """Ревью PR: в /replay окно (ADR-037) помечается «🎬 окно» — гол ещё ждёт второго свидетеля, а не закрыт."""
+        self.clips({**BOARD, "clips": {"1:0": {"kind": "window", "from": 2550, "len": 130},
+                                       "1:1": {"t": 3500, "src": "clock"}}})
+        lines = self.bot.replay_text("2026-10-03", GAME, None, PROTOCOL, VIDEO).split("\n")
+        self.assertIn("🎬 окно", next(x for x in lines if x.startswith("1. ")))
+        self.assertIn("🎬 клип", next(x for x in lines if x.startswith("2. ")))
+
     def test_old_recording_button_refused(self):
         """Ревью PR #139: видео из прежней записи — кнопка под ним не переключает матч обратно на неё."""
         job = self.job("1:1")

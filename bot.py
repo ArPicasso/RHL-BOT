@@ -1545,13 +1545,16 @@ async def marks_sync_step(now: datetime) -> int:
     keys = store.changed_since(int(was)) if was is not None and was.isdigit() else []
     league = await published_league() if keys else None
     n = 0
-    for key in keys:
+    for key in keys:   # один сломанный матч не держит остальные: его ошибка — в журнале службы
         g = live_by_key(key)
         if not g:
             logging.warning("журнал отметок: матча %s нет в файле службы live — повторы не пересобраны", key)
             continue
-        marks_apply(key, g, now, protocol_of(league, g))
-        n += 1
+        try:
+            marks_apply(key, g, now, protocol_of(league, g))
+            n += 1
+        except Exception:
+            logging.exception("журнал отметок: повторы матча %s не пересобрались", key)
     store.set_meta("applied", str(last))
     return n
 

@@ -587,8 +587,13 @@ class AdminPanel(Base):
             encoding="utf-8")
         near = (await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "1:0"}))["windows"][0]
         far = (await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "2:0"}))["windows"][0]
-        mark = lambda u, **b: self.call("POST", "/api/admin/goal/mark", u, {"key": key, **b},   # noqa: E731
-                                        status=b.pop("status", 200))
+
+        def mark(u, status=200, **b):
+            return self.call("POST", "/api/admin/goal/mark", u, {"key": key, **b}, status=status)
+        # матча нет у службы live — повторы бот считать не от чего: отметку не берём, как бот
+        await mark(fan(1), score="2:0", kind="time", job=far["job"], sec=far["start"] + 5, status=409)
+        (self.live / f"{D1}.json").write_text(json.dumps({"games": [
+            {"key": key, "date": D1, "home": "tambov", "away": "sokol"}]}), encoding="utf-8")
         await mark(fan(2), score="2:0", kind="time", job=far["job"], sec=far["start"] + 5, status=403)
         await mark(fan(1), score="2:0", kind="time", job=far["job"], sec=far["start"] + far["len"] + 60, status=400)
         await mark(fan(1), score="2:0", kind="nonsense", job=far["job"], sec=far["start"], status=400)
@@ -619,6 +624,9 @@ class AdminPanel(Base):
         self.assertTrue(next(x for x in h if x["id"] == own["id"])["revoked"])
         await rv(fan(1), own["id"], 409)
         await rv(fan(1), d["id"] + 1000, 404)
+        # секунда, отмеченная до журнала (кто — неизвестно): «✅» на ней журнал не засчитает — и пульт не пишет
+        self.api.marks.add(self.now, key, "1:0", "time", role="import", via="import", video=video, sec=2601)
+        await mark(fan(1), score="1:0", kind="confirm", job=near["job"], sec=2601, status=409)
         # видео из прежней записи матча: отметка по нему переключила бы матч обратно — нельзя
         self.api.marks.add(self.now, key, "1:0", "time", role="admin", via="replay", who=1001,
                            video="https://vk.com/video-1_9", sec=100)

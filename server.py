@@ -917,7 +917,8 @@ class Api:
         # kind и shift — того, что показано; base — что известно о голе (у сдвинутого — к чему возвращаться);
         # own — точная секунда — отметка этого же человека: его «✅» не второй свидетель (marks.own_confirm)
         last = self.last_place(key, score)
-        own = plan["kind"] == "exact" and plan.get("src") == "admin" and self.mine(last, plan.get("t"), uid)
+        own = (plan["kind"] == "dispute" or plan["kind"] == "exact" and plan.get("src") == "admin") \
+            and self.mine(last, plan.get("t"), uid)
         return reply({"kind": moved["kind"], "base": plan["kind"], "shift": shift if moved is not plan else 0,
                       "own": own, "history": self.goal_history(key, score, uid),
                       "src": plan.get("src"), "t": plan.get("t"),
@@ -933,9 +934,11 @@ class Api:
 
     @staticmethod
     def mine(last: dict | None, sec, uid: int) -> bool:
-        """Секунду гола поставил сам этот человек: его «✅ Гол виден» на ней — не второй свидетель (marks.own_confirm)."""
-        return bool(last) and last["kind"] == "time" and last.get("who") == uid and isinstance(sec, int) \
-            and marks.own_confirm(last.get("sec"), uid, sec, uid)
+        """«✅ Гол виден» этого человека на этой секунде — не второй свидетель: секунду поставил он сам или неизвестно
+        кто (перенос до журнала, /marks_forget). Правило то же, что у marks.resolve (own_confirm): такой ✅ журнал всё
+        равно не засчитает."""
+        return bool(last) and last["kind"] == "time" and isinstance(sec, int) \
+            and marks.own_confirm(last.get("sec"), last.get("who"), sec, uid)
 
     def goal_history(self, key: str, score: str, uid: int) -> list[dict]:
         """История отметок гола для карточки: что, когда, чья роль, откуда, отозвана ли и можно ли отозвать. Чужих id
@@ -967,6 +970,10 @@ class Api:
             job = None
         if not job or job.get("match") != key:
             raise Fail(400, "Отметка — по видео этого гола: открой гол заново.")
+        day = self.live_file(key[:10]) or {}
+        if not any(predict.key_of(g) == key for g in day.get("games") or [] if isinstance(g, dict)):
+            # повторы бот считает от матча службы live (marks_apply): без него отметке некуда лечь — как в боте
+            raise Fail(409, "Этого матча нет у службы live — отметку некуда применить. Напиши в бот /replay.")
         cur = (self.marks.state(key) or {}).get("video")
         if cur and not replay.same_video(cur, job["video"]):   # как other_video в боте
             raise Fail(409, "Это видео из прежней записи матча — открой гол заново.")
@@ -976,7 +983,8 @@ class Api:
             raise Fail(400, "Секунда — вне этого видео. Открой гол заново.")
         if kind == "confirm":
             if self.mine(self.last_place(key, score), sec, uid):
-                raise Fail(409, "Это твоя отметка — «✅ Гол виден» на ней ставит кто-то другой: второй свидетель.")
+                raise Fail(409, "Эту секунду отметил ты (или неизвестно кто — до журнала): «✅» на ней не второй "
+                                "свидетель. Подтверждает её кто-то другой.")
         game = (await self.league()).get(key)
         p = next((x for x in goalplan.protocol_of(game) or [] if x.get("score") == score), {})
         seen = {"job": job["id"], "from": job["start"], "len": job["len"]}

@@ -480,13 +480,16 @@ function renderCard() {
     if (p.kind === "approx" || p.kind === "search") {
       if (card.note) html += `<div class="card-title">${esc(card.note)}</div>`;
       html += `<div class="nav"><button type="button" class="pill" data-shift="-1">⏪ 3 мин раньше</button><button type="button" class="pill" data-shift="1">⏩ 3 мин позже</button></div>`;
-      if (card.shift) html += `<button type="button" class="more" data-shift="0">Вернуться к ${p.base === "approx" ? "примерному месту" : "оценке"}</button>`;
+      if (card.shift) html += `<button type="button" class="more" data-shift="0">Вернуться к ${p.base === "approx" ? "примерному месту" : p.base === "exact" ? "30 с гола" : "оценке"}</button>`;
     }
   }
   html += `<div class="marks">${marksBlock()}</div>`;
   // фокус с клавиатуры переживает перерисовку: та же кнопка или ✕
   const f = document.activeElement && el.contains(document.activeElement) ? document.activeElement : null;
-  const again = f && (f.dataset.shift !== undefined ? `[data-shift="${f.dataset.shift}"]` : f.dataset.mark !== undefined ? `[data-mark="${f.dataset.mark}"]` : "[data-close]");
+  // та же кнопка — по её data-атрибутам; кнопки, которой после перерисовки нет, — фокус остаётся у листа
+  const again = !f ? "" : f.dataset.shift !== undefined ? `[data-shift="${f.dataset.shift}"]`
+    : f.dataset.mark !== undefined ? `[data-mark="${f.dataset.mark}"]${f.dataset.step ? `[data-step="${f.dataset.step}"]` : ""}`
+    : f.dataset.close !== undefined ? "[data-close]" : "";
   el.innerHTML = html;
   el.hidden = false;
   $("#card-back").hidden = false;
@@ -504,13 +507,13 @@ function markButtons(p) {
       + b("⏩ Гол позже", ` data-mark="reject" data-step="1" data-job="${esc(w[0].job)}" data-sec="${esc(p.t)}"`)
       + b("🚫 Гола нет в записи", ` data-mark="absent" data-job="${esc(w[0].job)}"`);
   } else if (p.kind === "dispute" && w[0]) {
-    out += b(`✅ Верно по отметке ${clock(p.t)}`, ` data-mark="confirm" data-job="${esc(w[0].job)}" data-sec="${esc(p.t)}"`);
+    if (!p.own) out += b(`✅ Верно по отметке ${clock(p.t)}`, ` data-mark="confirm" data-job="${esc(w[0].job)}" data-sec="${esc(p.t)}"`);
     if (p.tb != null && w[1]) out += b(`✅ Верно по табло ${clock(p.tb)}`, ` data-mark="time" data-job="${esc(w[1].job)}" data-sec="${esc(p.tb)}"`);
   } else if (w[0]) {
     out += p.kind === "approx" && !p.shift ? b("⚠️ Табло сбилось", ` data-mark="wrong" data-job="${esc(w[0].job)}"`)
       : b("🚫 Гола нет в записи", ` data-mark="absent" data-job="${esc(w[0].job)}"`);
   }
-  const own = p.kind === "exact" && p.own ? `<div class="card-title">Это твоя отметка — «✅ Гол виден» на ней ставит кто-то другой.</div>` : "";
+  const own = p.own ? `<div class="card-title">Эту секунду отметил ты (или неизвестно кто — до журнала): «✅» на ней ставит кто-то другой.</div>` : "";
   return out ? `${own}<div class="nav">${out}</div>` : "";
 }
 
@@ -545,15 +548,17 @@ function mockMark(body) {   // ?admin_mock: отметка не уходит н�
 
 async function sendMark(body, after) {
   if (card.busy) return;
+  const was = { key: card.key, score: card.score };
   card.busy = true;
   card.done = "";
   renderMarks();
   try {
-    const d = mock ? mockMark(body) : await api(body.id ? "goal/revoke" : "goal/mark", { body: { key: card.key, score: card.score, ...body } });
+    const d = mock ? mockMark(body) : await api(body.id ? "goal/revoke" : "goal/mark", { body: { ...was, ...body } });
+    if (card.key !== was.key || card.score !== was.score) return;   // лист закрыли или открыли другой гол — ответ не его
     card.history = d.history || card.history;
     card.done = d.note || "Записано.";
   } catch (e) {
-    card.done = `Не записалось: ${e.message}`;
+    if (card.key === was.key && card.score === was.score) card.done = `Не записалось: ${e.message}`;
     after = null;
   } finally {
     card.busy = false;

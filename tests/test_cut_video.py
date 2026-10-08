@@ -473,9 +473,6 @@ class Dispute(Base):
                                  "🛠 Открыть гол"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class PanelMarks(Base):
     """Отметки из пульта (ADR-036, раздел 5): журнал пишет и API, а replays.json — только бот, раз в минуту."""
@@ -492,3 +489,7 @@ class PanelMarks(Base):
             self.assertEqual(sync(), 0)                                       # пересобран — второй раз не трогаем
         history, _ = self.bot.goal_history(KEY, "1:1", 1001)
         self.assertIn("пульт", history[-1])                                   # в /replay видно, откуда отметка
+
+
+if __name__ == "__main__":
+    unittest.main()

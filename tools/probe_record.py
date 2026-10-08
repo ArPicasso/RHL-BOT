@@ -61,9 +61,18 @@ def video_of(key: str) -> str | None:
     return None
 
 
+def seg_time(f: Path) -> int:
+    """Наше время начала сегмента — из имени `seg-<unix>.ts` (ffmpeg -strftime). Не разобрали — 0."""
+    m = re.fullmatch(r"seg-(\d+)\.ts", f.name)
+    return int(m.group(1)) if m else 0
+
+
 def record(src: str, headers: dict | None, out: Path, seconds: int) -> dict:
-    """Запись сегментами, без перекодирования. Возвращает замеры: сколько файлов, байт и процессорного времени."""
+    """Запись сегментами, без перекодирования. Возвращает замеры: сколько файлов, байт и процессорного времени —
+    только по сегментам этого запуска. Сегменты прошлого запуска в той же папке не в счёт: 08.10 второй прогон
+    (720p) посчитал вместе с дневным (480p) и место, и табло — через часы между ними, как одну запись."""
     out.mkdir(parents=True, exist_ok=True)
+    old = set(out.glob("seg-*.ts"))
     cmd = [sb.ffmpeg(), "-hide_banner", "-loglevel", "error", *sb.header_args(headers), "-i", src,
            "-t", str(seconds), "-c", "copy", "-f", "segment", "-segment_time", str(SEGMENT),
            "-reset_timestamps", "1", "-strftime", "1", str(out / "seg-%s.ts")]
@@ -71,8 +80,8 @@ def record(src: str, headers: dict | None, out: Path, seconds: int) -> dict:
     start = time.monotonic()
     run = subprocess.run(cmd, capture_output=True, text=True, timeout=seconds + 120)
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
-    files = sorted(out.glob("seg-*.ts"))
-    return {"wall": time.monotonic() - start, "cpu": (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime),
+    files = sorted(set(out.glob("seg-*.ts")) - old, key=seg_time)
+    return {"old": len(old), "wall": time.monotonic() - start, "cpu": (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime),
             "files": files, "bytes": sum(f.stat().st_size for f in files), "code": run.returncode,
             "error": (run.stderr.strip().splitlines() or [""])[-1][:200]}
 
@@ -110,10 +119,12 @@ def board_check(files: list[Path], club: str) -> dict:
     if not mark:
         return {"club": club, "note": "табло клуба не размечено в boards.json — читать нечем"}
     samples: list[tuple[float, bytes]] = []
+    first = seg_time(files[0]) if files else 0
     for k, f in enumerate(files):
+        at = seg_time(f) - first if first else k * SEGMENT   # секунда сегмента в записи — по нашим часам из имени
         try:
-            samples += [(k * SEGMENT + t, raw) for t, raw in sb.scan(str(f), None, mark["box"], step=READ_STEP,
-                                                                       keyframes=False)]
+            samples += [(at + t, raw) for t, raw in sb.scan(str(f), None, mark["box"], step=READ_STEP,
+                                                             keyframes=False)]
         except subprocess.CalledProcessError as err:
             return {"club": club, "note": f"ffmpeg не прочитал сегмент {f.name}: {err}"}
     if not samples:
@@ -161,6 +172,8 @@ def main() -> None:
     print(f"Поток получен{'' if length is None else f', длительность {length} с (это не эфир, а готовая запись)'}")
 
     got = record(src, headers, OUT / name, args.minutes * 60)
+    if got["old"]:
+        print(f"В папке ещё {got['old']} сегментов прошлого запуска — их не считаем")
     mb = got["bytes"] / (1 << 20)
     mins = max(got["wall"] / 60, 0.1)
     print(f"\nЗАПИСЬ: файлов {len(got['files'])}, {mb:.0f} МБ за {mins:.1f} мин — "

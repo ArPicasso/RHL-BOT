@@ -56,3 +56,27 @@ class Verdict(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Record(unittest.TestCase):
+    """08.10: второй прогон в той же папке посчитал и сегменты первого — место и табло вышли смесью двух записей."""
+
+    def test_only_this_run_counts(self):
+        import tempfile
+        from unittest import mock
+        out = Path(tempfile.mkdtemp())
+        (out / "seg-1700000000.ts").write_bytes(b"x" * 100)          # прошлый запуск
+
+        def fake_run(cmd, **kw):
+            (out / "seg-1700009000.ts").write_bytes(b"y" * 10)
+            (out / "seg-1700009010.ts").write_bytes(b"y" * 20)
+            return mock.Mock(returncode=0, stderr="")
+
+        with mock.patch.object(pr.subprocess, "run", fake_run), mock.patch.object(pr.sb, "ffmpeg", lambda: "ffmpeg"):
+            got = pr.record("src", None, out, 600)
+        self.assertEqual([f.name for f in got["files"]], ["seg-1700009000.ts", "seg-1700009010.ts"])
+        self.assertEqual((got["bytes"], got["old"]), (30, 1))
+
+    def test_segment_time_from_name(self):
+        self.assertEqual(pr.seg_time(Path("seg-1700009010.ts")), 1700009010)
+        self.assertEqual(pr.seg_time(Path("other.ts")), 0)

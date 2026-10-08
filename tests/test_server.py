@@ -507,6 +507,135 @@ class AdminPanel(Base):
         d = await self.call("GET", "/api/admin/status", fan(1), status=403)
         self.assertIn("ADMIN_IDS", d["error"])
 
+    async def test_goals_tab_for_admins_and_helpers(self):
+        """«Голы» (ADR-036, раздел 4): админам и помощникам PREVIEW_IDS, остальным — нет."""
+        self.api.cfg.helpers = frozenset({1005})
+        await self.call("GET", "/api/admin/goals", status=401)
+        d = await self.call("GET", "/api/admin/goals", fan(2), status=403)
+        self.assertIn("PREVIEW_IDS", d["error"])
+        await self.call("GET", "/api/admin/status", fan(5), status=403)   # «Состояние» помощнику не положено
+        (self.live / "clips.json").write_text(json.dumps({"coverage": {
+            f"{D1}|tambov|sokol": {"goals": 1, "replays": 0, "why": "not_found", "state": {"1:0": "search"}}}}),
+            encoding="utf-8")
+        self.pub["data/league.json"] = {"games": [{"date": D1, "home": "tambov", "away": "sokol",
+                                                   "score": {"home": 1, "away": 0},
+                                                   "goals": [{"score": "1:0", "author": "Иванов", "period": "1"}]}]}
+        d = await self.call("GET", "/api/admin/goals", fan(5))
+        self.assertEqual(d["role"], "helper")
+        self.assertEqual((d["wait"]["total"], d["wait"]["items"][0]["author"]), (1, "Иванов"))
+        self.assertEqual(d["matches"][0]["title"], "Тамбов — Сокол")
+        d = await self.call("GET", "/api/admin/goals", fan(1))
+        self.assertEqual(d["role"], "admin")
+
+    async def test_goal_video(self):
+        """Карточка гола (ADR-036, раздел 4): те же окна и задания службы cuts, что у бота; файл — только по подписи."""
+        self.api.cfg.helpers = frozenset({1005})
+        self.api.cuts.root = Path(self.tmp.name)
+        key, video = f"{D1}|tambov|sokol", "https://vk.com/video-100_200"
+        self.pub["data/league.json"] = {"games": [{
+            "date": D1, "home": "tambov", "away": "sokol", "score": {"home": 2, "away": 0},
+            "watch": [{"src": "rhl.fhr.ru", "url": video}],
+            "goals": [{"score": "1:0", "period": "1", "time": "05:00"}, {"score": "2:0", "period": "2", "time": "25:00"}]}]}
+        (self.live / "clips.json").write_text(json.dumps({"games": {key: {
+            "video": video, "status": "ok", "length": 5000,
+            "goals": {"1:0": {"t": 2600, "src": "clock"}, "2:0": {"t": None, "change": 4200, "ask": {}}}}}}),
+            encoding="utf-8")
+        await self.call("POST", "/api/admin/goal/video", fan(2), {"key": key, "score": "1:0"}, status=403)
+        await self.call("POST", "/api/admin/goal/video", fan(1), {"key": "x|y", "score": "1:0"}, status=400)
+        await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "1:0", "shift": 99}, status=400)
+        d = await self.call("POST", "/api/admin/goal/video", fan(5), {"key": key, "score": "1:0"})
+        self.assertEqual((d["kind"], d["src"], d["t"], d["windows"][0]["start"], d["windows"][0]["len"]),
+                         ("exact", "clock", 2600, 2580, 30))                 # 30 с: 20 до гола, 10 после
+        job = d["windows"][0]["job"]
+        again = await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "1:0"})
+        self.assertEqual(again["windows"][0]["job"], job)                   # одно окно — одно задание
+        self.assertEqual((await self.call("GET", f"/api/admin/cut/{job}", fan(5)))["status"], "queued")
+        await self.call("GET", f"/api/admin/cut/{job}.mp4", fan(5), status=404)
+        (Path(self.tmp.name) / "c.mp4").write_bytes(b"mp4")
+        self.api.cuts.done(job, self.now, "c.mp4", 854, 480, 30)
+        self.assertEqual((await self.call("GET", f"/api/admin/cut/{job}", fan(1)))["status"], "done")
+        r = await self.client.get(f"/api/admin/cut/{job}.mp4", headers=self.auth(fan(5)))
+        self.assertEqual((r.status, r.headers["Content-Type"], await r.read()), (200, "video/mp4", b"mp4"))
+        r = await self.client.get(f"/api/admin/cut/{job}.mp4")
+        self.assertEqual(r.status, 401)                                      # без подписи файла нет
+        await self.call("GET", f"/api/admin/cut/{job}.mp4", fan(2), status=403)
+        # примерное место листается окнами поиска, точная секунда — нет
+        d = await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "2:0", "shift": -1})
+        self.assertEqual((d["kind"], d["base"], d["shift"], d["windows"][0]["len"]), ("search", "approx", -1, 180))
+        self.assertIn("раньше", d["windows"][0]["what"])
+        d = await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "1:0", "shift": -1})
+        self.assertEqual((d["windows"][0]["start"], d["kind"], d["base"]), (2460, "search", "exact"))
+        await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "2:0", "shift": 6},
+                        status=404)                                          # запись кончилась
+        await self.call("POST", "/api/admin/goal/video", fan(1), {"key": f"{D1}|polet|sokol", "score": "1:0"},
+                        status=404)                                          # записи нет — видео не будет
+        await self.call("GET", "/api/admin/cut/999", fan(1), status=404)
+
+    async def test_goal_marks(self):
+        """Пульт пишет отметки (ADR-036, раздел 5): строка журнала по видео, которое человек смотрел; вход не старше
+        часа; «✅» на своей же секунде — нет; помощник отзывает только своё; чужих id в ответе нет."""
+        self.api.cfg.helpers = frozenset({1005})
+        self.api.cuts.root = Path(self.tmp.name)
+        key, video = f"{D1}|tambov|sokol", "https://vk.com/video-100_200"
+        self.pub["data/league.json"] = {"games": [{
+            "date": D1, "home": "tambov", "away": "sokol", "score": {"home": 2, "away": 0},
+            "watch": [{"src": "rhl.fhr.ru", "url": video}],
+            "goals": [{"score": "1:0", "period": "1", "time": "05:00"}, {"score": "2:0", "period": "2", "time": "25:00"}]}]}
+        (self.live / "clips.json").write_text(json.dumps({"games": {key: {
+            "video": video, "status": "ok", "length": 5000,
+            "goals": {"1:0": {"t": 2600, "src": "clock"}, "2:0": {"t": None, "change": 4200, "ask": {}}}}}}),
+            encoding="utf-8")
+        near = (await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "1:0"}))["windows"][0]
+        far = (await self.call("POST", "/api/admin/goal/video", fan(1), {"key": key, "score": "2:0"}))["windows"][0]
+
+        def mark(u, status=200, **b):
+            return self.call("POST", "/api/admin/goal/mark", u, {"key": key, **b}, status=status)
+        # матча нет у службы live — повторы бот считать не от чего: отметку не берём, как бот
+        await mark(fan(1), score="2:0", kind="time", job=far["job"], sec=far["start"] + 5, status=409)
+        (self.live / f"{D1}.json").write_text(json.dumps({"games": [
+            {"key": key, "date": D1, "home": "tambov", "away": "sokol"}]}), encoding="utf-8")
+        await mark(fan(2), score="2:0", kind="time", job=far["job"], sec=far["start"] + 5, status=403)
+        await mark(fan(1), score="2:0", kind="time", job=far["job"], sec=far["start"] + far["len"] + 60, status=400)
+        await mark(fan(1), score="2:0", kind="nonsense", job=far["job"], sec=far["start"], status=400)
+        await mark(fan(1), score="2:0", kind="time", job=999, sec=far["start"], status=400)
+        old = {"Authorization": "tma " + sign(fan(1), int((self.now - timedelta(hours=2)).timestamp()))}
+        r = await self.client.post("/api/admin/goal/mark", headers=old,
+                                   json={"key": key, "score": "2:0", "kind": "time", "job": far["job"], "sec": far["start"]})
+        self.assertEqual(r.status, 401)                                      # пульт открыт больше часа назад
+        d = await mark(fan(5), score="2:0", kind="time", job=far["job"], sec=far["start"] + 47)
+        self.assertIn("в течение минуты", d["note"])
+        row = self.api.marks.get(d["id"])
+        self.assertEqual((row["kind"], row["sec"], row["role"], row["via"], row["who"], row["period"]),
+                         ("time", far["start"] + 47, "helper", "panel", 1005, "2"))
+        self.assertEqual(json.loads(row["seen"])["pick"], 47)               # что человек выбрал в видео
+        self.assertEqual(self.api.marks.state(key)["anchors"], {"2:0": far["start"] + 47})
+        self.assertNotIn("1005", json.dumps(d))                              # чужих и своих id в ответе нет
+        self.assertEqual([(h["kind"], h["mine"], h["can_revoke"]) for h in d["history"]], [("time", True, True)])
+        # «✅ Гол виден» на своей секунде — не второй свидетель; от другого человека — да
+        own = await mark(fan(1), score="1:0", kind="time", job=near["job"], sec=2600)
+        await mark(fan(1), score="1:0", kind="confirm", job=near["job"], sec=2600, status=409)
+        await mark(fan(5), score="1:0", kind="confirm", job=near["job"], sec=2600)
+        await mark(fan(5), score="1:0", kind="absent", job=near["job"])
+        # «Отозвать»: помощник — только своё, админ — любое, дважды — нет
+        rv = lambda u, i, st=200: self.call("POST", "/api/admin/goal/revoke", u,   # noqa: E731
+                                            {"key": key, "id": i}, status=st)
+        await rv(fan(5), own["id"], 403)
+        h = (await rv(fan(1), own["id"]))["history"]
+        self.assertTrue(next(x for x in h if x["id"] == own["id"])["revoked"])
+        await rv(fan(1), own["id"], 409)
+        await rv(fan(1), d["id"] + 1000, 404)
+        # секунда, отмеченная до журнала (кто — неизвестно): «✅» на ней журнал не засчитает — и пульт не пишет
+        self.api.marks.add(self.now, key, "1:0", "time", role="import", via="import", video=video, sec=2601)
+        await mark(fan(1), score="1:0", kind="confirm", job=near["job"], sec=2601, status=409)
+        # видео из прежней записи матча: отметка по нему переключила бы матч обратно — нельзя
+        self.api.marks.add(self.now, key, "1:0", "time", role="admin", via="replay", who=1001,
+                           video="https://vk.com/video-1_9", sec=100)
+        await mark(fan(1), score="2:0", kind="time", job=far["job"], sec=far["start"], status=409)
+
+    def test_helpers_from_env(self):
+        with mock.patch.dict(os.environ, {"PREVIEW_IDS": "5, 6 x"}):
+            self.assertEqual(server.Config.from_env().helpers, frozenset({5, 6}))
+
     async def test_status_for_admin(self):
         (self.status / "bot.json").write_text(json.dumps({
             "beat": "2026-10-03T11:59:30+03:00", "info": {"tg_ok": "2026-10-03T11:59:30+03:00"},

@@ -33,7 +33,15 @@
       </button>
     </div>
     <div class="lede" id="when">Загружаю…</div>
+    <!-- вкладки (ADR-036, раздел 4): помощнику — только «Голы», без сегментов -->
+    <div class="seg" id="tabs" role="tablist" hidden>
+      <button type="button" role="tab" data-tab="status">Состояние</button>
+      <button type="button" role="tab" data-tab="goals">Голы<span class="seg-n" id="goals-n"></span></button>
+    </div>
   </header>
   <main id="main" aria-live="polite"></main>
+  <!-- карточка гола (ADR-036, раздел 4): видео поверх вкладки — обновление раз в минуту его не трогает -->
+  <div class="sheet-back" id="card-back" hidden></div>
+  <section class="sheet" id="card" role="dialog" aria-modal="true" aria-labelledby="card-title" hidden></section>
 </body>
 </html>

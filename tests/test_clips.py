@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "tests"))
 
+import admin  # noqa: E402
 import build_data as b  # noqa: E402
 import clips  # noqa: E402
 import probe_scoreboard as sb  # noqa: E402
@@ -208,9 +209,9 @@ class Pulse(unittest.TestCase):
         marked = {KEY: {"video": "https://vkvideo.ru/video-100_200", "anchors": {"1:2": 4010},
                         "goals": [{"score": "1:2", "t": 4000, "exact": True}]}}
         got = clips.catalog(store, league, marked, date(2026, 10, 5))
-        self.assertEqual(got, {"goals": 3, "timed": 2, "timed_auto": 1, "timed_admin": 1, "clips": 1, "ask": 1,
-                               "no_video": 0, "mismatch": 1, "no_board": 0, "boards": 0, "m_total": 2, "m_full": 1,
-                               "m_none": 1, "g_replay": 3, "run": 0})
+        self.assertEqual(got, {"goals": 3, "timed": 2, "timed_auto": 1, "timed_admin": 1, "clips": 1, "wide": 0,
+                               "ask": 1, "no_video": 0, "mismatch": 1, "no_board": 0, "boards": 0, "m_total": 2,
+                               "m_full": 1, "m_none": 1, "g_replay": 3, "run": 0, "two": 0})
         # rostov — запись клуба, ещё не разобрана: ни одного повтора; 9:9 нет в протоколе
 
     def test_catalog_unmarked_board(self):
@@ -244,44 +245,38 @@ class Previews(unittest.TestCase):
             self.assertEqual(clips.clock_stops(vis, clock), [104, 112])
             self.assertEqual(clips.clock_stops(vis[:3] + vis[6:], clock), [112])   # разрыв в кадрах — не остановка
 
-    def test_preview_exact_start(self):
-        with mock.patch.object(clips.sb, "ffmpeg", return_value="ffmpeg"):   # на раннере GitHub ffmpeg нет
-            cmd = clips.preview_cmd("http://x/s.m3u8", {"Referer": "https://vk.com"}, 2849, 125, Path("p.mp4"))
-        self.assertLess(cmd.index("-ss"), cmd.index("-i"))
-        self.assertIn("libx264", cmd)                       # перекодируем: нулевая секунда превью — ровно 2849
-        self.assertEqual(cmd[cmd.index("-t") + 1], "125")
-
     def test_only_goals_without_second(self):
         goals = {"0:2": {"t": 2963, "change": 2969}, "0:1": {"t": None, "change": None}}
-        with mock.patch.object(clips.sb, "stream_of") as stream:
-            clips.add_previews(KEY, VIDEO, goals, None, Path("."))
+        with mock.patch.object(clips.sb, "stream_of") as stream, mock.patch.object(clips, "cut_jobs") as jobs:
+            clips.add_previews(KEY, VIDEO, goals, None)
         stream.assert_not_called()
+        jobs.assert_not_called()
         self.assertNotIn("ask", goals["0:2"])
 
-
-    def test_preview_keeps_size_and_skips_short(self):
-        """05.10: превью без длины Telegram показывал «0:01» — длину и размер кладём в ask, короткое не шлём."""
-        def run(cmd, **kw):
-            Path(cmd[-1]).write_bytes(b"v")
-            return mock.Mock(returncode=0)
-        for info, has_ask in (({"w": 640, "h": 360, "dur": 125}, True), ({"w": 640, "h": 360, "dur": 1}, False)):
-            goals = {"0:1": {"t": None, "change": 6869}}
-            with tempfile.TemporaryDirectory(dir=clips.ROOT) as tmp, \
-                    mock.patch.object(clips.sb, "stream_of", return_value=("http://x", {}, 9123)), \
-                    mock.patch.object(clips.sb, "BOARDS", {}), mock.patch.object(clips.sb, "ffmpeg", return_value="f"), \
-                    mock.patch.object(clips.subprocess, "run", side_effect=run), \
-                    mock.patch.object(clips, "video_info", return_value=info):
-                clips.add_previews(KEY, VIDEO, goals, 9123, Path(tmp))
-            self.assertEqual("ask" in goals["0:1"], has_ask)
-            if has_ask:
-                self.assertEqual({k: goals["0:1"]["ask"][k] for k in ("w", "h", "dur")}, info)
-
-    def test_video_info_from_ffprobe(self):
-        out = json.dumps({"streams": [{"width": 640, "height": 360}], "format": {"duration": "125.000000"}})
-        with mock.patch.object(clips.subprocess, "run", return_value=mock.Mock(stdout=out)):
-            self.assertEqual(clips.video_info(Path("p.mp4")), {"w": 640, "h": 360, "dur": 125})
-        with mock.patch.object(clips.subprocess, "run", side_effect=OSError):
-            self.assertEqual(clips.video_info(Path("p.mp4")), {})
+    def test_preview_is_a_cut_job(self):
+        """07.10 (ADR-036): превью режет служба cuts — у гола окно, задание и моменты часов, своего ffmpeg нет.
+        Одно окно — одно задание: тот же гол на следующем проходе получает то же задание."""
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "STATE_DB", Path(tmp) / "state.db"), \
+                mock.patch.object(clips, "_jobs", None), mock.patch.object(clips.sb, "BOARDS", {}), \
+                mock.patch.object(clips.sb, "stream_of") as stream:
+            goals = {"0:1": {"t": None, "change": 6869}, "0:2": {"t": None, "change": None, "win": [7000, 7040],
+                                                              "wcand": [7012, 7031]}}
+            clips.add_previews(KEY, VIDEO, goals, 9123)
+            again = {"0:1": {"t": None, "change": 6869}}
+            clips.add_previews(KEY, VIDEO, again, 9123)
+            jobs = clips.cut_jobs()
+            first = jobs.get(goals["0:1"]["ask"]["job"])
+            run = jobs.get(goals["0:2"]["ask"]["job"])
+            jobs.conn.close()
+        stream.assert_not_called()   # без разметки часов поток не нужен: окно знаем, моменты — от счёта хода
+        self.assertEqual({k: goals["0:1"]["ask"][k] for k in ("from", "len", "cand")}, {"from": 6749, "len": 125,
+                                                                                        "cand": []})
+        self.assertNotIn("file", goals["0:1"]["ask"])
+        self.assertEqual((first["start"], first["len"], first["kind"], first["prio"], first["match"], first["score"]),
+                         (6749, 125, "preview", clips.cutjobs.SEND, KEY, "0:1"))
+        self.assertEqual(again["0:1"]["ask"]["job"], first["id"])
+        self.assertEqual((run["start"], run["len"]), (6980, 70))
+        self.assertEqual(goals["0:2"]["ask"]["cand"], [32, 51])
 
 
 class Guesses(unittest.TestCase):
@@ -449,9 +444,10 @@ class S3Sign(unittest.TestCase):
 
 
 class Cutting(unittest.TestCase):
-    """Шаг 6: что резать, что убрать, выкладка в бакет и клип у гола протокола."""
+    """Шаг 6: что резать, что убрать, выкладка в бакет и клип у гола протокола. 0:1 — часы встали, и ход часов от
+    другого точного гола подтвердил: два свидетеля (ADR-033, раздел 4)."""
     game = {"video": VIDEO, "goals": {"0:1": {"t": 2600, "src": "clock", "team": "away"},
-                                      "0:2": {"t": None, "change": 2969}}}
+                                      "0:2": {"t": None, "change": 2969}}, "run": {"confirmed": ["0:1"]}}
     protocol = {"0:1": {"score": "0:1", "team": "away", "author": "Иванов", "assists": []},
                 "0:2": {"score": "0:2", "team": "away", "author": "Петров", "assists": ["Игрок скрыт"]}}
 
@@ -462,12 +458,39 @@ class Cutting(unittest.TestCase):
         self.assertEqual(clips.clip_plan(self.game, None, {}), ([], []))  # протокола нет — ждём
         done = {**self.game, "clips": {"0:1": {"t": 2600, "team": "away"}}}
         self.assertEqual(clips.clip_plan(done, None, self.protocol), ([], []))
-        moved = {**done, "goals": {"0:1": {"t": 2610, "src": "clock"}}}
+        moved = {**done, "goals": {"0:1": {"t": 2610, "src": "clock"}}}   # ход часов подтвердил новую секунду
         self.assertEqual(clips.clip_plan(moved, None, self.protocol)[0], [("0:1", 2610, "clock")])
         gone = {**done, "clips": {"0:1": {"t": 2600, "team": "home"}}}   # счета сдвинулись: другой команды
         self.assertEqual(clips.clip_plan(gone, None, self.protocol)[1], ["0:1"])
         lost = {**done, "goals": {"0:1": {"t": None, "src": None}}}   # разбор поправили: секунды у гола нет
         self.assertEqual(clips.clip_plan(lost, None, self.protocol), ([], ["0:1"]))
+
+    def test_two_witnesses(self):
+        """ADR-033, раздел 4: клип — только когда точную секунду подтверждают два независимых свидетеля."""
+        one = {**self.game, "run": {}}                                   # часы встали, хода часов нет — один
+        self.assertEqual(clips.clip_witnesses(one, None), {})
+        self.assertEqual(clips.clip_witnesses(self.game, None), {"0:1": (2600, "clock", "board+run")})
+        run = {**one, "goals": {"0:1": {"t": 2600, "src": "run"}}}      # часы встали там, где по протоколу
+        self.assertEqual(clips.clip_witnesses(run, None)["0:1"][2], "clock+run")
+        admin = {"video": VIDEO, "anchors": {"0:1": 2590}}
+        checked = {**one, "checks": {"0:1": {"t": 2590, "status": "ok"}}}
+        self.assertEqual(clips.clip_witnesses(checked, admin)["0:1"], (2590, "admin", "admin+board"))
+        unknown = {**one, "checks": {"0:1": {"t": 2590, "status": "unknown"}}}
+        self.assertEqual(clips.clip_witnesses(unknown, admin), {})       # нечем проверить — один человек
+        seen = {**admin, "confirm": {"0:1": [2590]}}                     # 30 с посмотрел другой — «✅ Гол виден»
+        self.assertEqual(clips.clip_witnesses(unknown, seen)["0:1"][2], "seen")
+        self.assertEqual(clips.clip_witnesses(one, {"video": VIDEO, "confirm": {"0:1": [2600]}})["0:1"][2], "seen")
+        # «✅» от того, кто сам поставил эту секунду, в confirm не попадает (marks.own_confirm) — тест в test_marks
+
+    def test_objection_takes_clip_down(self):
+        """Свидетель возразил уже выложенному клипу — клип снимается сразу (ADR-033, раздел 4)."""
+        done = {**self.game, "clips": {"0:1": {"t": 2600, "team": "away"}}}
+        self.assertEqual(clips.clip_plan(done, None, self.protocol), ([], []))
+        objected = {"video": VIDEO, "reject": {"0:1": [2600]}}           # «⏪ Гол раньше» под 30 с гола
+        self.assertEqual(clips.clip_plan(done, objected, self.protocol), ([], ["0:1"]))
+        self.assertNotIn("0:1", clips.goal_seconds(done, objected))
+        seen = {"video": VIDEO, "confirm": {"0:1": [2600]}, "reject": {"0:1": [2610]}}   # возражали другой секунде
+        self.assertEqual(clips.clip_plan(done, seen, self.protocol), ([], []))
 
     def test_admin_second_wins(self):
         admin = {"video": VIDEO, "anchors": {"0:1": 2590}}
@@ -499,6 +522,14 @@ class Cutting(unittest.TestCase):
     def test_no_keys_no_cutting(self):
         self.assertEqual(clips.cut_pass({"games": {KEY: dict(self.game)}}, None, {}, mock.Mock(ok=False)), 0)
 
+    def test_pause_is_now_a_switch(self):
+        """ADR-030, дополнение 07.10: режем по умолчанию, пауза — только явный CLIPS_CUT=off."""
+        self.assertTrue(clips.cut_on(None))
+        self.assertTrue(clips.cut_on(""))
+        self.assertTrue(clips.cut_on("on"))
+        self.assertFalse(clips.cut_on("off"))
+        self.assertFalse(clips.cut_on(" OFF\n"))
+
     def test_paused_no_cutting(self):
         """Нарезка на паузе (дополнение 06.10, ночь): ключи есть, секунда и протокол есть — клип не режется."""
         bucket, cut = mock.Mock(ok=True), mock.Mock()
@@ -522,6 +553,17 @@ class Cutting(unittest.TestCase):
         self.assertEqual(g["goals"][0]["clip"], {"mp4": url + ".mp4", "poster": url + ".jpg", "dur": 30})
         self.assertNotIn("clip", g["goals"][1])   # скрыт по просьбе
         self.assertNotIn("clip", g["goals"][2])   # клип другой команды — не этот гол
+
+    def test_build_marks_a_window(self):
+        """ADR-037: окно доезжает до мини-аппа с видом — он подпишет его «Гол в этом отрезке»."""
+        g = {"date": "2026-10-04", "home": "tverichi", "away": "metallurg", "goals": [
+            {"period": "1", "score": "0:1", "team": "away", "author": "Иванов", "assists": []}]}
+        url = "https://s3.twcstorage.ru/rhl-clips/clips/x"
+        have = {KEY: {"clips": {"0:1": {"team": "away", "kind": "window", "from": 2480, "len": 125,
+                                        "mp4": url + "w.mp4", "poster": url + "w.jpg", "dur": 125}}}}
+        self.assertEqual(b.apply_clips([g], have), 1)
+        self.assertEqual(g["goals"][0]["clip"], {"mp4": url + "w.mp4", "poster": url + "w.jpg", "dur": 125,
+                                                 "kind": "window"})
 
 
 class Wipe(unittest.TestCase):
@@ -652,6 +694,16 @@ class ClockPass(unittest.TestCase):
         self.assertEqual(n, 1)
         self.assertGreaterEqual(disk["games"][KEY]["run"]["checked"], 1)     # 0:1 и 0:3 проверили друг друга
 
+    def test_all_exact_still_checked_for_witnesses(self):
+        """ADR-033, раздел 4: все голы точные и людей нет — счёт хода всё равно сверяет их парами: гол табло,
+        подтверждённый ходом часов, — второй свидетель для клипа. Раньше такой матч не пересчитывали вовсе."""
+        self.store["games"][KEY]["goals"]["0:2"] = {"t": 659, "src": "clock", "team": "away", "change": 700}
+        n, disk = self.run_pass()
+        self.assertEqual(n, 1)
+        game = disk["games"][KEY]
+        self.assertEqual(game["run"]["confirmed"], ["0:1", "0:2"])
+        self.assertEqual(sorted(clips.clip_witnesses(game, None)), ["0:1", "0:2"])
+
 
 class Coverage(unittest.TestCase):
     """ADR-031: у каждого сыгранного матча — сколько голов с повтором и почему не у всех."""
@@ -698,6 +750,65 @@ class Coverage(unittest.TestCase):
     def test_waiting_recording_is_pending(self):
         store = {"games": {KEY: {"video": VIDEO, "status": "wait", "goals": {}}}}
         self.assertEqual(clips.coverage(store, LEAGUE, {}, date(2026, 10, 5))[KEY]["why"], "pending")
+
+
+class GoalStates(unittest.TestCase):
+    """ADR-036, раздел 4: где каждый гол на конвейере — для вкладки «Голы» пульта, по тем же правилам, что клип."""
+    SCORES = ("0:1", "0:2", "1:2", "1:3", "2:3", "2:4", "2:5")
+
+    def setUp(self):
+        self.league = {"games": [{**LEAGUE["games"][0], "goals": [
+            {"score": s, "team": "home" if s in ("1:2", "2:3") else "away", "period": "1"} for s in self.SCORES]}]}
+        self.store = {"games": {KEY: {
+            "video": VIDEO, "status": "ok", "src": "league",
+            "clips": {"0:1": {"t": 2600}},
+            "goals": {"0:1": {"t": 2600, "src": "clock"}, "0:2": {"t": 2900, "src": "run"},
+                      "1:2": {"t": 3500, "src": "board"}, "1:3": {"change": 3700, "ask": {"start": 3580}}},
+            "checks": {"2:4": {"t": 4000, "status": "conflict", "against": ["табло"]}}}}}
+        self.marked = {KEY: {"video": VIDEO, "anchors": {"2:4": 4000}, "absent": ["2:5"], "goals": []}}
+
+    def test_every_goal_has_its_place(self):
+        got = clips.coverage(self.store, self.league, self.marked, date(2026, 10, 5))[KEY]
+        self.assertEqual(list(got["state"]), list(self.SCORES))             # по порядку голов
+        self.assertEqual(got["state"], {"0:1": "clip", "0:2": "ready", "1:2": "confirm", "1:3": "approx",
+                                        "2:3": "search", "2:4": "dispute", "2:5": "absent"})
+
+    def test_club_recording_and_hidden_player_never_get_a_clip(self):
+        game = {**self.store["games"][KEY], "src": "club", "clips": {}}
+        protocol = clips.league_goals(self.league, KEY)
+        got = clips.goal_states(game, None, protocol, {"0:1", "0:2"}, None, "ok")
+        self.assertEqual(got, {"0:1": "confirm", "0:2": "done"})            # два свидетеля, а клипа не будет
+        got = clips.goal_states({**game, "src": "league"}, None, {}, {"0:2"}, None, "ok")
+        self.assertEqual(got, {"0:2": "done"})                              # протокола нет — резать нечего
+        protocol["0:2"] = {**protocol["0:2"], "author": clips.pc.HIDDEN_NAME}
+        got = clips.goal_states({**game, "src": "league"}, None, protocol, {"0:2"}, None, "ok")
+        self.assertEqual(got, {"0:2": "done"})
+
+    def test_match_stuck_before_goals(self):
+        self.store["games"][KEY].update(status="gone", gone_at="2026-10-05T10:00:00+03:00")
+        got = clips.coverage(self.store, self.league, self.marked, date(2026, 10, 5))[KEY]
+        self.assertEqual(set(got["state"].values()), {"stuck", "absent"})   # по удалённой записи — ничего
+        entry = {"video": "https://vk.com/video-1_9", "goals": [{"score": "0:1", "t": 90, "exact": True}]}
+        got = clips.goal_states(self.store["games"][KEY], None, {}, {"0:1", "0:2"}, entry, "gone")
+        self.assertEqual(got, {"0:1": "confirm", "0:2": "stuck"})           # человек отметил после удаления
+        got = clips.goal_states({}, None, {}, {"0:1"}, None, "pending")
+        self.assertEqual(got, {"0:1": "stuck"})
+        got = clips.goal_states({}, {"video": VIDEO, "anchors": {"0:1": 50}}, {}, {"0:1"}, None, "pending")
+        self.assertEqual(got, {"0:1": "confirm"})                           # отметку человека проверить нечем
+
+    def test_scan_is_visible_on_the_panel(self):
+        """«Сейчас»: какую запись служба разбирает — в пульсе до разбора, после прохода — пусто."""
+        seen = []
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            track = clips.admin.Tracker("clips", Path(tmp) / "status.json")
+
+            def scan(*_):
+                seen.append(json.loads((Path(tmp) / "status.json").read_text())["info"])
+                return {"status": "ok", "goals": {}}
+            clips.run_pass({}, {"games": LEAGUE["games"][:1]}, {}, datetime(2026, 10, 5, 12, tzinfo=TZ), scan=scan,
+                           track=track)
+        self.assertEqual((seen[0]["scan"]["key"], seen[0]["waiting"]), (KEY, 0))
+        self.assertIsNone(track.info_["scan"])
 
 
 class Waiting(unittest.TestCase):
@@ -962,5 +1073,306 @@ class Gone(unittest.TestCase):
         self.assertEqual((cov["why"], cov["replays"]), ("gone", 0))
         self.assertIn("gone", clips.WHY)
 
+class Prepared(unittest.TestCase):
+    """ADR-036, раздел 2: после прохода — видео всего, что ждёт человека, служба cuts режет заранее."""
+    now = datetime(2026, 10, 5, 21, 0, tzinfo=TZ)
+
+    def test_what_waits_for_a_human(self):
+        game = {"video": VIDEO, "status": "ok", "length": 9000, "goals": {
+            "1:0": {"t": 2600, "src": "clock", "change": 2620},     # табло, без отметки — один свидетель
+            "1:1": {"t": 3500, "src": "clock", "change": 3520},     # отметка сошлась — два свидетеля
+            "2:1": {"t": None, "change": 4969},                     # спор: отметка против смены счёта
+            "2:2": {"t": 5600, "src": "board", "change": 5640},     # спор: отметка против секунды табло
+            "3:2": {"t": None, "change": 6000},                     # без секунды — превью, не здесь
+            "3:3": {"t": 7000, "src": "clock", "off": "absent"}},   # нет в записи
+            "checks": {"1:1": {"t": 3495, "status": "ok"}, "2:1": {"t": 5100, "status": "conflict"},
+                       "2:2": {"t": 5700, "status": "conflict"}, "4:3": {"t": 8000, "status": "unknown"},
+                       "4:4": {"t": 8500, "status": "pending"}}}
+        admin = {"video": "https://vkvideo.ru/video-100_200", "absent": ["3:3"],
+                 "anchors": {"1:1": 3495, "2:1": 5100, "2:2": 5700, "4:3": 8000, "4:4": 8500}}
+        got = clips.cut_wants(game, admin)
+        self.assertEqual(sorted(got), sorted([
+            (2580, 30, "1:0", "review"),
+            (5080, 30, "2:1", "review"), (4849, 125, "2:1", "preview"),     # обе версии спора
+            (5680, 30, "2:2", "review"), (5580, 30, "2:2", "review"),
+            (7980, 30, "4:3", "review")]))                                    # отметку нечем проверить
+        other = {**admin, "video": "https://vk.com/video-9_9"}               # отметки к другому ролику
+        self.assertEqual(clips.cut_wants(game, other), [(2580, 30, "1:0", "review"), (3480, 30, "1:1", "review"),
+                                                         (5580, 30, "2:2", "review")])
+
+    def test_two_witnesses_wait_only_for_the_clip(self):
+        """1.3 плана: у гола два свидетеля — людям смотреть его не надо, окно в очередь cuts не ставим."""
+        game = {"video": VIDEO, "status": "ok", "length": 9000, "run": {"confirmed": ["2:0"]}, "goals": {
+            "1:0": {"t": 2600, "src": "run", "change": 2620},       # часы встали там, где по протоколу — двое
+            "2:0": {"t": 3500, "src": "clock", "change": 3520},     # табло и ход часов сошлись — двое
+            "3:0": {"t": 4400, "src": "clock", "change": 4420}}}    # табло одно — свидетель один
+        self.assertEqual(clips.cut_wants(game, None), [(4380, 30, "3:0", "review")])
+        seen = {"video": VIDEO, "confirm": {"3:0": [4400]}}          # человек посмотрел 30 с: «✅ Гол виден»
+        self.assertEqual(clips.cut_wants(game, seen), [])
+
+    def test_recent_matches_only_once(self):
+        goals = {"1:0": {"t": 2600, "src": "clock", "change": 2620}}
+        store = {"games": {
+            "2026-10-05|tverichi|metallurg": {"video": VIDEO, "status": "ok", "goals": goals},
+            "2026-10-03|rostov|krasnodar": {"video": "https://vk.com/video-1_2", "status": "ok", "goals": goals},
+            "2026-10-02|kaluga|dinamo-576": {"video": "https://vk.com/video-3_4", "status": "ok", "goals": goals},
+            "2026-10-04|sokol|proton": {"video": "https://vk.com/video-5_6", "status": "ok", "src": "club",
+                                        "goals": goals},
+            "2026-10-04|proton|kristall": {"video": "https://vk.com/video-7_8", "status": "gone", "goals": goals}}}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "STATE_DB", Path(tmp) / "state.db"), \
+                mock.patch.object(clips, "_jobs", None):
+            self.assertEqual(clips.prepare_cuts(store, {}, self.now), 2)
+            self.assertEqual(clips.prepare_cuts(store, {}, self.now), 2)
+            jobs = clips.cut_jobs()
+            rows = [jobs.take(self.now) for _ in range(3)]
+            jobs.conn.close()
+        self.assertEqual([r["match"] for r in rows[:2]], ["2026-10-05|tverichi|metallurg", "2026-10-03|rostov|krasnodar"])
+        self.assertEqual({(r["start"], r["len"], r["kind"], r["prio"]) for r in rows[:2]},
+                         {(2580, 30, "review", clips.cutjobs.PREP)})
+        self.assertIsNone(rows[2])   # каждое окно — одно задание, повторная просьба не множит
+
+    def test_dead_preview_asked_again(self):
+        """Ревью PR #138: превью, у которого кончились попытки, служба просит снова каждый проход — через
+        cutjobs.REVIVE оно пойдёт на новый круг. Готовое превью не трогаем: бот не должен прислать его второй раз."""
+        key = "2026-10-05|tverichi|metallurg"
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "STATE_DB", Path(tmp) / "state.db"), \
+                mock.patch.object(clips, "_jobs", None):
+            jobs = clips.cut_jobs()
+            dead = jobs.want(self.now, VIDEO, 6749, 125, "preview", prio=clips.cutjobs.SEND)
+            jobs.fail(dead, self.now, "HTTP Error 403", final=True)
+            ready = jobs.want(self.now, VIDEO, 7749, 125, "preview", prio=clips.cutjobs.SEND)
+            jobs.take(self.now)
+            jobs.done(ready, self.now, "media/cuts/x.mp4", 854, 480, 125)   # файла нет: «готово», но пропал
+            store = {"games": {key: {"video": VIDEO, "status": "ok", "goals": {
+                "0:1": {"t": None, "change": 6869, "ask": {"from": 6749, "len": 125, "job": dead}},
+                "0:2": {"t": None, "change": 7869, "ask": {"from": 7749, "len": 125, "job": ready}}}}}}
+            later = self.now + clips.cutjobs.REVIVE
+            self.assertEqual(clips.prepare_cuts(store, {}, later), 1)
+            got = (jobs.get(dead)["status"], jobs.get(ready)["status"])
+            answered = {key: {"video": VIDEO, "anchors": {"0:1": 6800}}}
+            jobs.fail(dead, later, "снова", final=True)
+            self.assertEqual(clips.prepare_cuts(store, answered, later + clips.cutjobs.REVIVE), 0)   # уже ответили
+            jobs.conn.close()
+        self.assertEqual(got, ("queued", "done"))
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class Windows(unittest.TestCase):
+    """ADR-037: повтор у болельщика всегда в приложении — у гола без двух свидетелей своё окно записи."""
+    protocol = {"0:1": {"score": "0:1", "team": "away", "period": "1"},
+                "0:2": {"score": "0:2", "team": "away", "period": "2"}}
+    league = {"games": [{**LEAGUE["games"][0], "goals": list(protocol.values())}]}
+
+    def game(self, **goals):
+        return {"video": VIDEO, "status": "ok", "length": 9000, "goals": goals}
+
+    def test_window_by_scoreboard_change(self):
+        """Секунда примерная — окно по смене счёта: оператор меняет счёт через 0–90 с после гола."""
+        game = self.game(**{"0:1": {"t": None, "change": 2600, "team": "away"}})
+        self.assertEqual(clips.fan_windows(game, None), {"0:1": (2480, 130)})
+        cut, drop = clips.window_plan(game, None, self.protocol)
+        self.assertEqual((cut, drop), ([("0:1", 2480, 130)], []))
+
+    def test_window_by_clock_run(self):
+        game = self.game(**{"0:1": {"t": None, "win": [2600, 2700], "change": 2800, "team": "away"}})
+        self.assertEqual(clips.fan_windows(game, None), {"0:1": (2570, 130)})
+
+    def test_window_around_a_single_witness(self):
+        """Секунда точная, но свидетель один (табло без хода часов) — окно 70 с вокруг неё, а не клип 30 с."""
+        game = self.game(**{"0:1": {"t": 2600, "src": "clock", "change": 2620, "team": "away"}})
+        self.assertEqual(clips.clip_witnesses(game, None), {})
+        self.assertEqual(clips.fan_windows(game, None), {"0:1": (2550, 70)})
+        self.assertEqual(clips.window_plan(game, None, self.protocol)[0], [("0:1", 2550, 70)])
+
+    def test_two_witnesses_get_a_clip_not_a_window(self):
+        game = {**self.game(**{"0:1": {"t": 2600, "src": "clock", "change": 2620, "team": "away"}}),
+                "run": {"confirmed": ["0:1"]}}
+        self.assertIn("0:1", clips.clip_witnesses(game, None))
+        self.assertEqual(clips.window_plan(game, None, self.protocol), ([], []))
+        done = {**game, "clips": {"0:1": {"kind": "window", "from": 2550, "len": 70, "files": ["a.mp4"]}}}
+        self.assertEqual(clips.window_plan(done, None, self.protocol), ([], ["0:1"]))   # окно уступает клипу
+        self.assertEqual(clips.clip_plan(done, None, self.protocol)[1], [])             # и клип его не трогает
+
+    def test_window_waits_for_the_protocol_and_skips_hidden(self):
+        game = self.game(**{"0:1": {"t": None, "change": 2600, "team": "away"}})
+        self.assertEqual(clips.window_plan(game, None, {}), ([], []))   # протокола нет — ни клипа, ни окна
+        hidden = {"0:1": {"score": "0:1", "team": "away", "period": "1", "author": "Игрок скрыт"}}
+        self.assertEqual(clips.window_plan(game, None, hidden), ([], []))
+
+    def test_same_window_is_not_cut_twice(self):
+        game = self.game(**{"0:1": {"t": None, "change": 2600, "team": "away"}})
+        done = {**game, "clips": {"0:1": {"kind": "window", "from": 2480, "len": 130}}}
+        self.assertEqual(clips.window_plan(done, None, self.protocol), ([], []))
+        moved = {**game, "goals": {"0:1": {"t": None, "change": 2700, "team": "away"}},
+                 "clips": {"0:1": {"kind": "window", "from": 2480, "len": 130}}}
+        self.assertEqual(clips.window_plan(moved, None, self.protocol)[0], [("0:1", 2580, 130)])
+
+    def test_review_keeps_windows_safe(self):
+        """Ревью PR: окна нельзя снести ни по пустому протоколу (league.json не скачался), ни у удалённой записи —
+        пересоздать их нечем, а у удалённой записи окно и есть единственный уцелевший повтор."""
+        game = {**self.game(**{"0:1": {"t": None, "change": 2600, "team": "away"}}),
+                "clips": {"0:1": {"kind": "window", "from": 2480, "len": 130, "files": ["a.mp4", "a.jpg"]}}}
+        self.assertEqual(clips.window_plan(game, None, {}), ([], []))          # протокола нет — не трогаем
+        gone = {**game, "status": "gone"}
+        self.assertEqual(clips.window_plan(gone, None, self.protocol), ([], []))
+        bucket = mock.Mock(ok=True)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)), \
+                mock.patch.object(clips, "CUT", True):
+            clips.cut_pass({"games": {KEY: gone}}, self.league, {}, bucket, cut=mock.Mock(), stream=mock.Mock(),
+                           cut_win=mock.Mock())
+        bucket.delete.assert_not_called()
+        self.assertIn("0:1", gone["clips"])
+
+    def test_window_follows_what_the_fan_sees(self):
+        """Ревью PR: окно берём у replay.with_board, а не у табло напрямую — иначе у гола с пометкой «табло
+        сбилось» окно вырезалось бы вокруг отвергнутой смены счёта, в получасе от гола."""
+        game = self.game(**{"0:1": {"t": 1800, "src": "clock", "change": 1820, "team": "away"},
+                            "0:2": {"t": None, "change": 5030, "team": "away"}})
+        admin = {"video": VIDEO, "anchors": {"0:1": 1800}, "wrong": ["0:2"], "goals": []}
+        self.assertNotIn("0:2", clips.fan_windows(game, admin))
+        absent = {"video": VIDEO, "anchors": {}, "absent": ["0:1"], "goals": []}
+        self.assertNotIn("0:1", clips.fan_windows(absent and game, absent))
+
+    def test_pult_does_not_call_a_window_a_clip(self):
+        """Ревью PR: окно у болельщиков не закрывает гол — на пульте он всё ещё ждёт «✅ Гол виден», иначе очередь
+        «Ждут вас» пустеет и второй свидетель не появляется никогда."""
+        game = self.game(**{"0:1": {"t": 2600, "src": "clock", "change": 2620, "team": "away"}})
+        game["clips"] = {"0:1": {"kind": "window", "from": 2550, "len": 70}}
+        game["checks"] = {"0:1": {"t": 2600, "status": "unknown"}}
+        entry = replay.with_board(None, game)
+        got = clips.goal_states(game, None, self.protocol, {"0:1"}, entry, None)
+        self.assertEqual(got, {"0:1": "confirm"})
+        game["clips"] = {"0:1": {"t": 2600, "src": "clock"}}   # точный клип — гол закрыт
+        self.assertEqual(clips.goal_states(game, None, self.protocol, {"0:1"}, entry, None), {"0:1": "clip"})
+
+    def test_pass_cuts_windows_and_marks_them(self):
+        bucket = mock.Mock(ok=True)
+        bucket.put.side_effect = lambda name, body, ct: f"https://s3.twcstorage.ru/rhl-clips/{name}"
+        store = {"games": {KEY: self.game(**{"0:1": {"t": None, "change": 2600, "team": "away"}})}}
+        with tempfile.TemporaryDirectory() as tmp:
+            clip, poster = Path(tmp) / "w.mp4", Path(tmp) / "w.jpg"
+            clip.write_bytes(b"mp4")
+            poster.write_bytes(b"jpg")
+            cut_win = mock.Mock(return_value=(clip, poster, 130.0))
+            stream = mock.Mock(return_value=("src", {}, 9000))
+            with mock.patch.object(clips, "LIVE_DIR", Path(tmp)), mock.patch.object(clips, "WORK", Path(tmp)), \
+                    mock.patch.object(clips.pc, "font_file", return_value="font.ttf"), \
+                    mock.patch.object(clips, "CUT", True):
+                self.assertEqual(clips.cut_pass(store, self.league, {}, bucket, cut=mock.Mock(),
+                                                stream=stream, cut_win=cut_win), 1)
+        got = store["games"][KEY]["clips"]["0:1"]
+        self.assertEqual((got["kind"], got["from"], got["len"], got["team"]), ("window", 2480, 130, "away"))
+        self.assertEqual(cut_win.call_args.args[2:4], (2480, 130))
+        self.assertTrue(got["mp4"].endswith("0-1-2480w.mp4"), got["mp4"])
+        self.assertEqual(clips.catalog(store, self.league, {}, date(2026, 10, 5))["wide"], 1)
+
+
+class Watchdogs(unittest.TestCase):
+    """Сторожа службы (ADR-034): инварианты прохода и «канарейка» yt-dlp."""
+    now = datetime(2026, 10, 8, 12, 0, tzinfo=TZ)
+    league = {"games": [{**LEAGUE["games"][0], "goals": [
+        {"score": "0:1", "team": "away", "period": "1"}, {"score": "0:2", "team": "away", "period": "2"}]}]}
+
+    def test_seconds_out_of_protocol_order(self):
+        store = {"games": {KEY: {"video": VIDEO, "status": "ok", "goals": {
+            "0:1": {"t": 3000, "src": "clock"}, "0:2": {"t": 2600, "src": "clock"}}}}}
+        got = clips.invariants(store, self.league, {}, self.now)
+        self.assertEqual([p["key"] for p in got], [f"order:{KEY}"])
+        self.assertIn("не в порядке протокола", got[0]["text"])
+        store["games"][KEY]["goals"]["0:2"]["t"] = 3600
+        self.assertEqual(clips.invariants(store, self.league, {}, self.now), [])
+
+    def test_clip_cut_past_the_scoreboard(self):
+        """05.10 клип 4:0 был вырезан на секунде гола 1:0 — именно это и ловим."""
+        game = {"video": VIDEO, "status": "ok", "goals": {"0:1": {"t": 2600, "src": "clock", "change": 2620}},
+                "clips": {"0:1": {"t": 2600, "team": "away"}}}
+        self.assertEqual(clips.invariants({"games": {KEY: game}}, self.league, {}, self.now), [])
+        game["clips"]["0:1"]["t"] = 2700                               # позже смены счёта — гола там быть не может
+        got = clips.invariants({"games": {KEY: game}}, self.league, {}, self.now)
+        self.assertEqual([p["key"] for p in got], [f"clip:{KEY}:0:1"])
+        self.assertIn("позже смены счёта", got[0]["text"])
+        game["clips"]["0:1"]["t"] = 2200                               # за семь минут до смены — другой гол
+        got = clips.invariants({"games": {KEY: game}}, self.league, {}, self.now)
+        self.assertIn("раньше смены счёта", got[0]["text"])
+
+    def test_coverage_must_not_drop(self):
+        store = {"coverage": {KEY: {"replays": 5, "goals": 5, "why": "ok"}}}
+        self.assertEqual(clips.cover_drop(store, self.now), [])        # первый счёт — он и максимум
+        self.assertEqual(store["cover_top"], {"day": "2026-10-08", "games": {KEY: [5, 5]}})
+        store["coverage"][KEY]["replays"] = 3
+        got = clips.cover_drop(store, self.now)
+        self.assertEqual([p["key"] for p in got], ["cover"])
+        self.assertIn("было 5, стало 3", got[0]["text"])
+        self.assertEqual(clips.cover_drop(store, self.now + timedelta(days=1)), [])   # новый день — счёт заново
+        store["coverage"][KEY] = {"replays": 0, "goals": 5, "why": "gone"}   # запись удалили — об этом своя тревога
+        self.assertEqual(clips.cover_drop(store, self.now + timedelta(days=1)), [])
+        self.assertNotIn(KEY, store["cover_top"]["games"])              # вернётся запись — потерей это не будет
+
+    def test_protocol_fix_is_not_a_loss(self):
+        """Ревью PR #141: лига отменила гол — голов у матча стало меньше, и повторов тоже. Это не потеря разбора."""
+        store = {"coverage": {KEY: {"replays": 5, "goals": 5, "why": "ok"}}}
+        self.assertEqual(clips.cover_drop(store, self.now), [])
+        store["coverage"][KEY] = {"replays": 4, "goals": 4, "why": "ok"}   # гол отменили, счета сдвинулись
+        self.assertEqual(clips.cover_drop(store, self.now), [])
+        self.assertEqual(store["cover_top"]["games"][KEY], [4, 4])         # считаем от нового протокола
+        store["coverage"][KEY] = {"replays": 2, "goals": 4, "why": "ok"}   # голов столько же, повторов меньше
+        self.assertEqual([p["key"] for p in clips.cover_drop(store, self.now)], ["cover"])
+
+    def test_pass_writes_invariants_to_the_pult(self):
+        store = {"games": {KEY: {"video": VIDEO, "status": "ok", "goals": {
+            "0:1": {"t": 3000, "src": "clock"}, "0:2": {"t": 2600, "src": "clock"}}}}}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            track = admin.Tracker("clips", path=Path(tmp) / "clips.json", clock=lambda: self.now)
+            got = clips.watch_pass(store, self.league, {}, self.now, track=track)
+            track.flush()
+            said = json.loads((Path(tmp) / "clips.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(got), 1)
+        self.assertEqual(said["info"]["invariants"][0]["key"], f"order:{KEY}")   # дальше — пульт и тревога админам
+
+    def test_canary_asks_vk_once_a_day(self):
+        store = {"games": {KEY: {"video": VIDEO, "status": "ok", "goals": {}},
+                           "2026-10-02|sokol|proton": {"video": "https://vk.com/video-5_6", "status": "ok"}}}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            check = mock.Mock(return_value=("http://x", {}, 7200))
+            self.assertIs(clips.canary_pass(store, self.now, check=check), True)
+            self.assertEqual(check.call_args.args[0], VIDEO)            # свежая запись сезона
+            self.assertIsNone(clips.canary_pass(store, self.now + timedelta(hours=2), check=check))
+            self.assertEqual(check.call_count, 1)                       # раз в сутки, не каждый проход
+            dead = mock.Mock(side_effect=clips.VkError("DownloadError: Unable to extract player"))
+            track = admin.Tracker("clips", path=Path(tmp) / "clips.json", clock=lambda: self.now)
+            self.assertIs(clips.canary_pass(store, self.now + timedelta(days=1), check=dead, track=track), False)
+            track.flush()
+            said = json.loads((Path(tmp) / "clips.json").read_text(encoding="utf-8"))
+        self.assertIn("Unable to extract", store["canary"]["error"])
+        self.assertEqual(said["info"]["canary"]["ok"], False)
+        # ревью PR #141: счётчики дня канарейка не трогает — по ним считается «VK сегодня не отдал ни одной записи»
+        self.assertEqual(said["days"], {})
+
+    def test_canary_asks_only_about_a_parsed_recording(self):
+        """Ревью PR #141: запись, которая и раньше не скачивалась (приватная, не для этой страны), каждый день
+        давала бы одну и ту же тревогу не о том — канарейка спрашивает о разобранной."""
+        store = {"games": {
+            "2026-10-07|kaluga|dinamo-576": {"video": "https://vk.com/video-7_7", "status": "error", "tries": 3},
+            KEY: {"video": VIDEO, "status": "no_board", "goals": {}}}}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            check = mock.Mock(return_value=("http://x", {}, 7200))
+            self.assertIs(clips.canary_pass(store, self.now, check=check), True)
+        self.assertEqual(check.call_args.args[0], VIDEO)
+        only_bad = {"games": {"2026-10-07|kaluga|dinamo-576": {"video": "https://vk.com/video-7_7",
+                                                               "status": "error", "tries": 3}}}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            self.assertIsNone(clips.canary_pass(only_bad, self.now, check=mock.Mock()))
+
+    def test_canary_counts_a_deleted_recording_as_an_answer(self):
+        store = {"games": {KEY: {"video": VIDEO, "status": "ok", "goals": {}}}}
+        gone = mock.Mock(side_effect=clips.VkError("VkError: видео удалено"))
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            self.assertIs(clips.canary_pass(store, self.now, check=gone), True)
+        self.assertTrue(store["canary"]["gone"])
+
+    def test_canary_without_recordings(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "LIVE_DIR", Path(tmp)):
+            self.assertIsNone(clips.canary_pass({"games": {}}, self.now, check=mock.Mock()))

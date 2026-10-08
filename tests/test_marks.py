@@ -83,7 +83,7 @@ class Journal(unittest.TestCase):
         same = "https://vkvideo.ru/video-1_2"                      # тот же ролик другой ссылкой
         s.add(NOW, KEY, "1:0", "time", role="admin", via="replay", video=same, sec=700)
         self.assertEqual(s.state(KEY), {"video": "https://vk.com/video-1_2", "anchors": {"1:0": 700, "1:1": 600},
-                                        "absent": [], "wrong": []})
+                                        "absent": [], "wrong": [], "confirm": {}, "reject": {}})
 
     def test_revoke_match_and_nothing_left(self):
         s = store()
@@ -104,7 +104,39 @@ class Journal(unittest.TestCase):
         self.assertTrue(all(r["role"] == "import" and r["via"] == "import" and r["who"] is None for r in rows))
         self.assertEqual(rows[0]["at"], "2026-10-04T12:00:00+03:00")
         self.assertEqual(s.state(KEY), {"video": VIDEO, "anchors": {"1:0": 1800, "2:1": 4800}, "absent": ["1:1"],
-                                        "wrong": ["2:1"]})
+                                        "wrong": ["2:1"], "confirm": {}, "reject": {}})
+
+    def test_seen_and_objected_last_word_per_second(self):
+        """ADR-033, раздел 4: «✅ Гол виден» и «⏪ / ⏩ гола тут нет» на 30 с гола — у одной секунды действует
+        последнее; у другой секунды — своё."""
+        s = store()
+        s.add(NOW, KEY, "1:0", "time", role="admin", via="replay", who=1001, video=VIDEO, sec=1800)
+        s.add(NOW, KEY, "1:0", "confirm", role="helper", via="video", who=2002, video=VIDEO, sec=1800)
+        s.add(NOW, KEY, "1:0", "reject", role="helper", via="video", who=2002, video=VIDEO, sec=1800)
+        s.add(NOW, KEY, "1:1", "reject", role="admin", via="video", who=1001, video=VIDEO, sec=2500)
+        st = s.state(KEY)
+        self.assertEqual((st["confirm"], st["reject"]), ({}, {"1:0": [1800], "1:1": [2500]}))
+        s.add(NOW, KEY, "1:0", "confirm", role="helper", via="video", who=2002, video=VIDEO, sec=1800)
+        self.assertEqual(s.state(KEY)["confirm"], {"1:0": [1800]})
+        self.assertEqual(s.state(KEY)["reject"], {"1:1": [2500]})
+
+    def test_own_confirm_is_not_a_witness(self):
+        """Свидетели независимы (ADR-033, раздел 4): «✅ Гол виден» от того, кто сам поставил эту секунду, в confirm
+        не идёт — иначе два нажатия одного человека дали бы клип. Другой человек и другая секунда — идут."""
+        s = store()
+        s.add(NOW, KEY, "1:0", "time", role="admin", via="replay", who=1001, video=VIDEO, sec=1800)
+        s.add(NOW, KEY, "1:0", "confirm", role="admin", via="video", who=1001, video=VIDEO, sec=1801)
+        self.assertEqual(s.state(KEY)["confirm"], {})
+        s.add(NOW, KEY, "1:0", "confirm", role="admin", via="video", who=1001, video=VIDEO, sec=2600)
+        self.assertEqual(s.state(KEY)["confirm"], {"1:0": [2600]})   # не своя секунда — табло, он её видел
+        s.add(NOW, KEY, "1:0", "confirm", role="helper", via="video", who=2002, video=VIDEO, sec=1800)
+        self.assertEqual(s.state(KEY)["confirm"], {"1:0": [1800, 2600]})
+        s.add(NOW, KEY, "1:1", "confirm", role="admin", via="video", who=1001, video=VIDEO, sec=2500)
+        self.assertEqual(s.state(KEY)["confirm"]["1:1"], [2500])   # у гола нет своей отметки — свидетель он один
+        unknown = store()   # перенос из replays.json и /marks_forget: кто отметил, неизвестно — считаем, что он же
+        unknown.add(NOW, KEY, "1:0", "time", role="import", via="import", video=VIDEO, sec=1800)
+        unknown.add(NOW, KEY, "1:0", "confirm", role="admin", via="video", who=1001, video=VIDEO, sec=1800)
+        self.assertEqual(unknown.state(KEY)["confirm"], {})
 
 
 class BotJournal(unittest.TestCase):
@@ -199,6 +231,7 @@ class BotJournal(unittest.TestCase):
     def test_preview_answer_records_who_and_window(self):
         bot = mock.Mock()
         bot.edit_message_caption = mock.AsyncMock()
+        bot.send_message = mock.AsyncMock(return_value=mock.Mock(message_id=9))   # «⏳ Режу видео…» — 30 с ответа
         ask = {"from": 1500, "len": 125, "cand": [47, 72]}
         with mock.patch.object(self.bot, "published_league", mock.AsyncMock(return_value=None)), \
                 mock.patch.object(self.bot, "PREVIEWS_FILE", self.dir / "previews.json"):
@@ -279,10 +312,14 @@ class MarkChecks(unittest.TestCase):
         self.assertIn("спор: счёт на табло сменился раньше", text)
         bot = mock.Mock()
         bot.send_message = mock.AsyncMock()
+        later = self.now + self.bot.DISPUTE_CUT_WAIT
         with mock.patch.object(self.bot, "DISPUTES_FILE", self.dir / "disputes.json"), \
+                mock.patch.object(self.bot, "published_league", mock.AsyncMock(return_value=None)), \
                 mock.patch.object(self.bot.asyncio, "sleep", mock.AsyncMock()):
-            self.assertEqual(asyncio.run(self.bot.dispute_step(bot, self.now)), 1)
-            self.assertEqual(asyncio.run(self.bot.dispute_step(bot, self.now)), 0)   # один раз
+            self.assertEqual(asyncio.run(self.bot.dispute_step(bot, self.now)), 0)   # видео спора ещё режется
+            # служба cuts так и не вырезала (стоит) — спор не ждёт её вечно: ссылками, как раньше
+            self.assertEqual(asyncio.run(self.bot.dispute_step(bot, later)), 1)
+            self.assertEqual(asyncio.run(self.bot.dispute_step(bot, later)), 0)   # один раз
         cid, text = bot.send_message.call_args.args
         self.assertEqual(cid, 1001)                                          # отметившему
         self.assertIn("Спор по голу 1:1", text)
@@ -306,7 +343,7 @@ class Coverage(unittest.TestCase):
         self.assertIn("2 матча", kb.inline_keyboard[0][0].text)
         text, kb = self.bot.coverage_todo(cov)
         self.assertIn("Что сделать", text)
-        self.assertIn("пришли время", text)
+        self.assertIn("пришлю видео для поиска", text)
         self.assertIn("кадр табло", text)
         calls = [b.callback_data for row in kb.inline_keyboard for b in row]
         self.assertEqual(calls, ["rp:m:2026-10-03:0", "rp:list"])   # калуги нет в файле дня — без кнопки

@@ -207,7 +207,8 @@ class Bot(unittest.TestCase):
         text = self.bot.replay_text("2026-10-03", GAME, e)
         self.assertIn("✅", text)
         self.assertIn("≈", text)
-        self.assertIn(html.escape(f"{PLAY}&t=4790"), text)   # в разметке Telegram & — это &amp;
+        self.assertIn("— ✅ 1h19m50s", text)
+        self.assertNotIn("vkvideo.ru", text)   # ADR-036: смотреть гол — видео в боте, ссылок VK админу нет
 
     def test_new_video_resets_anchors(self):
         self.bot.replay_save("2026-10-03", 0, "1:0", f"{VIDEO}?t=30m", self.now)
@@ -408,7 +409,7 @@ class Nag(unittest.TestCase):
         self.assertEqual(e["video"], "https://vk.com/video-1_2")
         text = self.bot.replay_text("2026-10-03", GAME, None, video=VIDEO)
         self.assertIn("Запись лиги", text)
-        self.assertIn("Пришли времена всех", text)
+        self.assertIn("пришли времена всех", text)
 
     def test_once_a_day_after_nine(self):
         self.assertEqual(self.run_step(self.now.replace(hour=20))[0], 0)    # рано
@@ -574,6 +575,31 @@ class Previews(unittest.TestCase):
         kw = bot.send_video.call_args_list[0].kwargs
         self.assertEqual((kw["duration"], kw["width"], kw["height"]), (125, 640, 360))   # без них в чате «0:01»
 
+    def test_preview_from_cut_job(self):
+        """07.10 (ADR-036): превью режет служба cuts — бот ждёт готовое задание и шлёт его файл с его размерами."""
+        import asyncio
+        import sqlite3
+        import cutjobs
+        conn = sqlite3.connect(self.dir / "state.db", isolation_level=None)
+        self.addCleanup(conn.close)
+        jobs = cutjobs.CutJobs(conn, self.dir)
+        job = jobs.want(self.now, VIDEO, 1500, 125, "preview", prio=cutjobs.SEND)
+        self.ask.pop("file")
+        self.ask["job"] = job
+        (self.dir / "clips.json").write_text(json.dumps(self.clips), encoding="utf-8")
+        bot = mock.Mock()
+        bot.send_video = mock.AsyncMock(return_value=mock.Mock(message_id=5, video=mock.Mock(file_id="F")))
+        with mock.patch.object(self.bot.asyncio, "sleep", mock.AsyncMock()):
+            self.assertEqual(asyncio.run(self.bot.preview_step(bot, self.now)), 0)   # ещё режется
+            jobs.take(self.now)
+            (self.dir / "media" / "cuts").mkdir(parents=True)
+            (self.dir / "media" / "cuts" / f"{job}.mp4").write_bytes(b"video")
+            jobs.done(job, self.now, f"media/cuts/{job}.mp4", 854, 480, 125)
+            self.assertEqual(asyncio.run(self.bot.preview_step(bot, self.now)), 1)
+        kw = bot.send_video.call_args_list[0].kwargs
+        self.assertEqual((kw["duration"], kw["width"], kw["height"]), (125, 854, 480))
+        self.assertEqual(Path(bot.send_video.call_args_list[0].args[1].path), self.dir / "media" / "cuts" / f"{job}.mp4")
+
     def test_old_preview_replaced(self):
         import asyncio
         (self.dir / "previews.json").write_text(json.dumps({f"{GAME['key']}|1:0": {
@@ -668,11 +694,16 @@ class Previews(unittest.TestCase):
         import asyncio
         bot = mock.Mock()
         bot.edit_message_caption = mock.AsyncMock()
+        bot.send_message = mock.AsyncMock(return_value=mock.Mock(message_id=9))
         with mock.patch.object(self.bot, "published_league", mock.AsyncMock(return_value=None)):
             asyncio.run(self.bot.preview_answer(bot, 1001, GAME["key"], "1:0", self.ask, VIDEO, 47))
         saved = json.loads((self.dir / "replays.json").read_text(encoding="utf-8"))["games"][GAME["key"]]
         self.assertEqual((saved["video"], saved["anchors"]), (VIDEO, {"1:0": 1547}))
         self.assertEqual(self.bot.preview_todo(self.clips, {GAME["key"]: saved}, {}), [])
+        # ADR-036: ответ — сразу 30 с результата, срочным заданием службе cuts: окно клипа вокруг 1547
+        self.assertEqual(bot.send_message.call_args.args[1], "⏳ Режу видео…")
+        job = self.bot.cut_store().get(self.bot.CUT_ASK[1001][0])
+        self.assertEqual((job["start"], job["len"], job["prio"], job["score"]), (1527, 30, 2, "1:0"))
 
     def test_helper_may_press_but_not_replay(self):
         self.assertIn(761, self.bot.preview_people())
@@ -761,6 +792,20 @@ class BoardApprox(unittest.TestCase):
         self.assertEqual((got["1:1"]["t"], got["1:1"]["src"]), (2890, "win"))     # окно уже смены
         self.assertEqual((got["2:1"]["t"], got["2:1"]["exact"]), (3990, True))
         self.assertEqual(set(replay.by_score({**replay.with_board(None, board)})), {"1:0", "1:1", "2:1"})
+
+    def test_objected_anchor_lets_the_board_in(self):
+        """ADR-033, раздел 4: опоре возразили («⏪ гола тут нет») — она не точная, а секунда табло повтору годится,
+        как и у спора. Табло о той же секунде — возражение и ей: повтор примерный."""
+        e = replay.entry(GAME, VIDEO, {"1:0": 1500}, msk("2026-10-04T12:00:00"), reject={"1:0": [1500]})
+        board = {"video": VIDEO, "goals": {"1:0": {"t": 1800, "src": "clock", "team": "home"}}}
+        got = {g["score"]: g for g in replay.with_board(e, board)["goals"]}
+        self.assertEqual((got["1:0"]["t"], got["1:0"]["exact"], got["1:0"]["src"]), (1790, True, "clock"))
+        same = {"video": VIDEO, "goals": {"1:0": {"t": 1501, "src": "clock", "team": "home"}}}
+        got = {g["score"]: g for g in replay.with_board(e, same)["goals"]}
+        self.assertEqual((got["1:0"]["t"], got["1:0"]["exact"], got["1:0"]["src"]), (1490, False, "dispute"))
+        kept = replay.entry(GAME, VIDEO, {"1:0": 1500}, msk("2026-10-04T12:00:00"), reject={"1:0": [1200]})
+        got = {g["score"]: g for g in replay.with_board(kept, board)["goals"]}   # возражали другой секунде
+        self.assertEqual((got["1:0"]["t"], got["1:0"]["exact"]), (1490, True))
 
     def test_marks_switch_board_off(self):
         board = {"video": VIDEO, "goals": {"1:0": {"t": 100, "src": "clock", "team": "home"},

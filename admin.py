@@ -27,7 +27,7 @@ WEEK = 7                # дней на пульте
 
 # службы systemd на сервере (deploy/) и как их называть на пульте
 UNITS = {"bot": "Бот", "live": "Живое", "api": "API", "pages": "Сборка Pages", "clips": "Клипы голов",
-         "tg-tunnel": "Туннель в Telegram", "caddy": "HTTPS (Caddy)"}
+         "cuts": "Нарезка видео", "tg-tunnel": "Туннель в Telegram", "caddy": "HTTPS (Caddy)"}
 # задания GitHub Actions, за которыми следит служба pages
 WORKFLOWS = {"pages.yml": "Мини-апп", "deploy.yml": "Выложить бота", "tests.yml": "Тесты"}
 
@@ -41,12 +41,17 @@ UNBLOCK = {"online.khl.ru": "письмо на access_deny@khl.ru"}   # адре
 DISK_LOW = 1 << 30
 CLIPS_STALE = timedelta(hours=1)   # служба clips пишет пульс после каждого матча и прохода (ADR-030, раздел 7)
 VK_FAILS = 3        # столько раз за день VK не отдал запись и ни разу не отдал — тревога: обычно чинит новый yt-dlp
+CUTS_STALE = timedelta(minutes=20)   # служба cuts пишет пульс раз в минуту, перед и после каждого видео (ADR-036);
+                                     # одно видео — до двух заходов по cuts.TIMEOUT (5 мин) и ffprobe
+CUT_FAILS = 3       # столько видео за день не вырезалось, и после них ни одно не вышло — тревога
+INV_SHOW = 5        # сломанных инвариантов прохода в тревоге (ADR-034). Не меньше, чем служба их присылает
+                    # (clips.INV_MAX): отрезанный пришёл бы как починенный, а потом снова как новая поломка
 GONE_SHOW = 8       # удалённых записей в тревоге: о каждой — своя причина, чтобы «починилось» пришло по своей.
                     # Не меньше, чем служба их присылает (clips.GONE_MAX): отрезанная причина исчезла бы из тревог
                     # как починенная, а потом пришла бы снова как новая поломка
 # что служба clips считает о каталоге голов (`Tracker.gauge`), плитки пульта — в «Рассылках»
-CLIPS_GAUGES = ("goals", "timed", "timed_auto", "timed_admin", "clips", "ask", "no_video", "mismatch", "no_board",
-                "boards", "m_total", "m_full", "m_none", "g_replay", "run")
+CLIPS_GAUGES = ("goals", "timed", "timed_auto", "timed_admin", "clips", "wide", "ask", "no_video", "mismatch",
+                "no_board", "boards", "m_total", "m_full", "m_none", "g_replay", "run", "two")
 NIGHT_FROM, NIGHT_TO = 2, 7   # с 2:00 до 7:00 МСК сборку не будят (pages_kick.py) — не тревожимся
 
 STATE_WORDS = {"inactive": "остановлена", "failed": "упала", "activating": "запускается",
@@ -378,7 +383,7 @@ def build_status(*, now: datetime, teams: dict[str, str], services: dict | None,
                  bot: dict | None, pages: dict | None, league_updated: str | None, live_today: dict | None,
                  sources: dict | None, raskat: dict, disk: dict | None, subs, app_counts: dict[str, dict],
                  games: dict, retention: dict | None = None, clips: dict | None = None,
-                 my_players: int | None = None) -> dict:
+                 my_players: int | None = None, cuts: dict | None = None) -> dict:
     """Один ответ пульта. Дни — последние WEEK, новые сверху: счётчики бота, открытия и игры вместе."""
     bot = bot if isinstance(bot, dict) else None
     pages = pages if isinstance(pages, dict) else None
@@ -419,6 +424,10 @@ def build_status(*, now: datetime, teams: dict[str, str], services: dict | None,
     clip_last = next((clip_days[d] for d in sorted(clip_days, reverse=True)
                       if isinstance(clip_days[d], dict) and isinstance(clip_days[d].get("goals"), int)), {})
     clip_info = (clips or {}).get("info") or {}
+    cuts = cuts if isinstance(cuts, dict) else None
+    cut_today = ((cuts or {}).get("days") or {}).get(dates[0])
+    cut_today = cut_today if isinstance(cut_today, dict) else {}
+    cut_info = (cuts or {}).get("info") or {}
     status = {
         "now": iso(now),
         "system": {
@@ -441,7 +450,14 @@ def build_status(*, now: datetime, teams: dict[str, str], services: dict | None,
             "clips": {"beat": clips.get("beat"), "started": clips.get("started"),
                       "vk_ok": clip_today.get("vk_ok", 0), "vk_fail": clip_today.get("vk_fail", 0),
                       "vk_error": clip_info.get("vk_error"), "vk_last_ok": clip_info.get("vk_ok"),
-                      "gone": clip_info.get("gone")} if clips else None,
+                      "gone": clip_info.get("gone"),
+                      # сторожа службы (ADR-034): жив ли yt-dlp вне матчей и что в проходе не сошлось
+                      "canary": clip_info.get("canary"), "invariants": clip_info.get("invariants")} if clips else None,
+            # видео для админов (ADR-036): сколько вырезано и не вышло за день, очередь заданий
+            "cuts": {"beat": cuts.get("beat"), "started": cuts.get("started"), "done": cut_today.get("cuts", 0),
+                     "fail": cut_today.get("cut_fail", 0), "error": cut_info.get("cut_error"),
+                     "ok_at": cut_info.get("cut_ok"), "fail_at": cut_info.get("cut_fail"),
+                     "queue": cut_info.get("queue")} if cuts else None,
         },
         "audience": {
             "subscribers": total,
@@ -464,6 +480,108 @@ def build_status(*, now: datetime, teams: dict[str, str], services: dict | None,
     }
     status["problems"] = problems(status, now)
     return status
+
+
+# ---------- вкладка «Голы» (ADR-036, раздел 4) ----------
+# Где каждый матч и гол на конвейере «запись → разбор → секунды → проверка → клип». Статус гола считает служба
+# clips (`coverage` в live/clips.json, поле `state` — clips.goal_states), здесь только сборка ответа: названия,
+# авторы из league.json, очередь «Ждут вас» и «Сейчас» из пульса служб. Только чтение: отметки — шаг 5.
+
+GOAL_STATES = ("clip", "ready", "done", "confirm", "dispute", "approx", "search", "absent", "stuck")   # clips.STATES
+WAIT_ORDER = {"dispute": 0, "approx": 1, "confirm": 2, "search": 3}   # что ждёт человека и в каком порядке
+GOALS_DAYS = 14     # матчи старше — на вкладке, только если у них что-то ждёт человека
+GOALS_MATCHES = 80  # матчей в ответе
+WAIT_SHOW = 60      # голов в «Ждут вас»: больше за раз не разобрать, число — полное
+
+
+def _rank(score: str) -> int:
+    try:
+        return sum(int(x) for x in score.split(":"))
+    except (AttributeError, ValueError):
+        return 99
+
+
+def _score(g: dict | None) -> str:
+    sc = (g or {}).get("score")
+    if isinstance(sc, dict) and sc.get("home") is not None and sc.get("away") is not None:
+        return f"{sc['home']}:{sc['away']}"
+    return ""
+
+
+def build_goals(*, now: datetime, teams: dict[str, str], clips_store: dict | None, league: dict[str, dict],
+                clips: dict | None, cuts: dict | None, role: str) -> dict:
+    """Ответ GET /api/admin/goals. clips_store — live/clips.json, league — матчи league.json по ключу, clips и cuts —
+    пульс служб (status/*.json). Людей нет: только матчи, голы и авторы из протокола — они и так у болельщиков."""
+    store = clips_store if isinstance(clips_store, dict) else {}
+    cov = {k: e for k, e in (store.get("coverage") or {}).items() if isinstance(e, dict) and k.count("|") == 2}
+    since = (now.date() - timedelta(days=GOALS_DAYS - 1)).isoformat()
+    states = dict.fromkeys(GOAL_STATES, 0)
+    pipe = {"played": len(cov), "video": 0, "parsed": 0, "goals": 0, "replays": 0, "full": 0}
+    matches, wait = [], []
+    for key in sorted(cov, key=lambda k: (k[:10], k), reverse=True):
+        e = cov[key]
+        why = e.get("why")
+        pipe["video"] += bool(e.get("src"))   # src у разбора покрытия есть, только когда запись нашлась
+        pipe["parsed"] += bool(e.get("src")) and why != "pending"
+        pipe["goals"] += int(e.get("goals") or 0)
+        pipe["replays"] += int(e.get("replays") or 0)
+        pipe["full"] += why == "ok"
+        g = league.get(key) or {}
+        protocol = {x["score"]: x for x in g.get("goals") or []
+                    if isinstance(x, dict) and isinstance(x.get("score"), str) and x.get("period") != "РБ"}
+        day, home, away = key.split("|")
+        title = match_title(key, teams)
+        rejected = e.get("rejected") or {}
+        goals, counts, waits = [], {}, 0
+        for score, st in (e.get("state") or {}).items():
+            if st not in states:
+                continue
+            states[st] += 1
+            counts[st] = counts.get(st, 0) + 1
+            x = protocol.get(score) or {}
+            row = {"score": score, "state": st, "team": x.get("team"), "period": x.get("period"),
+                   "time": x.get("time"), "author": x.get("author"), "assists": x.get("assists") or []}
+            if score in rejected:
+                row["why"] = no_ids(str(rejected[score]))[:120]
+            goals.append(row)
+            if st in WAIT_ORDER:
+                waits += 1
+                wait.append({"key": key, "date": day, "title": title, **row})
+        goals.sort(key=lambda r: _rank(r["score"]))
+        if day < since and not waits:
+            continue
+        m = {"key": key, "date": day, "home": home, "away": away, "title": title, "score": _score(g),
+             "why": why, "src": e.get("src"), "goals": int(e.get("goals") or 0),
+             "replays": int(e.get("replays") or 0), "states": counts, "wait": waits, "list": goals}
+        if e.get("error"):
+            m["error"] = no_ids(str(e["error"]))[:200]
+        matches.append(m)
+    wait.sort(key=lambda r: (WAIT_ORDER[r["state"]], -int(r["date"].replace("-", "")), r["key"], _rank(r["score"])))
+    clips = clips if isinstance(clips, dict) else None
+    info = (clips or {}).get("info") or {}
+    scan = info.get("scan") if isinstance(info.get("scan"), dict) else None
+    cuts = cuts if isinstance(cuts, dict) else None
+    cinfo = (cuts or {}).get("info") or {}
+    boards = [{"club": c, "name": teams.get(c, c), "matches": int((b or {}).get("matches") or 0)}
+              for c, b in sorted((store.get("boards") or {}).items()) if isinstance(b, dict)]
+    return {
+        "now": iso(now),
+        "role": role,
+        "updated": store.get("updated"),
+        "pipeline": {**pipe, "states": states, "boards": boards},
+        "work": {
+            "clips": {"beat": clips.get("beat"), "started": clips.get("started"),
+                      "scan": {**scan, "title": match_title(str(scan.get("key") or ""), teams)} if scan else None,
+                      "waiting": info.get("waiting"), "cut": info.get("cut"), "bucket": info.get("bucket"),
+                      "vk_ok": info.get("vk_ok"), "vk_fail": info.get("vk_fail"),
+                      "vk_error": info.get("vk_error")} if clips else None,
+            "cuts": {"beat": cuts.get("beat"), "job": cinfo.get("job"), "queue": cinfo.get("queue"),
+                     "ok_at": cinfo.get("cut_ok"), "fail_at": cinfo.get("cut_fail"),
+                     "error": cinfo.get("cut_error")} if cuts else None,
+        },
+        "wait": {"total": len(wait), "items": wait[:WAIT_SHOW]},
+        "matches": matches[:GOALS_MATCHES],
+    }
 
 
 def _ago(at: str | None, now: datetime) -> timedelta | None:
@@ -600,6 +718,19 @@ def problems(status: dict, now: datetime) -> list[dict]:
             bad("clips:vk", f"VK сегодня не отдал ни одной записи трансляции ({n} {word}): "
                 f"{c.get('vk_error') or 'ошибка не записана'}. Обычно лечит новый yt-dlp: "
                 "sudo -u rhl /opt/rhl/venv/bin/pip install -U yt-dlp и systemctl restart clips")
+        # «канарейка» yt-dlp (ADR-034): VK не отдал запись и вне матчей — похоже, сменился плеер, и повторов не
+        # будет уже у следующего матча
+        can = c.get("canary")
+        if isinstance(can, dict) and can.get("ok") is False:
+            why = str(can.get("error") or "ошибка не записана")[:200]
+            bad("clips:canary", f"«Канарейка»: VK не отдаёт запись и когда матчей нет — {why}. Похоже, VK сменил "
+                "плеер: sudo -u rhl /opt/rhl/venv/bin/pip install -U yt-dlp, потом systemctl restart clips cuts")
+        # инварианты прохода (ADR-034): то, чего не может быть, — повод смотреть разбор, а не ждать жалоб
+        for p in (c.get("invariants") or [])[:INV_SHOW]:
+            key = str((p or {}).get("key") or "")[:60] if isinstance(p, dict) else ""
+            text = str((p or {}).get("text") or "").strip()[:300] if isinstance(p, dict) else ""
+            if key and text:
+                bad(f"clips:inv:{key}", f"Разбор голов: {text}")
         # запись удалили из VK: повторов у матча нет, пока человек не пришлёт другую (этап 0.3 плана). Говорим раз
         # на матч (`warn`), ключ — с матчем: запись заменили — придёт «починилось»
         for e in (c.get("gone") or [])[:GONE_SHOW]:
@@ -609,6 +740,17 @@ def problems(status: dict, now: datetime) -> list[dict]:
             what = str(e.get("title") or key)[:80]
             warn(f"clips:gone:{key}", f"Записи матча {what} больше нет в VK ({e.get('video') or 'ссылка не записана'}): "
                  "повторов у его голов не будет. Найди другую запись (канал клуба) и пришли ссылку в /replay")
+    k = sysm.get("cuts")
+    if k is not None:
+        age = _ago(k.get("beat"), now)
+        if age is None or age > CUTS_STALE:
+            bad("cuts:beat", f"Служба нарезки видео молчит {_mins(age) if age else 'неизвестно сколько'}: превью голов "
+                "админам не режутся. Проверь systemctl status cuts")
+        ok, fail, n = parse_iso(k.get("ok_at")), parse_iso(k.get("fail_at")), k.get("fail") or 0
+        if n >= CUT_FAILS and fail and (not ok or fail > ok):
+            bad("cuts:fail", f"Нарезка видео не выходит: сегодня не вырезалось {n} видео, после них — ни одного. "
+                f"Последняя ошибка: {k.get('error') or 'не записана'}. Если отказывает VK — обычно лечит новый yt-dlp: "
+                "sudo -u rhl /opt/rhl/venv/bin/pip install -U yt-dlp и systemctl restart cuts")
     d = sysm.get("disk") or {}
     if d.get("free") is not None and d["free"] < DISK_LOW:
         bad("disk", f"На диске меньше 1 ГБ: {d['free'] // (1 << 20)} МБ")

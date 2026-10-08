@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Выложить свежий main на сервер и перезапустить службы bot, live, api и pages. Ставится как
+# Выложить свежий main на сервер и перезапустить службы bot, live, api, pages, clips и cuts. Ставится как
 # /usr/local/sbin/rhl-update (deploy/setup.sh, deploy/https.sh) и вызывается по ключу GitHub Actions
 # (.github/workflows/deploy.yml) или руками. Файлы состояния (subscribers.json, announced.json,
 # state.db, live/, status/) не в git — git их не трогает.
@@ -7,7 +7,7 @@ set -euo pipefail
 APP=/opt/rhl
 SELF=/usr/local/sbin/rhl-update
 # служба:файл кода. Файла ещё нет в main — служба пропускается, выкладка не падает
-SERVICES="bot:bot.py live:live.py api:server.py pages:pages_kick.py clips:clips.py"
+SERVICES="bot:bot.py live:live.py api:server.py pages:pages_kick.py clips:clips.py cuts:cuts.py"
 cd "$APP"
 
 if [ -z "${RHL_BEFORE:-}" ]; then
@@ -27,7 +27,7 @@ else
 fi
 after=$(sudo -u rhl git rev-parse HEAD)
 sudo -u rhl venv/bin/pip install -q --disable-pip-version-check -r requirements.txt
-# Службе clips нужен ffmpeg (ADR-030): разбор записи трансляции и нарезка
+# Службам clips и cuts нужен ffmpeg (ADR-030, ADR-036): разбор записи трансляции и нарезка
 command -v ffmpeg >/dev/null || { apt-get install -y -q ffmpeg >/dev/null && echo "Поставлен ffmpeg"; } \
   || echo "ffmpeg не поставился: apt install -y ffmpeg руками, иначе служба clips не заработает"
 
@@ -47,6 +47,10 @@ install -d -m 750 -o rhl -g rhl "$APP/status"
 # не могла писать (05.10). Каталог — службе, пробники — от неё же: sudo -u rhl venv/bin/python tools/…
 install -d -m 750 -o rhl -g rhl "$APP/probe"
 chown -R rhl:rhl "$APP/probe"
+# Видео для админов службы cuts (ADR-036): то же — `cuts.py --once` от root не должен оставить файлы, которые служба
+# не перезапишет
+install -d -m 750 -o rhl -g rhl "$APP/media"
+chown -R rhl:rhl "$APP/media"
 
 # Бэкап состояния раз в сутки (deploy/backup.sh): каталог заводим мы — у rhl нет прав на /var/backups
 if [ -f deploy/backup.timer ]; then

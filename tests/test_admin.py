@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import admin  # noqa: E402
+import clips  # noqa: E402
 import predict  # noqa: E402
 from raskat_store import RaskatStore  # noqa: E402
 
@@ -283,6 +284,57 @@ class BuildStatusTest(unittest.TestCase):
                                              "DownloadError: HTTP Error 403. Обычно лечит новый yt-dlp"), got)
         self.assertEqual(self.texts(clips={**vk, "days": {"2026-10-03": {"vk_fail": 2}}}), [])   # рано
 
+    def test_canary_and_pass_invariants(self):
+        """ADR-034: «канарейка» yt-dlp (VK не отдаёт запись и вне матчей) и инварианты прохода службы clips."""
+        base = {"beat": ago(minutes=2), "days": {"2026-10-03": {"vk_ok": 1}}}
+        live = {**base, "info": {"canary": {"at": ago(hours=3), "ok": True}}}
+        st = healthy(clips=live)
+        self.assertEqual(st["problems"], [])
+        self.assertEqual(st["system"]["clips"]["canary"]["ok"], True)
+        dead = {**base, "info": {"canary": {"at": ago(hours=2), "ok": False,
+                                            "error": "DownloadError: Unable to extract player"}}}
+        got = self.texts(clips=dead)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0][0], "bad")
+        self.assertIn("Unable to extract player", got[0][1])
+        self.assertIn("pip install -U yt-dlp", got[0][1])
+        inv = [{"key": "order:2026-10-05|kaluga|dinamo-576", "text": "05.10 Калужские Ракеты — Динамо: гол 0:2 на "
+                "43m20s раньше гола 0:1 на 50m00s — секунды не в порядке протокола"},
+               {"key": "cover", "text": "Повторов стало меньше (05.10 Калуга: было 5, стало 3)"}]
+        st = healthy(clips={**base, "info": {"invariants": inv}})
+        got = [(p["level"], p["key"]) for p in st["problems"]]
+        self.assertEqual(got, [("bad", "clips:inv:order:2026-10-05|kaluga|dinamo-576"), ("bad", "clips:inv:cover")])
+        self.assertTrue(st["problems"][0]["text"].startswith("Разбор голов: 05.10"))
+        many = [{"key": f"order:{i}", "text": f"матч {i}: секунды не в порядке"} for i in range(8)]
+        self.assertEqual(len(self.texts(clips={**base, "info": {"invariants": many}})), admin.INV_SHOW)
+        # ревью PR #141: показываем не меньше, чем служба присылает, — иначе отрезанный пришёл бы как починенный
+        self.assertGreaterEqual(admin.INV_SHOW, clips.INV_MAX)
+        self.assertEqual(self.texts(clips={**base, "info": {"invariants": [{"key": "x"}, None, {"text": "y"}]}}), [])
+
+    def test_cuts_service_silent_or_failing(self):
+        """ADR-036: служба cuts режет превью и видео для админов — молчит дольше 20 минут или видео подряд не
+        вырезаются (после неудач ни одной удачи) — тревога."""
+        ok = {"beat": ago(minutes=1), "info": {"cut_ok": ago(minutes=3), "queue": {"queued": 2}},
+              "days": {"2026-10-03": {"cuts": 7, "cut_fail": 1}}}
+        st = healthy(cuts=ok)
+        self.assertEqual(st["problems"], [])
+        self.assertEqual((st["system"]["cuts"]["done"], st["system"]["cuts"]["fail"]), (7, 1))
+        self.assertEqual(st["system"]["cuts"]["queue"], {"queued": 2})
+        self.assertIsNone(healthy()["system"]["cuts"])   # службы ещё нет — не тревога
+        self.assertEqual(self.texts(cuts={**ok, "beat": ago(minutes=12)}), [])   # идёт длинное видео
+        got = self.texts(cuts={**ok, "beat": ago(minutes=22)})
+        self.assertEqual(got, [("bad", "Служба нарезки видео молчит 22 мин: превью голов админам не режутся. "
+                                       "Проверь systemctl status cuts")])
+        bad = {"beat": ago(minutes=1), "days": {"2026-10-03": {"cut_fail": 3, "cuts": 2}},
+               "info": {"cut_ok": ago(hours=2), "cut_fail": ago(minutes=4),
+                        "cut_error": "VK не отдал запись: DownloadError: HTTP Error 403"}}
+        got = self.texts(cuts=bad)
+        self.assertEqual(len(got), 1)
+        self.assertTrue(got[0][1].startswith("Нарезка видео не выходит: сегодня не вырезалось 3 видео"), got)
+        self.assertIn("HTTP Error 403", got[0][1])
+        self.assertEqual(self.texts(cuts={**bad, "info": {**bad["info"], "cut_ok": ago(minutes=1)}}), [])   # прошло
+        self.assertEqual(self.texts(cuts={**bad, "days": {"2026-10-03": {"cut_fail": 2}}}), [])          # рано
+
     def test_deleted_recording_is_told_once_per_match(self):
         """Запись удалили из VK (этап 0.3 плана): повторов у матча нет — говорим раз, причина — с матчем."""
         gone = [{"key": "2026-10-05|kaluga|dinamo-576", "title": "05.10 Калужские Ракеты — Динамо",
@@ -315,6 +367,72 @@ class BuildStatusTest(unittest.TestCase):
         self.assertIsNone(st["system"]["services"])
         self.assertEqual(st["problems"], [{"level": "warn", "key": "services",
                                            "text": "Состояние служб не прочиталось: systemctl: FileNotFoundError"}])
+
+
+class GoalsTab(unittest.TestCase):
+    """Вкладка «Голы» (ADR-036, раздел 4): конвейер, «Ждут вас» по порядку и «Сейчас» из пульса служб."""
+    now = datetime(2026, 10, 7, 21, 0, tzinfo=TZ)
+    teams = {"proton": "Протон", "kristall": "Кристалл", "rostov": "Ростов", "krasnodar": "Краснодар",
+             "arktika": "Арктика", "ermak": "Ермак"}
+
+    def build(self, **kw):
+        cov = {
+            "2026-10-04|proton|kristall": {"goals": 3, "replays": 2, "why": "not_found", "src": "league",
+                                           "state": {"0:1": "clip", "1:1": "confirm", "2:1": "search"},
+                                           "rejected": {"2:1": "табло убирали"}},
+            "2026-10-06|rostov|krasnodar": {"goals": 2, "replays": 2, "why": "ok", "src": "league",
+                                            "state": {"1:0": "approx", "1:1": "dispute"}},
+            "2026-09-20|arktika|ermak": {"goals": 1, "replays": 1, "why": "ok", "src": "league",
+                                         "state": {"1:0": "clip"}},
+            "2026-09-21|rostov|ermak": {"goals": 0, "replays": 0, "why": "ok"},   # 0:0 без записи
+            "2026-10-05|arktika|ermak": {"goals": 1, "replays": 0, "why": "no_video", "state": {"0:1": "stuck"}},
+        }
+        league = {"2026-10-04|proton|kristall": {"score": {"home": 2, "away": 1}, "goals": [
+            {"score": "1:1", "period": "2", "time": "31:05", "team": "away", "author": "Кузнецов",
+             "assists": ["Попов"]}]}}
+        args = dict(now=self.now, teams=self.teams, clips_store={"coverage": cov, "updated": "2026-10-07T20:50:00+03:00",
+                                                                 "boards": {"proton": {"matches": 2}}},
+                    league=league, clips=None, cuts=None, role="admin")
+        args.update(kw)
+        return admin.build_goals(**args)
+
+    def test_pipeline_and_waiting_order(self):
+        got = self.build()
+        p = got["pipeline"]
+        self.assertEqual((p["played"], p["video"], p["parsed"], p["goals"], p["replays"], p["full"]), (5, 3, 3, 7, 5, 3))
+        self.assertEqual((p["states"]["clip"], p["states"]["stuck"], p["boards"][0]["name"]), (2, 1, "Протон"))
+        # спор → примерно → подтвердить → поиск, внутри — свежие матчи первыми
+        self.assertEqual([(w["state"], w["score"]) for w in got["wait"]["items"]],
+                         [("dispute", "1:1"), ("approx", "1:0"), ("confirm", "1:1"), ("search", "2:1")])
+        self.assertEqual(got["wait"]["total"], 4)
+        x = got["wait"]["items"][2]
+        self.assertEqual((x["title"], x["author"], x["assists"], x["time"]), ("Протон — Кристалл", "Кузнецов",
+                                                                                ["Попов"], "31:05"))
+
+    def test_matches_fresh_first_old_only_when_waiting(self):
+        got = self.build()
+        self.assertEqual([m["key"] for m in got["matches"]],
+                         ["2026-10-06|rostov|krasnodar", "2026-10-05|arktika|ermak", "2026-10-04|proton|kristall"])
+        m = got["matches"][2]
+        self.assertEqual((m["score"], m["why"], m["states"], m["wait"]), ("2:1", "not_found",
+                                                                         {"clip": 1, "confirm": 1, "search": 1}, 2))
+        self.assertEqual(m["list"][2]["why"], "табло убирали")
+
+    def test_now_block_from_service_beats(self):
+        clips = {"beat": "2026-10-07T20:58:00+03:00", "info": {
+            "scan": {"key": "2026-10-04|proton|kristall", "at": "2026-10-07T20:57:00+03:00"}, "waiting": 3,
+            "cut": "off", "vk_ok": "2026-10-07T20:57:01+03:00"}}
+        cuts = {"beat": "2026-10-07T20:59:00+03:00", "info": {"job": {"kind": "review", "len": 30, "prio": 2},
+                                                              "queue": {"queued": 4, "urgent": 1}}}
+        got = self.build(clips=clips, cuts=cuts, role="helper")
+        w = got["work"]
+        self.assertEqual((w["clips"]["scan"]["title"], w["clips"]["waiting"], w["clips"]["cut"]),
+                         ("Протон — Кристалл", 3, "off"))
+        self.assertEqual((w["cuts"]["job"]["kind"], w["cuts"]["queue"]["urgent"]), ("review", 1))
+        self.assertEqual(got["role"], "helper")
+        empty = admin.build_goals(now=self.now, teams={}, clips_store=None, league={}, clips=None, cuts=None,
+                                  role="admin")
+        self.assertEqual((empty["matches"], empty["wait"]["total"], empty["work"]["clips"]), ([], 0, None))
 
 
 class Alerts(unittest.TestCase):

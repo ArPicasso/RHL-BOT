@@ -12,8 +12,10 @@
 
 Что сейчас действует у матча (`resolve`): ролик — тот, к которому относится последняя отметка; у гола — последняя
 неотменённая отметка этого ролика: время или «нет в записи»; «табло сбилось» — пометки этого ролика. Из этого бот
-собирает live/replays.json в прежнем формате (ADR-027): сборка, API и служба clips читают его, как раньше. Пишет журнал
-только бот; отметки из replays.json, сделанные до журнала, переносятся в него один раз (`import_replays`, кто — неизвестен).
+собирает live/replays.json в прежнем формате (ADR-027): сборка, API и служба clips читают его, как раньше. Пишут журнал
+бот и API (пульт, ADR-036, раздел 5): replays.json — по-прежнему только бот, раз в минуту он пересобирает матчи, у
+которых в журнале появились строки новее `applied` (`changed_since`). Отметки из replays.json, сделанные до журнала,
+переносятся в него один раз (`import_replays`, кто — неизвестен).
 
 Только stdlib, без сети.
 """
@@ -80,9 +82,20 @@ def revoked(rows: list[dict]) -> set[int]:
     return out
 
 
+def own_confirm(anchor: int | None, by: int | None, sec: int, who: int | None) -> bool:
+    """«✅ Гол виден» от того же человека, который сам и поставил эту секунду: свидетель один, а не два (ADR-033,
+    раздел 4). Бот присылает 30 с сразу после отметки времени, так что отметившему достаточно двух нажатий, — а
+    независимости в них нет. Кто отметил, неизвестно (перенос из replays.json, `/marks_forget`) — считаем, что он же:
+    клип мимо гола хуже никакого."""
+    return anchor is not None and abs(anchor - sec) <= replay.OBJECT_TOL and (by is None or who is None or by == who)
+
+
 def resolve(rows: list[dict]) -> dict | None:
-    """Что действует у матча по его отметкам: {"video", "anchors" (счёт → секунда), "absent", "wrong"}. Ни одной
-    действующей отметки с роликом — None: повторов по разметке у матча нет."""
+    """Что действует у матча по его отметкам: {"video", "anchors" (счёт → секунда), "absent", "wrong", "confirm",
+    "reject"}. confirm и reject — счёт → секунды, на которых человек посмотрел 30 с гола и сказал «✅ Гол виден» или
+    «⏪/⏩ гол раньше/позже» (ADR-033, раздел 4): у одной секунды действует последнее из двух. В confirm не попадает
+    подтверждение своей же секунды (`own_confirm`): это один свидетель. Ни одной действующей отметки с роликом —
+    None: повторов по разметке у матча нет."""
     off = revoked(rows)
     live = [r for r in sorted(rows, key=lambda x: x["id"]) if r["id"] not in off and r["kind"] != "revoke"]
     with_video = [r for r in live if r.get("video")]
@@ -93,14 +106,28 @@ def resolve(rows: list[dict]) -> dict | None:
     video = ours[0]["video"]   # первая запись того же ролика: ссылка не скачет между vk.com и vkvideo.ru
     goal: dict[str, dict] = {}
     wrong: set[str] = set()
+    votes: dict[str, dict[int, tuple[str, int | None]]] = {}
     for r in ours:
         if r["kind"] in ("time", "absent") and r["score"]:
             goal[r["score"]] = r
         elif r["kind"] == "wrong" and r["score"]:
             wrong.add(r["score"])
+        elif r["kind"] in ("confirm", "reject") and r["score"] and isinstance(r.get("sec"), int):
+            votes.setdefault(r["score"], {})[int(r["sec"])] = (r["kind"], r.get("who"))
     anchors = {s: int(r["sec"]) for s, r in goal.items() if r["kind"] == "time" and isinstance(r.get("sec"), int)}
     absent = sorted(s for s, r in goal.items() if r["kind"] == "absent")
-    return {"video": video, "anchors": dict(sorted(anchors.items())), "absent": absent, "wrong": sorted(wrong)}
+
+    def said(kind: str) -> dict[str, list[int]]:
+        out = {}
+        for s, v in sorted(votes.items()):
+            secs = sorted(t for t, (k, who) in v.items() if k == kind and not (
+                kind == "confirm" and own_confirm(anchors.get(s), (goal.get(s) or {}).get("who"), t, who)))
+            if secs:
+                out[s] = secs
+        return out
+
+    return {"video": video, "anchors": dict(sorted(anchors.items())), "absent": absent, "wrong": sorted(wrong),
+            "confirm": said("confirm"), "reject": said("reject")}
 
 
 def active(rows: list[dict], score: str | None = None) -> list[dict]:
@@ -156,6 +183,22 @@ class MarksStore:
         for r in rows:
             self.add(now, match, r["score"], "revoke", role=role, via=via, who=who, target=r["id"])
         return len(rows)
+
+    def last_id(self) -> int:
+        return self.conn.execute("SELECT coalesce(max(id), 0) FROM goal_marks").fetchone()[0]
+
+    def changed_since(self, mark_id: int) -> list[str]:
+        """Матчи, у которых в журнале есть строки новее mark_id: их replays.json бот пересобирает (ADR-036, раздел 5)."""
+        return [r[0] for r in self.conn.execute(
+            "SELECT DISTINCT match FROM goal_marks WHERE id > ? ORDER BY match", (int(mark_id),))]
+
+    def meta(self, key: str) -> str | None:
+        row = self.conn.execute("SELECT value FROM goal_marks_meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.conn.execute("INSERT INTO goal_marks_meta (key, value) VALUES (?, ?) "
+                          "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value))
 
     def forget(self, who: int) -> int:
         """Стереть Telegram id отметившего во всех строках: остаётся роль. Сколько строк."""

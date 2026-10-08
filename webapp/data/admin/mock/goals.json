@@ -1,0 +1,838 @@
+{
+ "now": "2026-10-07T20:56:00+03:00",
+ "role": "admin",
+ "updated": "2026-10-07T20:49:12+03:00",
+ "pipeline": {
+  "played": 8,
+  "video": 7,
+  "parsed": 7,
+  "goals": 37,
+  "replays": 20,
+  "full": 3,
+  "states": {
+   "clip": 8,
+   "ready": 3,
+   "done": 0,
+   "confirm": 4,
+   "dispute": 1,
+   "approx": 5,
+   "search": 8,
+   "absent": 0,
+   "stuck": 8
+  },
+  "boards": [
+   {
+    "club": "polet",
+    "name": "Полёт",
+    "matches": 2
+   }
+  ]
+ },
+ "work": {
+  "clips": {
+   "beat": "2026-10-07T20:52:40+03:00",
+   "started": "2026-10-07T18:01:00+03:00",
+   "scan": {
+    "key": "2026-10-06|dizelist|samara",
+    "src": "admin",
+    "at": "2026-10-07T20:52:40+03:00",
+    "title": "Дизелист — Самара"
+   },
+   "waiting": 2,
+   "cut": "on",
+   "bucket": true,
+   "vk_ok": "2026-10-07T20:52:41+03:00",
+   "vk_fail": "2026-10-07T13:10:00+03:00",
+   "vk_error": "HTTP Error 403"
+  },
+  "cuts": {
+   "beat": "2026-10-07T20:55:30+03:00",
+   "job": {
+    "kind": "review",
+    "len": 30,
+    "prio": 2
+   },
+   "queue": {
+    "queued": 5,
+    "urgent": 1,
+    "work": 1,
+    "done": 41,
+    "error": 0
+   },
+   "ok_at": null,
+   "fail_at": null,
+   "error": null
+  }
+ },
+ "wait": {
+  "total": 18,
+  "items": [
+   {
+    "key": "2026-10-04|proton|kristall",
+    "date": "2026-10-04",
+    "title": "Протон — Кристалл",
+    "score": "2:2",
+    "state": "dispute",
+    "team": "home",
+    "period": "2",
+    "time": "05:39",
+    "author": "Кузнецов",
+    "assists": [
+     "Соколов"
+    ]
+   },
+   {
+    "key": "2026-10-06|dizelist|samara",
+    "date": "2026-10-06",
+    "title": "Дизелист — Самара",
+    "score": "1:0",
+    "state": "approx",
+    "team": "home",
+    "period": "1",
+    "time": "07:00",
+    "author": "Иванов",
+    "assists": []
+   },
+   {
+    "key": "2026-10-06|dizelist|samara",
+    "date": "2026-10-06",
+    "title": "Дизелист — Самара",
+    "score": "1:1",
+    "state": "approx",
+    "team": "away",
+    "period": "1",
+    "time": "13:13",
+    "author": "Петров",
+    "assists": [
+     "Попов"
+    ]
+   },
+   {
+    "key": "2026-10-06|dizelist|samara",
+    "date": "2026-10-06",
+    "title": "Дизелист — Самара",
+    "score": "2:3",
+    "state": "approx",
+    "team": "away",
+    "period": "3",
+    "time": "11:52",
+    "author": "Попов",
+    "assists": []
+   },
+   {
+    "key": "2026-10-04|proton|kristall",
+    "date": "2026-10-04",
+    "title": "Протон — Кристалл",
+    "score": "4:4",
+    "state": "approx",
+    "team": "home",
+    "period": "3",
+    "time": "09:31",
+    "author": "Лебедев",
+    "assists": [
+     "Иванов"
+    ]
+   },
+   {
+    "key": "2026-10-03|rostov|krasnodar",
+    "date": "2026-10-03",
+    "title": "Ростов — Краснодар",
+    "score": "1:1",
+    "state": "approx",
+    "team": "away",
+    "period": "2",
+    "time": "13:13",
+    "author": "Петров",
+    "assists": [
+     "Попов"
+    ]
+   },
+   {
+    "key": "2026-10-06|dizelist|samara",
+    "date": "2026-10-06",
+    "title": "Дизелист — Самара",
+    "score": "2:2",
+    "state": "confirm",
+    "team": "away",
+    "period": "2",
+    "time": "05:39",
+    "author": "Кузнецов",
+    "assists": [
+     "Соколов"
+    ]
+   },
+   {
+    "key": "2026-10-06|fakel-yamal|akhmat-granit",
+    "date": "2026-10-06",
+    "title": "Факел Ямал — Ахмат-Гранит",
+    "score": "2:0",
+    "state": "confirm",
+    "team": "home",
+    "period": "2",
+    "time": "13:13",
+    "author": "Петров",
+    "assists": [
+     "Попов"
+    ]
+   },
+   {
+    "key": "2026-10-04|proton|kristall",
+    "date": "2026-10-04",
+    "title": "Протон — Кристалл",
+    "score": "3:3",
+    "state": "confirm",
+    "team": "home",
+    "period": "2",
+    "time": "17:05",
+    "author": "Волков",
+    "assists": [
+     "Козлов"
+    ]
+   },
+   {
+    "key": "2026-10-04|ryazan-vdv|belgorod",
+    "date": "2026-10-04",
+    "title": "Рязань-ВДВ — Белгород",
+    "score": "2:0",
+    "state": "confirm",
+    "team": "home",
+    "period": "2",
+    "time": "13:13",
+    "author": "Петров",
+    "assists": [
+     "Попов"
+    ]
+   },
+   {
+    "key": "2026-10-06|fakel-yamal|akhmat-granit",
+    "date": "2026-10-06",
+    "title": "Факел Ямал — Ахмат-Гранит",
+    "score": "3:0",
+    "state": "search",
+    "team": "home",
+    "period": "3",
+    "time": "19:26",
+    "author": "Смирнов",
+    "assists": [],
+    "why": "проверка цифр: картинки не по порядку"
+   },
+   {
+    "key": "2026-10-03|polet|tverichi",
+    "date": "2026-10-03",
+    "title": "Полёт — Тверичи-СШОР",
+    "score": "1:0",
+    "state": "search",
+    "team": "home",
+    "period": "1",
+    "time": "07:00",
+    "author": "Иванов",
+    "assists": []
+   },
+   {
+    "key": "2026-10-03|polet|tverichi",
+    "date": "2026-10-03",
+    "title": "Полёт — Тверичи-СШОР",
+    "score": "2:0",
+    "state": "search",
+    "team": "home",
+    "period": "1",
+    "time": "13:13",
+    "author": "Петров",
+    "assists": [
+     "Попов"
+    ]
+   },
+   {
+    "key": "2026-10-03|polet|tverichi",
+    "date": "2026-10-03",
+    "title": "Полёт — Тверичи-СШОР",
+    "score": "3:0",
+    "state": "search",
+    "team": "home",
+    "period": "2",
+    "time": "19:26",
+    "author": "Смирнов",
+    "assists": []
+   },
+   {
+    "key": "2026-10-03|polet|tverichi",
+    "date": "2026-10-03",
+    "title": "Полёт — Тверичи-СШОР",
+    "score": "4:0",
+    "state": "search",
+    "team": "home",
+    "period": "2",
+    "time": "05:39",
+    "author": "Кузнецов",
+    "assists": [
+     "Соколов"
+    ]
+   },
+   {
+    "key": "2026-10-03|polet|tverichi",
+    "date": "2026-10-03",
+    "title": "Полёт — Тверичи-СШОР",
+    "score": "4:1",
+    "state": "search",
+    "team": "away",
+    "period": "3",
+    "time": "11:52",
+    "author": "Попов",
+    "assists": []
+   },
+   {
+    "key": "2026-10-03|polet|tverichi",
+    "date": "2026-10-03",
+    "title": "Полёт — Тверичи-СШОР",
+    "score": "4:2",
+    "state": "search",
+    "team": "away",
+    "period": "3",
+    "time": "17:05",
+    "author": "Волков",
+    "assists": [
+     "Козлов"
+    ]
+   },
+   {
+    "key": "2026-10-03|rostov|krasnodar",
+    "date": "2026-10-03",
+    "title": "Ростов — Краснодар",
+    "score": "1:2",
+    "state": "search",
+    "team": "away",
+    "period": "3",
+    "time": "19:26",
+    "author": "Смирнов",
+    "assists": [],
+    "why": "табло убирали на повтор"
+   }
+  ]
+ },
+ "matches": [
+  {
+   "key": "2026-10-06|fakel-yamal|akhmat-granit",
+   "date": "2026-10-06",
+   "home": "fakel-yamal",
+   "away": "akhmat-granit",
+   "title": "Факел Ямал — Ахмат-Гранит",
+   "score": "3:0",
+   "why": "not_found",
+   "src": "league",
+   "goals": 3,
+   "replays": 2,
+   "states": {
+    "clip": 1,
+    "confirm": 1,
+    "search": 1
+   },
+   "wait": 2,
+   "list": [
+    {
+     "score": "1:0",
+     "state": "clip",
+     "team": "home",
+     "period": "1",
+     "time": "07:00",
+     "author": "Иванов",
+     "assists": []
+    },
+    {
+     "score": "2:0",
+     "state": "confirm",
+     "team": "home",
+     "period": "2",
+     "time": "13:13",
+     "author": "Петров",
+     "assists": [
+      "Попов"
+     ]
+    },
+    {
+     "score": "3:0",
+     "state": "search",
+     "team": "home",
+     "period": "3",
+     "time": "19:26",
+     "author": "Смирнов",
+     "assists": [],
+     "why": "проверка цифр: картинки не по порядку"
+    }
+   ]
+  },
+  {
+   "key": "2026-10-06|dizelist|samara",
+   "date": "2026-10-06",
+   "home": "dizelist",
+   "away": "samara",
+   "title": "Дизелист — Самара",
+   "score": "2:3",
+   "why": "ok",
+   "src": "admin",
+   "goals": 5,
+   "replays": 5,
+   "states": {
+    "approx": 3,
+    "ready": 1,
+    "confirm": 1
+   },
+   "wait": 4,
+   "list": [
+    {
+     "score": "1:0",
+     "state": "approx",
+     "team": "home",
+     "period": "1",
+     "time": "07:00",
+     "author": "Иванов",
+     "assists": []
+    },
+    {
+     "score": "1:1",
+     "state": "approx",
+     "team": "away",
+     "period": "1",
+     "time": "13:13",
+     "author": "Петров",
+     "assists": [
+      "Попов"
+     ]
+    },
+    {
+     "score": "2:1",
+     "state": "ready",
+     "team": "home",
+     "period": "2",
+     "time": "19:26",
+     "author": "Смирнов",
+     "assists": []
+    },
+    {
+     "score": "2:2",
+     "state": "confirm",
+     "team": "away",
+     "period": "2",
+     "time": "05:39",
+     "author": "Кузнецов",
+     "assists": [
+      "Соколов"
+     ]
+    },
+    {
+     "score": "2:3",
+     "state": "approx",
+     "team": "away",
+     "period": "3",
+     "time": "11:52",
+     "author": "Попов",
+     "assists": []
+    }
+   ]
+  },
+  {
+   "key": "2026-10-05|kaluga|dinamo-576",
+   "date": "2026-10-05",
+   "home": "kaluga",
+   "away": "dinamo-576",
+   "title": "Калужские Ракеты — Динамо-576",
+   "score": "5:1",
+   "why": "gone",
+   "src": "league",
+   "goals": 6,
+   "replays": 0,
+   "states": {
+    "stuck": 6
+   },
+   "wait": 0,
+   "list": [
+    {
+     "score": "1:0",
+     "state": "stuck",
+     "team": "home",
+     "period": "1",
+     "time": "07:00",
+     "author": "Иванов",
+     "assists": []
+    },
+    {
+     "score": "2:0",
+     "state": "stuck",
+     "team": "home",
+     "period": "1",
+     "time": "13:13",
+     "author": "Петров",
+     "assists": [
+      "Попов"
+     ]
+    },
+    {
+     "score": "3:0",
+     "state": "stuck",
+     "team": "home",
+     "period": "2",
+     "time": "19:26",
+     "author": "Смирнов",
+     "assists": []
+    },
+    {
+     "score": "4:0",
+     "state": "stuck",
+     "team": "home",
+     "period": "2",
+     "time": "05:39",
+     "author": "Кузнецов",
+     "assists": [
+      "Соколов"
+     ]
+    },
+    {
+     "score": "5:0",
+     "state": "stuck",
+     "team": "home",
+     "period": "3",
+     "time": "11:52",
+     "author": "Попов",
+     "assists": []
+    },
+    {
+     "score": "5:1",
+     "state": "stuck",
+     "team": "away",
+     "period": "3",
+     "time": "17:05",
+     "author": "Волков",
+     "assists": [
+      "Козлов"
+     ]
+    }
+   ],
+   "error": "ERROR: [vk] Video unavailable: this video has been removed"
+  },
+  {
+   "key": "2026-10-04|ryazan-vdv|belgorod",
+   "date": "2026-10-04",
+   "home": "ryazan-vdv",
+   "away": "belgorod",
+   "title": "Рязань-ВДВ — Белгород",
+   "score": "2:1",
+   "why": "ok",
+   "src": "league",
+   "goals": 3,
+   "replays": 3,
+   "states": {
+    "ready": 1,
+    "confirm": 1,
+    "clip": 1
+   },
+   "wait": 1,
+   "list": [
+    {
+     "score": "1:0",
+     "state": "ready",
+     "team": "home",
+     "period": "1",
+     "time": "07:00",
+     "author": "Иванов",
+     "assists": []
+    },
+    {
+     "score": "2:0",
+     "state": "confirm",
+     "team": "home",
+     "period": "2",
+     "time": "13:13",
+     "author": "Петров",
+     "assists": [
+      "Попов"
+     ]
+    },
+    {
+     "score": "2:1",
+     "state": "clip",
+     "team": "away",
+     "period": "3",
+     "time": "19:26",
+     "author": "Смирнов",
+     "assists": []
+    }
+   ]
+  },
+  {
+   "key": "2026-10-04|proton|kristall",
+   "date": "2026-10-04",
+   "home": "proton",
+   "away": "kristall",
+   "title": "Протон — Кристалл",
+   "score": "4:5",
+   "why": "ok",
+   "src": "league",
+   "goals": 9,
+   "replays": 8,
+   "states": {
+    "clip": 5,
+    "ready": 1,
+    "dispute": 1,
+    "confirm": 1,
+    "approx": 1
+   },
+   "wait": 3,
+   "list": [
+    {
+     "score": "1:0",
+     "state": "clip",
+     "team": "home",
+     "period": "1",
+     "time": "07:00",
+     "author": "Иванов",
+     "assists": []
+    },
+    {
+     "score": "1:1",
+     "state": "clip",
+     "team": "away",
+     "period": "1",
+     "time": "13:13",
+     "author": "Петров",
+     "assists": [
+      "Попов"
+     ]
+    },
+    {
+     "score": "1:2",
+     "state": "ready",
+     "team": "away",
+     "period": "1",
+     "time": "19:26",
+     "author": "Смирнов",
+     "assists": []
+    },
+    {
+     "score": "2:2",
+     "state": "dispute",
+     "team": "home",
+     "period": "2",
+     "time": "05:39",
+     "author": "Кузнецов",
+     "assists": [
+      "Соколов"
+     ]
+    },
+    {
+     "score": "2:3",
+     "state": "clip",
+     "team": "away",
+     "period": "2",
+     "time": "11:52",
+     "author": "Попов",
+     "assists": []
+    },
+    {
+     "score": "3:3",
+     "state": "confirm",
+     "team": "home",
+     "period": "2",
+     "time": "17:05",
+     "author": "Волков",
+     "assists": [
+      "Козлов"
+     ]
+    },
+    {
+     "score": "3:4",
+     "state": "clip",
+     "team": "away",
+     "period": "3",
+     "time": "03:18",
+     "author": "Соколов",
+     "assists": []
+    },
+    {
+     "score": "4:4",
+     "state": "approx",
+     "team": "home",
+     "period": "3",
+     "time": "09:31",
+     "author": "Лебедев",
+     "assists": [
+      "Иванов"
+     ]
+    },
+    {
+     "score": "4:5",
+     "state": "clip",
+     "team": "away",
+     "period": "3",
+     "time": "15:44",
+     "author": "Козлов",
+     "assists": []
+    }
+   ]
+  },
+  {
+   "key": "2026-10-03|rostov|krasnodar",
+   "date": "2026-10-03",
+   "home": "rostov",
+   "away": "krasnodar",
+   "title": "Ростов — Краснодар",
+   "score": "1:2",
+   "why": "not_found",
+   "src": "league",
+   "goals": 3,
+   "replays": 2,
+   "states": {
+    "clip": 1,
+    "approx": 1,
+    "search": 1
+   },
+   "wait": 2,
+   "list": [
+    {
+     "score": "1:0",
+     "state": "clip",
+     "team": "home",
+     "period": "1",
+     "time": "07:00",
+     "author": "Иванов",
+     "assists": []
+    },
+    {
+     "score": "1:1",
+     "state": "approx",
+     "team": "away",
+     "period": "2",
+     "time": "13:13",
+     "author": "Петров",
+     "assists": [
+      "Попов"
+     ]
+    },
+    {
+     "score": "1:2",
+     "state": "search",
+     "team": "away",
+     "period": "3",
+     "time": "19:26",
+     "author": "Смирнов",
+     "assists": [],
+     "why": "табло убирали на повтор"
+    }
+   ]
+  },
+  {
+   "key": "2026-10-03|polet|tverichi",
+   "date": "2026-10-03",
+   "home": "polet",
+   "away": "tverichi",
+   "title": "Полёт — Тверичи-СШОР",
+   "score": "4:2",
+   "why": "no_board",
+   "src": "league",
+   "goals": 6,
+   "replays": 0,
+   "states": {
+    "search": 6
+   },
+   "wait": 6,
+   "list": [
+    {
+     "score": "1:0",
+     "state": "search",
+     "team": "home",
+     "period": "1",
+     "time": "07:00",
+     "author": "Иванов",
+     "assists": []
+    },
+    {
+     "score": "2:0",
+     "state": "search",
+     "team": "home",
+     "period": "1",
+     "time": "13:13",
+     "author": "Петров",
+     "assists": [
+      "Попов"
+     ]
+    },
+    {
+     "score": "3:0",
+     "state": "search",
+     "team": "home",
+     "period": "2",
+     "time": "19:26",
+     "author": "Смирнов",
+     "assists": []
+    },
+    {
+     "score": "4:0",
+     "state": "search",
+     "team": "home",
+     "period": "2",
+     "time": "05:39",
+     "author": "Кузнецов",
+     "assists": [
+      "Соколов"
+     ]
+    },
+    {
+     "score": "4:1",
+     "state": "search",
+     "team": "away",
+     "period": "3",
+     "time": "11:52",
+     "author": "Попов",
+     "assists": []
+    },
+    {
+     "score": "4:2",
+     "state": "search",
+     "team": "away",
+     "period": "3",
+     "time": "17:05",
+     "author": "Волков",
+     "assists": [
+      "Козлов"
+     ]
+    }
+   ]
+  },
+  {
+   "key": "2026-10-03|arktika|ermak",
+   "date": "2026-10-03",
+   "home": "arktika",
+   "away": "ermak",
+   "title": "Арктика — Ермак",
+   "score": "0:2",
+   "why": "no_video",
+   "src": null,
+   "goals": 2,
+   "replays": 0,
+   "states": {
+    "stuck": 2
+   },
+   "wait": 0,
+   "list": [
+    {
+     "score": "0:1",
+     "state": "stuck",
+     "team": "away",
+     "period": "1",
+     "time": "07:00",
+     "author": "Иванов",
+     "assists": []
+    },
+    {
+     "score": "0:2",
+     "state": "stuck",
+     "team": "away",
+     "period": "2",
+     "time": "13:13",
+     "author": "Петров",
+     "assists": [
+      "Попов"
+     ]
+    }
+   ]
+  }
+ ]
+}

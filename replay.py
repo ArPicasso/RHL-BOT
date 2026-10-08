@@ -198,17 +198,31 @@ def place(goals: list[dict], anchors: dict[str, int], absent=()) -> list[dict]:
 
 
 def entry(game: dict, video: str, anchors: dict[str, int], now: datetime, protocol: list[dict] | None = None,
-          absent=(), wrong=()) -> dict:
+          absent=(), wrong=(), confirm: dict | None = None, reject: dict | None = None) -> dict:
     """Запись матча в replays.json: ролик, опоры админа, голы, которых в записи нет (`absent`), голы, у которых табло
-    сбилось (`wrong`, ADR-031: секунды табло у них и у следующих голов команды не берём), и ссылки по голам."""
+    сбилось (`wrong`, ADR-031: секунды табло у них и у следующих голов команды не берём), подтверждения и возражения
+    людей на 30 с гола (`confirm`, `reject`: счёт → секунды, ADR-033, раздел 4) и ссылки по голам. Опора, которой
+    возразили, — не точная: «≈», как у спора."""
     absent = sorted(set(absent) - set(anchors))
     wrong = sorted(set(wrong))
     goals = place(with_protocol(goals_of(game), protocol), anchors, absent)
     for g in goals:
         g["url"] = at_link(video, g["t"])
+        if g["exact"] and objected(reject, g["score"], anchors.get(g["score"])):
+            g.update(exact=False, src="dispute")
     return {"video": video, "anchors": dict(sorted(anchors.items())), **({"absent": absent} if absent else {}),
-            **({"wrong": wrong} if wrong else {}), "goals": goals,
+            **({"wrong": wrong} if wrong else {}), **({"confirm": confirm} if confirm else {}),
+            **({"reject": reject} if reject else {}), "goals": goals,
             "updated": now.astimezone(TZ).isoformat(timespec="seconds")}
+
+
+OBJECT_TOL = 2   # с: возражение на 30 с гола относится к этой секунде, если ближе
+
+
+def objected(reject: dict | None, score: str, t) -> bool:
+    """Человек посмотрел 30 с вокруг секунды t этого гола и сказал «⏪ гол раньше» или «⏩ позже» (ADR-033, раздел 4)."""
+    return isinstance(t, (int, float)) and any(abs(int(t) - int(r)) <= OBJECT_TOL
+                                               for r in ((reject or {}).get(score) or []) if isinstance(r, int))
 
 
 def board_off(entry: dict | None, goals: dict) -> set[str]:
@@ -278,6 +292,8 @@ def with_board(entry: dict | None, board: dict | None) -> dict | None:
     секунды табло к нему не подходят, остаётся запись админа.
     Спор (ADR-033): отметка человека не сошлась с табло или ходом часов (`checks` службы) — точной секунды у гола нет
     ни от человека, ни от табло: повтор примерный, по окну или смене счёта, нет их — с отметки человека, но «≈».
+    Опора, которой человек возразил на её 30 с («⏪ / ⏩ гола тут нет», ADR-033, раздел 4), — как спор: сама не точная,
+    а секунда табло у этого гола, если она другая, повтору годится.
     Записи больше нет в VK (`status: gone` у службы, этап 0.3 плана) — повторов у матча нет совсем: ссылка на удалённый
     ролик никуда не ведёт. Запись админа — другой ролик: его повторы остаются. Человек отметил гол после того, как
     служба сказала «записи нет» (`updated` отметок позже `scanned` разбора), — значит у него запись открывается:
@@ -292,10 +308,12 @@ def with_board(entry: dict | None, board: dict | None) -> dict | None:
     if not goals or not video or (entry and not same_video(entry.get("video"), video)):
         return entry
     spor = disputed(entry, board)
-    admin = {s: t for s, t in ((entry or {}).get("anchors") or {}).items() if s not in spor}
+    anchors = (entry or {}).get("anchors") or {}
+    nope = {s for s, t in anchors.items() if objected((entry or {}).get("reject"), s, t)}
+    admin = {s: t for s, t in anchors.items() if s not in spor and s not in nope}
     off = board_off(entry, goals)
     out = {g["score"]: g for g in (entry or {}).get("goals") or [] if isinstance(g, dict) and g.get("score")}
-    for s in spor:
+    for s in spor | nope:
         if s in out:
             out[s] = {**out[s], "exact": False, "src": "dispute"}
     for score, b in goals.items():
@@ -303,7 +321,7 @@ def with_board(entry: dict | None, board: dict | None) -> dict | None:
                 or (out.get(score) or {}).get("exact"):
             continue
         t, win, change = b.get("t"), b.get("win"), b.get("change")
-        if _sec(t) and score not in spor:
+        if _sec(t) and score not in spor and not objected((entry or {}).get("reject"), score, t):
             out[score] = {"score": score, "team": b.get("team"), "t": max(0, round(t - EXACT_LEAD)), "exact": True,
                           "src": b.get("src") or "board"}
         elif isinstance(win, list) and len(win) == 2 and _sec(win[0]):

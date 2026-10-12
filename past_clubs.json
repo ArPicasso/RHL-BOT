@@ -1,0 +1,6 @@
+[
+  {"name": "Буран", "aliases": ["Буран Мск"], "logo": "logos/past/buran-msk.png", "kit": "buran"},
+  {"name": "Гвардия", "aliases": [], "logo": "logos/past/gvardiya.png", "kit": "gvardiya"},
+  {"name": "Тайфун", "aliases": ["Тайфун СПб"], "logo": "logos/past/tayfun.png", "kit": "tayfun"},
+  {"name": "Липецк", "aliases": ["МХК Липецк"], "logo": "logos/past/lipetsk.png", "kit": "lipetsk"}
+]

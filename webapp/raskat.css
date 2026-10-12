@@ -1,0 +1,314 @@
+/* «Раскат» (ADR-018) — DESIGN.md → «Раскат». Токены — в style.css, здесь только компоненты.
+   Главное правило: поле — главное на экране. Крупных чисел над полем нет, Unbounded достаётся
+   времени и очкам только после собранного раската */
+
+.band.peach { background: var(--band-peach); }
+
+/* ---------- шапка ---------- */
+
+.rs-band { padding-bottom: 16px; }
+.rs-head { display: flex; align-items: baseline; gap: 12px; padding-right: 48px; }
+.rs-no { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.rs-no b { font: 800 18px/1 var(--display); font-feature-settings: "tnum"; }
+.rs-no span { font: 500 13px/1.3 var(--ui); color: var(--muted); }
+.rs-band .seg { margin-top: 16px; }
+
+/* ---------- лёд ---------- */
+
+.rs-ice { position: relative; padding: 12px; border: var(--line); border-radius: 20px; background: var(--ice); }
+/* Таймер и «Пропустить» — справа на первой строке, текст обтекает их: вторая строка во всю ширину */
+.rs-top { display: flow-root; margin: 0 2px 10px; }
+/* Строка над полем — голос игры: куда ехать, почему ход не прошёл, тупик, подсказка, итог.
+   Над полем, а не под ним: рука, которая ведёт шайбу, закрывает низ экрана. Высота — две строки
+   всегда, поэтому поле не прыгает, когда реплика длиннее или короче */
+.rs-say {
+  min-height: calc(2 * 1.3em); margin: 0;
+  font: 500 14px/1.3 var(--ui); color: var(--ink);
+}
+.rs-say > svg { display: inline-block; width: 18px; height: 18px; margin: -3px 5px 0 0; vertical-align: middle; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.rs-say.miss, .rs-say.dead, .rs-say.hint, .rs-say.done, .rs-say.intro { font-weight: 700; }
+/* Звёздочка --sun в чёрном контуре, как в бегущей строке: рядом с текстом, а не под ним */
+.rs-say.done > svg .fill { fill: var(--sun); stroke: var(--ribbon-edge); }
+.rs-step {
+  display: inline-block; margin-right: 4px; padding: 1px 7px; vertical-align: 1px;
+  border: var(--line); border-radius: 9999px; background: var(--paper);
+  font: 700 11px/1.2 var(--ui); font-feature-settings: "tnum";
+}
+@media (max-width: 374px) { .rs-say { font-size: 13px; } }
+/* Таймер не кричит: пока раскат не собран, крупных чисел на экране нет */
+.rs-timer { float: right; margin-left: 12px; font: 700 13px/18px var(--ui); color: var(--muted); }
+.rs-timer[hidden] { display: none; }
+.rs-skip {
+  float: right; min-height: 40px; margin: -11px -8px -11px 8px; padding: 0 8px; border: 0; background: none;
+  color: var(--ink); font: 700 13px/1 var(--ui); letter-spacing: .03em; text-decoration: underline; text-underline-offset: 3px; cursor: pointer;
+}
+.rs-lede { margin: 10px 2px 0; font: 500 12px/1.3 var(--ui); color: var(--muted); }
+
+/* Сторона клетки 44–56px: сетка на экране 320px даёт ровно 44px — меньше цели нажатия не бывает */
+.rs-board {
+  --gap: 3px;
+  --cell: min(56px, calc((min(100vw, 560px) - 32px - 24px - (var(--w) - 1) * var(--gap)) / var(--w)));
+  position: relative; margin: 0 auto;
+  width: calc(var(--w) * var(--cell) + (var(--w) - 1) * var(--gap));
+  height: calc(var(--h) * var(--cell) + (var(--h) - 1) * var(--gap));
+  touch-action: none;   /* жест ведёт шайбу, а не прокручивает экран */
+  -webkit-tap-highlight-color: transparent;
+}
+@media (max-width: 359px) { .rs-board { --gap: 0px; } }
+.rs-board:focus-visible { outline: 2px solid var(--blue); outline-offset: 6px; }
+
+/* Разметка арены: две синие линии и круг. Декор и всегда под лентой */
+.rs-marks { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.rs-marks path, .rs-marks circle { fill: none; stroke: var(--ice-mark); stroke-width: 2.5; }
+
+.rs-cells { position: relative; display: grid; grid-template-columns: repeat(var(--w), var(--cell)); gap: var(--gap); }
+/* Единственное место, где радиус меньше 16: карточки радиусом 20 в сетке 6×6 расползаются в горошину */
+.rs-cell {
+  width: var(--cell); height: var(--cell);
+  border: var(--line); border-radius: 10px; background: transparent;
+  transition: background-color .12s;
+}
+.rs-cell.on { background: transparent; }
+/* Подсказка: следующие клетки пути подложены --sel, поверх — пунктир со стрелкой */
+.rs-cell.lit { background: var(--sel); border-color: var(--ink); }
+/* Тупик: отрезанный лёд или клетка без выхода — серым, видно, что туда уже не попасть */
+.rs-cell.cut { background: var(--mist); }
+
+/* Лента шайбы — «надувная лента»: синяя трубка в контуре, круглые концы и сгибы. Это декор,
+   а не кнопка, поэтому правило про --blue не нарушено (DESIGN.md → «Раскат») */
+.rs-ribbon { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.rs-ribbon g { transform-box: fill-box; transform-origin: center; }
+.rs-trail { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.rs-trail.o { stroke: var(--ribbon-edge); }
+.rs-trail.f { stroke: var(--blue); }
+
+/* След подсказки — пунктир --ink со стрелкой; в знакомстве — бледная лента, которую рисует палец */
+.rs-ghost { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.rs-ghost .g { fill: none; stroke: var(--ink); stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 0.01 9; }
+.rs-ghost marker path { fill: var(--ink); }
+.rs-ghost.intro .g { stroke: var(--blue); opacity: .5; stroke-dasharray: none; }
+/* Касание пальца в знакомстве — круг, как у записи экрана */
+.rs-finger { position: absolute; left: 0; top: 0; display: block; pointer-events: none; }
+.rs-finger[hidden] { display: none; }
+.rs-finger svg { display: block; width: 100%; height: 100%; }
+.rs-finger .t-fill { fill: var(--ink); fill-opacity: .22; }
+.rs-finger .t-ring { fill: none; stroke: var(--ink); stroke-width: 3; }
+
+/* Борт толще контура клетки и выходит за него: его надо видеть, не приглядываясь */
+.rs-walls { position: absolute; inset: 0; pointer-events: none; }
+.rs-wall { position: absolute; left: 0; top: 0; border-radius: 9999px; background: var(--ink); }
+
+/* Номера звена — наклейки-кружки в цветах формы клуба, номер как на майке */
+.rs-nums { position: absolute; inset: 0; pointer-events: none; }
+.rs-num {
+  position: absolute; left: 0; top: 0;
+  display: grid; place-items: center;
+  border: var(--line); border-radius: 50%;
+  background: var(--fill); color: var(--on);
+  font: 800 16px/1 var(--display); font-feature-settings: "tnum";
+  transition: opacity .18s;
+}
+.rs-num.done { opacity: .55; }
+.rs-num.head { opacity: 1; }
+.rs-num.next, .rs-num.call { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+.rs-puck { position: absolute; left: 0; top: 0; display: block; aspect-ratio: 120 / 80; pointer-events: none; transition: transform .09s linear; }
+.rs-puck svg { display: block; width: 100%; height: 100%; }
+/* Ворота у края поля: шайба влетает в них, когда раскат собран */
+.rs-goal {
+  position: absolute; right: -7px; top: 50%; width: 9px; height: 38%;
+  border: 2px solid var(--ink); border-left: 0; border-radius: 0 8px 8px 0;
+  transform: translateY(-50%); opacity: 0; transition: opacity .2s;
+}
+.rs-goal.on { opacity: 1; }
+
+/* ---------- финальное табло поверх поля ---------- */
+
+/* Встаёт поверх льда, когда раскат собран: результат — на первом экране. Закрывается крестиком,
+   «Посмотреть свой путь», Esc или касанием льда вокруг — поле с лентой остаётся, табло под полем тоже */
+.rs-fin { position: absolute; left: 0; right: 0; top: 0; min-height: 100%; z-index: 3; display: grid; place-items: center; padding: 12px; }
+.rs-fin[hidden] { display: none; }
+.rs-fin-veil { position: absolute; inset: 0; border-radius: 20px; background: var(--ice); opacity: .78; cursor: pointer; }
+.rs-fin-card { position: relative; width: 100%; max-width: 420px; padding: 14px 16px 12px; border: var(--line); border-radius: 28px; background: var(--paper); }
+.rs-fin-card:focus { outline: none; }
+.rs-fin-card:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.rs-fin-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.rs-fin-head h2 { margin: 0; font: 800 22px/1 var(--display); letter-spacing: -0.01em; }
+.rs-fin-card.quiet .rs-fin-head h2 { font-size: 18px; }
+.rs-fin-head .btn-round { flex: none; margin: -4px -6px -4px 0; }
+.rs-fin-nums { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-top: 12px; }
+.rs-fin-nums small { display: block; margin-top: 8px; font: 500 12px/1.2 var(--ui); color: var(--muted); }
+.rs-fin-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--mist); }
+.rs-fin-facts small { display: block; font: 500 11px/1.2 var(--ui); color: var(--muted); }
+.rs-fin-facts b { display: block; margin-top: 3px; font: 700 14px/1.2 var(--ui); font-feature-settings: "tnum"; }
+.rs-fin-note { margin: 8px 0 0; font: 500 12px/1.35 var(--ui); color: var(--muted); }
+.rs-fin-main { margin-top: 12px; }
+.rs-fin-main .btn { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.rs-fin-main .btn svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.rs-fin-more { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.rs-fin-more .rs-pill { flex: 1 1 auto; padding: 0 12px; }
+.rs-fin-path { display: block; margin: 4px auto -6px; }
+
+/* ---------- кнопки под полем и табло ---------- */
+
+/* Три кнопки в один ряд и на 320px: на узком экране кегль меньше, а уже 340px — без иконок */
+.rs-acts { display: flex; gap: 8px; margin-top: 12px; }
+.rs-acts .rs-pill { flex: 1 1 auto; min-width: 0; padding: 0 10px; white-space: nowrap; }
+@media (max-width: 374px) {
+  .rs-acts { gap: 6px; }
+  .rs-acts .rs-pill { gap: 5px; padding: 0 8px; font-size: 12px; letter-spacing: .02em; }
+}
+@media (max-width: 339px) { .rs-acts .rs-pill svg { display: none; } }
+.rs-pill {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 40px; padding: 0 16px;
+  border: var(--line); border-radius: 9999px; background: var(--paper); color: var(--ink);
+  font: 700 13px/1 var(--ui); letter-spacing: .03em; cursor: pointer;
+  transition: transform .12s cubic-bezier(.2, .8, .2, 1), background-color .12s;
+}
+.rs-pill:active { transform: scale(.97); background: var(--sel); }
+.rs-pill:disabled { color: var(--muted); border-color: var(--mist); cursor: default; }
+.rs-pill svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.rs-pill.as-tag { pointer-events: none; min-height: 32px; padding: 0 12px; }
+/* Единственное главное действие в эту секунду: «Назад» в тупике, «Показать» в подтверждении */
+.rs-pill.hot { background: var(--act); border-color: var(--act); color: var(--on-act); }
+.rs-pill.hot:active { background: var(--act); }
+/* Подсказка к раскату дня уже была: кнопка тихая, но нажимается — строка скажет почему */
+.rs-pill.spent { color: var(--muted); border-color: var(--mist); }
+
+/* Подтверждение подсказки — одна строка под кнопками, не лист и не окно поверх экрана */
+.rs-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 8px; padding: 8px 8px 8px 16px; border: var(--line); border-radius: 28px; background: var(--paper); }
+.rs-ask p { flex: 1 1 140px; margin: 0; font: 500 14px/1.3 var(--ui); }
+.rs-ask p b { font-weight: 700; }
+.rs-ask-btns { display: flex; gap: 8px; margin-left: auto; }
+
+.rs-more { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 8px; }
+.rs-more:empty { display: none; }
+.rs-link {
+  min-height: 40px; padding: 0 2px; border: 0; background: none; color: var(--ink); cursor: pointer;
+  font: 700 13px/1 var(--ui); letter-spacing: .03em; text-decoration: underline; text-underline-offset: 3px;
+}
+
+#rs-cta .btn { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 12px; }
+#rs-cta:empty { display: none; }
+#rs-cta .btn svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Табло собранного раската: время и итог дня крупно — после финиша это главное на экране */
+.rs-score { margin-top: 12px; padding: 16px; border: var(--line); border-radius: 28px; background: var(--paper); }
+.rs-score-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.rs-score-top div { min-width: 0; }
+.rs-time b { display: block; font: 800 40px/0.85 var(--display); letter-spacing: -0.02em; }
+.rs-got { text-align: right; }
+.rs-got b { display: block; font: 800 26px/0.95 var(--display); }
+.rs-score-top small { display: block; margin-top: 8px; font: 500 12px/1.2 var(--ui); color: var(--muted); }
+.rs-got small { text-transform: none; }
+.rs-score-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--mist); font: 500 13px/1.3 var(--ui); }
+.rs-score-foot .rs-run { font-weight: 700; }
+.rs-score-foot .rs-place, .rs-score-foot .rs-note { color: var(--muted); }
+.rs-score-say { margin-top: 10px; font: 500 12px/1.4 var(--ui); color: var(--muted); }
+.rs-score-say b { color: var(--ink); font-weight: 700; }
+
+/* ---------- правила и карточка проводника ---------- */
+
+.rs-guide {
+  display: grid; grid-template-columns: 88px 1fr; gap: 12px; align-items: center;
+  padding: 12px 16px 12px 6px; border: var(--line); border-radius: 20px; background: var(--paper);
+}
+.rs-guide.bare { grid-template-columns: 1fr; padding-left: 16px; }
+.rs-guide p { margin: 0; font: 500 15px/1.4 var(--ui); text-wrap: pretty; }
+.rs-guide p b { font-weight: 700; }
+.rs-guide-below { grid-column: 1 / -1; padding: 0 0 2px 10px; }
+.rs-guide.bare .rs-guide-below { padding-left: 0; }
+.rs-cta { margin-top: 12px; }
+.rs-cta .btn { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.rs-cta svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+.rs-rules { padding: 2px 16px 14px; border: var(--line); border-radius: 20px; background: var(--paper); }
+.rs-rules p { margin: 12px 0 0; font: 500 14px/1.45 var(--ui); }
+.rs-rules p b { font-weight: 700; }
+.rs-rules .rs-pill { margin-top: 14px; }
+.sheet-rules { margin-top: 4px; }
+.rs-note { margin-bottom: 10px; font: 500 13px/1.4 var(--ui); color: var(--muted); }
+
+/* ---------- зачёт ---------- */
+
+.rs-chips { margin-bottom: 16px; }
+.rs-chips button { white-space: nowrap; }
+
+.rs-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.rs-table { border: var(--line); border-radius: 20px; overflow: hidden; background: var(--paper); }
+.rs-row { display: grid; grid-template-columns: 26px auto 1fr auto auto; gap: 10px; align-items: center; min-height: 48px; padding: 8px 12px; }
+.rs-row + .rs-row { border-top: 1px solid var(--mist); }
+.rs-row.me { background: var(--sel); }
+.rs-row .pos { font: 800 14px/1 var(--display); text-align: center; }
+.rs-row .nm { min-width: 0; font: 500 15px/1.25 var(--ui); overflow: hidden; text-overflow: ellipsis; }
+.rs-row.me .nm { font-weight: 700; }
+.rs-row .nm small { display: block; font: 500 12px/1.3 var(--ui); color: var(--muted); }
+.rs-row .pts { font: 700 15px/1 var(--ui); font-feature-settings: "tnum"; }
+.rs-row .tm { font: 500 12px/1 var(--ui); color: var(--muted); white-space: nowrap; }
+.rs-row .vs { color: var(--muted); }
+.rs-noclub { width: 24px; }
+/* Личный зачёт без сервера: дата, очки, время — без места и эмблем */
+.rs-row.h { grid-template-columns: 1fr auto auto; }
+.rs-row.h.ranked { grid-template-columns: 26px 1fr auto auto; }
+/* Дуэль: у кого больше — число залито, как победа в форме (заливкой, а не цветом) */
+.rs-row.duel { grid-template-columns: 1fr auto auto auto; gap: 8px; }
+.rs-row.duel b { min-width: 34px; padding: 4px 8px; border-radius: 9999px; text-align: center; font: 700 15px/1 var(--ui); font-feature-settings: "tnum"; }
+.rs-row.duel b.win { background: var(--ink); color: var(--paper); }
+/* Своих нет в десятке — пунктир, как у лидеров лиги */
+.rs-cut { height: 0; margin: 0 12px; border-top: 1px dashed var(--edge-strong); }
+
+/* Серия — ряд дней кружками: залитый собран, пустой с контуром пропущен, как форма в таблице */
+.rs-week { display: flex; gap: 8px; padding: 14px 16px; border: var(--line); border-radius: 20px; background: var(--paper); }
+.rs-dayc { flex: 1 1 0; display: grid; justify-items: center; gap: 6px; }
+.rs-dayc i { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--edge-strong); }
+.rs-dayc.on i { background: var(--ink); border-color: var(--ink); }
+.rs-dayc small { font: 500 11px/1 var(--ui); color: var(--muted); }
+.rs-week-say { margin: 12px 2px 0; font: 500 13px/1.4 var(--ui); color: var(--muted); }
+.rs-week-say b { color: var(--ink); font-weight: 700; }
+
+/* Строка-зов к полю: раскат дня ещё не собран */
+.rs-nudge { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; padding: 8px 8px 8px 16px; border: var(--line); border-radius: 28px; background: var(--paper); font: 500 14px/1.3 var(--ui); }
+.rs-nudge .rs-pill { flex: none; }
+.rs-solo { margin: 0 2px 4px; font: 500 13px/1.4 var(--ui); color: var(--muted); }
+.rs-pad { margin: 0 2px; }
+/* Сегодня в личном зачёте: раскат собран — время и итог крупно, это уже не над полем */
+.rs-today { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; align-items: end; padding: 16px; border: var(--line); border-radius: 28px; background: var(--paper); }
+.rs-today b { display: block; font: 800 26px/0.95 var(--display); }
+.rs-today div + div { text-align: right; }
+.rs-today small { display: block; margin-top: 6px; font: 500 12px/1.2 var(--ui); color: var(--muted); }
+.rs-today p { grid-column: 1 / -1; margin: 8px 0 0; padding-top: 10px; border-top: 1px solid var(--mist); font: 500 13px/1.35 var(--ui); }
+.rs-duel { margin: -8px 0 20px; }
+.rs-duel .label { margin-top: 0; }
+.rs-duel-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin-top: 24px; padding: 12px 12px 12px 16px; border: var(--line); border-radius: 20px; background: var(--paper); }
+.rs-duel-ask > svg { flex: none; width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.rs-duel-ask p { flex: 1 1 180px; margin: 0; font: 500 14px/1.35 var(--ui); }
+.rs-duel-ask .rs-pill { margin-left: auto; }
+
+/* ---------- лист тренировки и настроек ---------- */
+
+.rs-train-row { grid-template-columns: 1fr auto; }
+.rs-none-row { grid-template-columns: 1fr; }
+.rs-set .rs-set-row { grid-template-columns: 1fr auto; }
+.rs-sw { position: relative; flex: none; width: 44px; height: 26px; border: var(--line); border-radius: 9999px; background: var(--mist); transition: background-color .2s; }
+.rs-sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: var(--paper); border: 1px solid var(--edge); transition: transform .2s cubic-bezier(.2, .8, .2, 1); }
+[aria-pressed="true"] > .rs-sw { background: var(--act); border-color: var(--act); }
+[aria-pressed="true"] > .rs-sw::after { transform: translateX(18px); }
+.rs-confirm { margin-top: 16px; padding: 16px; border: var(--line); border-radius: 20px; }
+.rs-confirm p { margin: 0 0 12px; font: 500 15px/1.4 var(--ui); }
+.rs-confirm-btns { display: grid; gap: 8px; }
+.rs-confirm-btns .btn { margin: 0; }
+
+/* Тёмная тема: сплошной яркий цвет — только у вкладки и главной кнопки */
+:root[data-theme="dark"] .rs-sw { background: var(--mist); }
+:root[data-theme="dark"] [aria-pressed="true"] > .rs-sw { background: rgba(77, 162, 255, .16); border-color: rgba(77, 162, 255, .45); }
+:root[data-theme="dark"] [aria-pressed="true"] > .rs-sw::after { background: #9ccbff; border-color: #9ccbff; }
+
+@media (hover: hover) and (pointer: fine) {
+  .rs-pill:not(:disabled):hover { background: var(--sel); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rs-pill, .rs-cell, .rs-num, .rs-puck, .rs-sw, .rs-sw::after, .rs-goal { transition: none; }
+}
+/* Тёмная тема: финальное табло — на ступень светлее льда, вуаль гуще: лента под ней читается тенью */
+:root[data-theme="dark"] .rs-fin-veil { opacity: .84; }

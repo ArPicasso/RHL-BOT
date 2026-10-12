@@ -1,0 +1,164 @@
+/* Пульт админа (ADR-021). Токены и правила — DESIGN.md → «Пульт админа»: те же цвета, шрифты и контуры,
+   что у мини-аппа. Здесь только то, что пульту нужно, чтобы не тянуть весь style.css */
+:root {
+  --ink: #000000;
+  --paper: #ffffff;
+  --canvas: #ffffff;
+  --mist: #e9e9e9;
+  --muted: #555555;
+  --edge: #000000;
+  --sel: #dceeff;
+  --band-concrete: #cccccc;
+  --mint: #55db9c;
+  --ember: #fb4903;
+  --sun: #ffd731;
+  --lavender: #e9ccff;
+  --act: #000000; --on-act: #ffffff;
+  --ok-bg: var(--mint);   --ok-fg: #000000;   --ok-edge: #000000;
+  --bad-bg: var(--ember); --bad-fg: #000000;  --bad-edge: #000000;
+  --line: 1px solid var(--edge);
+  --display: "Unbounded", "Arial Black", system-ui, sans-serif;
+  --ui: "Onest", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --ink: #e4e8ee;
+  --paper: #1a212c;
+  --canvas: #131922;
+  --mist: #252e3a;
+  --muted: #8e98a8;
+  --edge: #2c3645;
+  --sel: #1f2c3f;
+  --band-concrete: #1c222c;
+  --act: #4da2ff; --on-act: #08121f;
+  --ok-bg: rgba(85, 219, 156, .14);  --ok-fg: #86ddb3;  --ok-edge: rgba(85, 219, 156, .34);
+  --bad-bg: rgba(251, 73, 3, .18);   --bad-fg: #ff9a70; --bad-edge: rgba(251, 73, 3, .45);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--canvas); color: var(--ink); }
+body { font: 500 15px/1.4 var(--ui); padding: 0 16px calc(32px + env(safe-area-inset-bottom)); max-width: 640px; margin: 0 auto; -webkit-text-size-adjust: 100%; }
+button { font: inherit; color: inherit; }
+
+.band { margin: 0 -16px 16px; padding: 24px 16px 20px; background: var(--band-concrete); border-bottom: var(--line); }
+.head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+h1 { font: 800 28px/0.95 var(--display); letter-spacing: -0.01em; margin: 0; }
+.lede { margin-top: 10px; font-size: 13px; color: var(--muted); }
+.btn-round { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border: var(--line); border-radius: 50%; background: var(--paper); cursor: pointer; }
+.btn-round svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.btn-round.spin svg { animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .btn-round.spin svg { animation: none; } }
+
+.label { margin: 24px 2px 10px; font: 700 12px/1.2 var(--ui); letter-spacing: .04em; text-transform: uppercase; }
+.card { border: var(--line); border-radius: 20px; background: var(--paper); padding: 4px 16px; }
+.card + .card { margin-top: 12px; }
+.card-title { margin: 12px 0 4px; font-size: 12px; color: var(--muted); }
+
+.tag { display: inline-flex; align-items: center; height: 26px; padding: 0 12px; border: 1px solid; border-radius: 9999px; font: 700 13px/1 var(--ui); letter-spacing: .03em; }
+.tag.ok { background: var(--ok-bg); color: var(--ok-fg); border-color: var(--ok-edge); }
+.tag.bad { background: var(--bad-bg); color: var(--bad-fg); border-color: var(--bad-edge); }
+.summary { padding: 16px; }
+.summary ul { list-style: none; margin: 12px 0 0; padding: 0; }
+.summary li { display: grid; grid-template-columns: 10px 1fr; gap: 10px; align-items: baseline; padding: 6px 0; }
+.summary li + li { border-top: 1px solid var(--mist); }
+
+.dot { width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--edge); background: var(--mist); flex: none; }
+.dot.ok { background: var(--mint); }
+.dot.warn { background: var(--sun); }
+.dot.bad { background: var(--ember); }
+
+.row { display: grid; grid-template-columns: 10px 1fr auto; gap: 10px; align-items: center; padding: 11px 0; min-height: 48px; }
+.row + .row { border-top: 1px solid var(--mist); }
+.row b { font-weight: 700; display: block; }
+.row small { display: block; margin-top: 2px; font-size: 13px; line-height: 1.35; color: var(--muted); overflow-wrap: anywhere; }
+.row .aside { font-size: 13px; color: var(--muted); text-align: right; white-space: nowrap; }
+.row a { color: inherit; }
+
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.tile { border: var(--line); border-radius: 20px; background: var(--paper); padding: 14px 16px; min-width: 0; }
+.tile .num { font: 800 26px/1 var(--display); font-feature-settings: "tnum"; }
+.tile .cap { margin-top: 6px; font-size: 13px; line-height: 1.3; color: var(--muted); }
+.tile .diff { margin-left: 6px; font: 700 13px/1 var(--ui); color: var(--ink); vertical-align: 4px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; font-feature-settings: "tnum"; }
+th, td { padding: 9px 3px; text-align: right; border-top: 1px solid var(--mist); white-space: nowrap; }
+th { font-weight: 500; font-size: 12px; color: var(--muted); border-top: 0; }
+th:first-child, td:first-child { text-align: left; }
+tr.today td { font-weight: 700; }
+.table-wrap { overflow-x: auto; margin: 0 -4px; padding: 0 4px; }
+
+.bars .bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 7px 0; font-size: 14px; }
+.bars .bar-row + .bar-row { border-top: 1px solid var(--mist); }
+.bars .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bars .n { font-weight: 700; font-feature-settings: "tnum"; }
+.more { display: block; width: 100%; margin: 4px 0 8px; padding: 8px 0; border: 0; background: none; color: var(--muted); font-size: 13px; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+
+.empty, .gate { text-align: center; padding: 28px 16px; color: var(--muted); border: var(--line); border-radius: 20px; }
+.gate b { display: block; color: var(--ink); font-size: 16px; margin-bottom: 8px; }
+.foot { margin-top: 24px; text-align: center; font-size: 12px; color: var(--muted); }
+
+/* вкладки «Состояние · Голы» (DESIGN.md → «Пульт → вкладки»): сегменты, как в Календаре */
+.seg { display: grid; grid-template-columns: 1fr 1fr; margin-top: 14px; padding: 3px; border: var(--line); border-radius: 9999px; background: var(--paper); }
+.seg[hidden] { display: none; }
+.seg button { min-height: 40px; padding: 0 10px; border: 0; border-radius: 9999px; background: none; font-weight: 700; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.seg button.on { background: var(--act); color: var(--on-act); }
+
+/* статус гола — мини-стикер: цвет — роль (clips.goal_states), текст всегда есть */
+.st { display: inline-flex; align-items: center; justify-content: center; height: 20px; padding: 0 8px; border: 1px solid var(--edge); border-radius: 9999px; font: 700 11px/1 var(--ui); white-space: nowrap; color: #000000; background: var(--paper); }
+.st-clip { background: var(--mint); }
+.st-ready { background: rgba(85, 219, 156, .4); }
+.st-done { color: var(--ink); }
+.st-confirm { background: var(--lavender); }
+.st-dispute { background: var(--ember); }
+.st-approx { background: var(--sun); }
+.st-search { background: var(--mist); color: var(--ink); }
+.st-absent { color: var(--ink); border-style: dashed; }
+.st-stuck { background: var(--mist); color: var(--ink); border-style: dashed; }
+:root[data-theme="dark"] .st-clip { background: rgba(85, 219, 156, .18); color: #86ddb3; border-color: rgba(85, 219, 156, .4); }
+:root[data-theme="dark"] .st-ready { background: rgba(85, 219, 156, .1); color: #86ddb3; border-color: rgba(85, 219, 156, .3); }
+:root[data-theme="dark"] .st-confirm { background: rgba(233, 204, 255, .14); color: #e9ccff; border-color: rgba(233, 204, 255, .4); }
+:root[data-theme="dark"] .st-dispute { background: rgba(251, 73, 3, .18); color: #ff9a70; border-color: rgba(251, 73, 3, .45); }
+:root[data-theme="dark"] .st-approx { background: rgba(255, 215, 49, .16); color: #ffe27a; border-color: rgba(255, 215, 49, .4); }
+.row.st-row { grid-template-columns: 92px 1fr auto; }
+.row.st-row .st { justify-self: start; }
+
+.row.match { cursor: pointer; }
+.row.match .chev { margin-left: 6px; }
+.goals { margin: 0 0 8px 20px; }
+.goal { display: grid; grid-template-columns: 92px 1fr; gap: 10px; align-items: baseline; padding: 7px 0; font-size: 14px; }
+.goal + .goal { border-top: 1px solid var(--mist); }
+.goal .st { justify-self: start; }
+.goal small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+:focus-visible { outline: 2px solid var(--blue, #4da2ff); outline-offset: 2px; }
+
+/* карточка гола (ADR-036, раздел 4): лист снизу поверх вкладки, как листы мини-аппа */
+body.locked { overflow: hidden; }
+.goal-open { cursor: pointer; }
+.sheet-back { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 10; }
+.sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 11; max-width: 640px; max-height: 92vh; margin: 0 auto; overflow-y: auto; background: var(--paper); border: var(--line); border-bottom: 0; border-radius: 20px 20px 0 0; padding: 16px 16px calc(20px + env(safe-area-inset-bottom)); }
+.sheet[hidden], .sheet-back[hidden] { display: none; }
+.sheet .handle { width: 40px; height: 4px; margin: -6px auto 12px; border-radius: 9999px; background: var(--edge-strong, var(--muted)); }
+.sheet-head { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: start; }
+.sheet h2 { margin: 0; font: 700 17px/1.25 var(--ui); }
+.sheet-sub { margin-top: 6px; font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.sheet .plan { margin: 14px 0 10px; font-size: 14px; }
+.sheet video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; border: var(--line); border-radius: 14px; }
+.sheet .vid + .vid { margin-top: 14px; }
+.sheet .pos { margin-top: 6px; font-size: 13px; font-feature-settings: "tnum"; color: var(--muted); }
+.vid-wait { display: grid; place-items: center; min-height: 120px; padding: 16px; text-align: center; color: var(--muted); border: 1px dashed var(--edge); border-radius: 14px; font-size: 14px; }
+.cand, .nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.cand .card-title { margin: 0 4px 0 0; }
+.pill { min-height: 40px; padding: 0 14px; border: var(--line); border-radius: 9999px; background: var(--paper); font-weight: 700; font-size: 14px; cursor: pointer; font-feature-settings: "tnum"; }
+.sheet-foot { margin-top: 16px; }
+.pill.act { background: var(--act); color: var(--on-act); border-color: var(--act); }
+.pill:disabled { opacity: .5; cursor: default; }
+.sheet .nav + .nav { margin-top: 8px; }
+.done { margin-top: 14px; padding: 10px 14px; border: var(--line); border-radius: 14px; background: var(--ok-bg); color: var(--ok-fg); border-color: var(--ok-edge); font-size: 14px; }
+.hist-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 6px 0; font-size: 13px; }
+.hist-row + .hist-row { border-top: 1px solid var(--mist); }
+.hist-row.off span { color: var(--muted); text-decoration: line-through; }
+.hist-row .more { width: auto; margin: 0; padding: 4px 0; }
+
+@media (hover: hover) { .btn-round:hover, .more:hover, .row.match:hover, .goal-open:hover, .pill:hover, .seg button:not(.on):hover { background: var(--sel); } }

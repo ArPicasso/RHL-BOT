@@ -1,0 +1,302 @@
+{
+ "akhmat-granit": {
+  "goalie": [
+   0.791,
+   "#ffffff"
+  ],
+  "skater": [
+   0.8,
+   "#ffffff"
+  ]
+ },
+ "arktika": {
+  "goalie": [
+   0.79,
+   "#ffffff"
+  ],
+  "skater": [
+   0.793,
+   "#ffffff"
+  ]
+ },
+ "belgorod": {
+  "goalie": [
+   0.824,
+   "#ffffff"
+  ],
+  "skater": [
+   0.794,
+   "#ffffff"
+  ]
+ },
+ "bryansk": {
+  "goalie": [
+   0.771,
+   "#000000"
+  ],
+  "skater": [
+   0.833,
+   "#000000"
+  ]
+ },
+ "buran": {
+  "goalie": [
+   0.807,
+   "#ffffff"
+  ],
+  "skater": [
+   0.793,
+   "#ffffff"
+  ]
+ },
+ "dinamo-576": {
+  "goalie": [
+   0.76,
+   "#ffffff"
+  ],
+  "skater": [
+   0.796,
+   "#ffffff"
+  ]
+ },
+ "dinamo-kareliya": {
+  "goalie": [
+   0.787,
+   "#ffffff"
+  ],
+  "skater": [
+   0.788,
+   "#ffffff"
+  ]
+ },
+ "dizelist": {
+  "goalie": [
+   0.76,
+   "#ffffff"
+  ],
+  "skater": [
+   0.836,
+   "#ffffff"
+  ]
+ },
+ "ekoniva-bobrov": {
+  "goalie": [
+   0.8,
+   "#000000"
+  ],
+  "skater": [
+   0.821,
+   "#ffffff"
+  ]
+ },
+ "ermak": {
+  "goalie": [
+   0.805,
+   "#000000"
+  ],
+  "skater": [
+   0.809,
+   "#000000"
+  ]
+ },
+ "fakel-yamal": {
+  "goalie": [
+   0.789,
+   "#ffffff"
+  ],
+  "skater": [
+   0.811,
+   "#ffffff"
+  ]
+ },
+ "gvardiya": {
+  "goalie": [
+   0.827,
+   "#ffffff"
+  ],
+  "skater": [
+   0.806,
+   "#ffffff"
+  ]
+ },
+ "kaluga": {
+  "goalie": [
+   0.79,
+   "#ffffff"
+  ],
+  "skater": [
+   0.758,
+   "#ffffff"
+  ]
+ },
+ "krasnaya-mashina": {
+  "goalie": [
+   0.791,
+   "#ffffff"
+  ],
+  "skater": [
+   0.83,
+   "#ffffff"
+  ]
+ },
+ "krasnodar": {
+  "goalie": [
+   0.787,
+   "#ffffff"
+  ],
+  "skater": [
+   0.815,
+   "#ffffff"
+  ]
+ },
+ "kristall": {
+  "goalie": [
+   0.782,
+   "#ffffff"
+  ],
+  "skater": [
+   0.815,
+   "#ffffff"
+  ]
+ },
+ "leningradets": {
+  "goalie": [
+   0.755,
+   "#ffffff"
+  ],
+  "skater": [
+   0.812,
+   "#ffffff"
+  ]
+ },
+ "lipetsk": {
+  "goalie": [
+   0.803,
+   "#000000"
+  ],
+  "skater": [
+   0.802,
+   "#000000"
+  ]
+ },
+ "metallurg": {
+  "goalie": [
+   0.79,
+   "#000000"
+  ],
+  "skater": [
+   0.783,
+   "#000000"
+  ]
+ },
+ "polet": {
+  "goalie": [
+   0.739,
+   "#ffffff"
+  ],
+  "skater": [
+   0.829,
+   "#ffffff"
+  ]
+ },
+ "progress": {
+  "goalie": [
+   0.756,
+   "#ffffff"
+  ],
+  "skater": [
+   0.797,
+   "#ffffff"
+  ]
+ },
+ "proton": {
+  "goalie": [
+   0.741,
+   "#ffffff"
+  ],
+  "skater": [
+   0.796,
+   "#ffffff"
+  ]
+ },
+ "rostov": {
+  "goalie": [
+   0.745,
+   "#ffffff"
+  ],
+  "skater": [
+   0.799,
+   "#ffffff"
+  ]
+ },
+ "ryazan-vdv": {
+  "goalie": [
+   0.843,
+   "#ffffff"
+  ],
+  "skater": [
+   0.825,
+   "#ffffff"
+  ]
+ },
+ "samara": {
+  "goalie": [
+   0.75,
+   "#ffffff"
+  ],
+  "skater": [
+   0.819,
+   "#ffffff"
+  ]
+ },
+ "sokol": {
+  "goalie": [
+   0.806,
+   "#ffffff"
+  ],
+  "skater": [
+   0.773,
+   "#ffffff"
+  ]
+ },
+ "tambov": {
+  "goalie": [
+   0.829,
+   "#ffffff"
+  ],
+  "skater": [
+   0.774,
+   "#ffffff"
+  ]
+ },
+ "tayfun": {
+  "goalie": [
+   0.755,
+   "#ffffff"
+  ],
+  "skater": [
+   0.82,
+   "#ffffff"
+  ]
+ },
+ "tverichi": {
+  "goalie": [
+   0.737,
+   "#000000"
+  ],
+  "skater": [
+   0.813,
+   "#000000"
+  ]
+ },
+ "vityaz-podolsk": {
+  "goalie": [
+   0.759,
+   "#ffffff"
+  ],
+  "skater": [
+   0.796,
+   "#ffffff"
+  ]
+ }
+}

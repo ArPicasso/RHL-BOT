@@ -1,0 +1,290 @@
+[
+ {
+  "n": 1,
+  "date": "2026-10-03",
+  "opponent": "МХК Белгород",
+  "home": true
+ },
+ {
+  "n": 6,
+  "date": "2026-10-04",
+  "opponent": "МХК Белгород",
+  "home": true
+ },
+ {
+  "n": 14,
+  "date": "2026-10-06",
+  "opponent": "МХК Белгород",
+  "home": false
+ },
+ {
+  "n": 17,
+  "date": "2026-10-07",
+  "opponent": "МХК Белгород",
+  "home": false
+ },
+ {
+  "n": 42,
+  "date": "2026-10-13",
+  "opponent": "Ростов",
+  "home": true
+ },
+ {
+  "n": 44,
+  "date": "2026-10-14",
+  "opponent": "Ростов",
+  "home": true
+ },
+ {
+  "n": 61,
+  "date": "2026-10-19",
+  "opponent": "МХК Кристалл",
+  "home": false
+ },
+ {
+  "n": 65,
+  "date": "2026-10-20",
+  "opponent": "МХК Кристалл",
+  "home": false
+ },
+ {
+  "n": 80,
+  "date": "2026-10-23",
+  "opponent": "ХК Самара",
+  "home": false
+ },
+ {
+  "n": 86,
+  "date": "2026-10-24",
+  "opponent": "ХК Самара",
+  "home": false
+ },
+ {
+  "n": 110,
+  "date": "2026-11-01",
+  "opponent": "Прогресс",
+  "home": true
+ },
+ {
+  "n": 115,
+  "date": "2026-11-02",
+  "opponent": "Прогресс",
+  "home": true
+ },
+ {
+  "n": 136,
+  "date": "2026-11-07",
+  "opponent": "Сокол",
+  "home": true
+ },
+ {
+  "n": 138,
+  "date": "2026-11-08",
+  "opponent": "Сокол",
+  "home": true
+ },
+ {
+  "n": 156,
+  "date": "2026-11-14",
+  "opponent": "Дизелист",
+  "home": false
+ },
+ {
+  "n": 158,
+  "date": "2026-11-15",
+  "opponent": "Дизелист",
+  "home": false
+ },
+ {
+  "n": 170,
+  "date": "2026-11-18",
+  "opponent": "МХК Тамбов",
+  "home": false
+ },
+ {
+  "n": 173,
+  "date": "2026-11-19",
+  "opponent": "МХК Тамбов",
+  "home": false
+ },
+ {
+  "n": 207,
+  "date": "2026-11-26",
+  "opponent": "Протон",
+  "home": true
+ },
+ {
+  "n": 208,
+  "date": "2026-11-27",
+  "opponent": "Протон",
+  "home": true
+ },
+ {
+  "n": 224,
+  "date": "2026-12-02",
+  "opponent": "ЭкоНива-Бобров",
+  "home": true
+ },
+ {
+  "n": 230,
+  "date": "2026-12-03",
+  "opponent": "ЭкоНива-Бобров",
+  "home": true
+ },
+ {
+  "n": 287,
+  "date": "2026-12-19",
+  "opponent": "Ермак",
+  "home": false
+ },
+ {
+  "n": 293,
+  "date": "2026-12-20",
+  "opponent": "Ермак",
+  "home": false
+ },
+ {
+  "n": 322,
+  "date": "2027-01-09",
+  "opponent": "ХК Краснодар",
+  "home": true
+ },
+ {
+  "n": 328,
+  "date": "2027-01-10",
+  "opponent": "ХК Краснодар",
+  "home": true
+ },
+ {
+  "n": 373,
+  "date": "2027-01-21",
+  "opponent": "Ермак",
+  "home": true
+ },
+ {
+  "n": 377,
+  "date": "2027-01-22",
+  "opponent": "Ермак",
+  "home": true
+ },
+ {
+  "n": 411,
+  "date": "2027-01-29",
+  "opponent": "ЭкоНива-Бобров",
+  "home": false
+ },
+ {
+  "n": 419,
+  "date": "2027-01-30",
+  "opponent": "ЭкоНива-Бобров",
+  "home": false
+ },
+ {
+  "n": 428,
+  "date": "2027-02-02",
+  "opponent": "Протон",
+  "home": false
+ },
+ {
+  "n": 431,
+  "date": "2027-02-03",
+  "opponent": "Протон",
+  "home": false
+ },
+ {
+  "n": 450,
+  "date": "2027-02-08",
+  "opponent": "МХК Тамбов",
+  "home": true
+ },
+ {
+  "n": 454,
+  "date": "2027-02-09",
+  "opponent": "МХК Тамбов",
+  "home": true
+ },
+ {
+  "n": 465,
+  "date": "2027-02-11",
+  "opponent": "Дизелист",
+  "home": true
+ },
+ {
+  "n": 470,
+  "date": "2027-02-12",
+  "opponent": "Дизелист",
+  "home": true
+ },
+ {
+  "n": 493,
+  "date": "2027-02-17",
+  "opponent": "Сокол",
+  "home": false
+ },
+ {
+  "n": 496,
+  "date": "2027-02-18",
+  "opponent": "Сокол",
+  "home": false
+ },
+ {
+  "n": 510,
+  "date": "2027-02-21",
+  "opponent": "Прогресс",
+  "home": false
+ },
+ {
+  "n": 514,
+  "date": "2027-02-22",
+  "opponent": "Прогресс",
+  "home": false
+ },
+ {
+  "n": 539,
+  "date": "2027-03-04",
+  "opponent": "МХК Кристалл",
+  "home": true
+ },
+ {
+  "n": 544,
+  "date": "2027-03-05",
+  "opponent": "МХК Кристалл",
+  "home": true
+ },
+ {
+  "n": 561,
+  "date": "2027-03-08",
+  "opponent": "ХК Самара",
+  "home": true
+ },
+ {
+  "n": 567,
+  "date": "2027-03-09",
+  "opponent": "ХК Самара",
+  "home": true
+ },
+ {
+  "n": 588,
+  "date": "2027-03-16",
+  "opponent": "Ростов",
+  "home": false
+ },
+ {
+  "n": 598,
+  "date": "2027-03-17",
+  "opponent": "Ростов",
+  "home": false
+ },
+ {
+  "n": 611,
+  "date": "2027-03-20",
+  "opponent": "ХК Краснодар",
+  "home": false
+ },
+ {
+  "n": 622,
+  "date": "2027-03-21",
+  "opponent": "ХК Краснодар",
+  "home": false
+ }
+]

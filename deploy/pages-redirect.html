@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>РХЛ U21</title>
+  <!-- Старый адрес мини-аппа на GitHub Pages (ADR-039): мини-апп переехал на наш сервер. Задание «Мини-апп» (pages.yml)
+       кладёт эту страницу как index.html и 404.html, подставив адрес из переменной WEBAPP_URL. Путь, запрос и фрагмент
+       переносятся как есть: во фрагменте Telegram передаёт tgWebAppData, по нему новый адрес узнаёт болельщика -->
+  <script>
+    (function () {
+      var to = "__TARGET__";
+      var rest = location.pathname.replace(/^\/RHL-BOT\/?/, "").replace(/^\/+/, "");
+      location.replace(to + rest + location.search + location.hash);
+    })();
+  </script>
+  <noscript><meta http-equiv="refresh" content="0; url=__TARGET__"></noscript>
+</head>
+<body>
+  <p>Мини-апп переехал: <a href="__TARGET__">__TARGET__</a></p>
+</body>
+</html>

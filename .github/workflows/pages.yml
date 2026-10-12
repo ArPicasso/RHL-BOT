@@ -1,0 +1,66 @@
+name: Мини-апп
+
+# С 12.10.2026 мини-апп собирает и раздаёт наш сервер (служба pages, site_build.py, ADR-039). На GitHub Pages остаётся
+# одна страница-переадресация на новый адрес — для старых ссылок t.me/<бот>/myapp и закладок: путь, запрос и фрагмент
+# с tgWebAppData она переносит как есть. Адрес — переменная WEBAPP_URL (Settings → Secrets and variables → Actions →
+# Variables), та же, по которой «Сторож» проверяет мини-апп.
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/pages.yml"
+      - "deploy/pages-redirect.html"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Переадресацию отдаёт публичная витрина ArPicasso/RHL-BOT (ADR-040): у приватного репозитория Pages на бесплатном
+    # тарифе нет
+    if: github.repository == 'ArPicasso/RHL-BOT'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Страница-переадресация
+        env:
+          TARGET: ${{ vars.WEBAPP_URL }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          # Переменной нет — адрес, который включает deploy/https.sh без своего домена, по секрету DEPLOY_HOST (как у
+          # «Сторожа»). 12.10 переменную ещё не завели, и первая выкладка переадресации упала
+          if [ -z "$TARGET" ] && [[ "$HOST" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+            TARGET="https://${HOST//./-}.sslip.io/"
+          fi
+          TARGET="${TARGET%/}/"
+          [[ "$TARGET" =~ ^https://[A-Za-z0-9./_:-]+/$ ]] || { echo "::error::Переменная WEBAPP_URL — https://адрес мини-аппа на сервере"; exit 1; }
+          case "$TARGET" in *.github.io/*) echo "::error::WEBAPP_URL смотрит на сам Pages — переадресация зациклится"; exit 1;; esac
+          mkdir -p _site
+          sed "s#__TARGET__#$TARGET#g" deploy/pages-redirect.html > _site/index.html
+          ! grep -q "__TARGET__" _site/index.html
+          cp _site/index.html _site/404.html
+          echo "Переадресация на $TARGET"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

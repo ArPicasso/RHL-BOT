@@ -1,0 +1,1540 @@
+/* Дизайн-система — DESIGN.md (Slush, «стикербук болельщика») */
+:root {
+  /* меняются местами между темами */
+  --ink: #000000;
+  --paper: #ffffff;
+  --mist: #e9e9e9;
+  --muted: #555555;
+  /* уходят в глубокий тон */
+  --sel: #dceeff;
+  --band-sky: #dceeff;
+  --band-lavender: #e9ccff;
+  --band-mint: #55db9c;
+  --band-concrete: #cccccc;
+  --band-peach: #ffd9c7;     /* полоса «Раската» (ADR-018) */
+  --ice: #e8f3ff;            /* лёд поля «Раската» */
+  --ice-mark: rgba(77, 162, 255, .18);   /* разметка арены под сеткой: две линии и круг */
+  --deck: #edf4fb;           /* подложка листа дня (ADR-017) */
+  --backdrop: rgba(0, 0, 0, .35);
+  /* стикеры — одинаковые в обеих темах */
+  --sticker: #ffffff;
+  --on-sticker: #000000;
+  --blue: #4da2ff;
+  --mint: #55db9c;
+  --lavender: #e9ccff;
+  --ember: #fb4903;
+  --sun: #ffd731;
+  --violet: #5c4ade;
+
+  /* роли, которые в тёмной теме расходятся */
+  --canvas: #ffffff;         /* фон страницы; карточки — --paper */
+  --edge: #000000;           /* контуры карточек, пилюль, стикеров */
+  --edge-strong: #000000;    /* пунктир плей-офф, ручка листа, пустые точки формы */
+  --act: #000000;            /* заливка действия: кнопка, активная вкладка, победа */
+  --on-act: #ffffff;
+  --emblem-bg: #ffffff;
+  --ribbon-edge: #000000;
+  --home-bg: var(--mint);     --home-fg: #000000;  --home-edge: #000000;
+  --away-bg: var(--lavender); --away-fg: #000000;  --away-edge: #000000;
+  --hot-bg: var(--ember);     --hot-fg: #000000;   --hot-edge: #000000;
+  --lead-home: var(--mint);   --lead-away: var(--lavender);   /* ход матча: кто ведёт */
+
+  --line: 1px solid var(--edge);
+  --display: "Unbounded", "Arial Black", system-ui, sans-serif;
+  --ui: "Onest", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --marquee-h: 30px;
+  color-scheme: light;
+}
+
+/* Тёмная тема — «стикеры на ночном льду» (DESIGN.md) */
+:root[data-theme="dark"] {
+  /* «Стикеры на ночном льду», мягкий контраст: графитовый фон, карточки на ступень светлее,
+     тихие контуры, приглушённые стикеры. Яркое — только синий акцент действия */
+  --canvas: #131922;
+  --paper: #1a212c;
+  --ink: #e4e8ee;
+  --muted: #8e98a8;
+  --mist: #252e3a;
+  --edge: #2c3645;
+  --edge-strong: #4a5567;
+  --sel: #1f2c3f;
+  --band-sky: #182538;
+  --band-lavender: #211d33;
+  --band-mint: #15291f;
+  --band-concrete: #1c222c;
+  --band-peach: #2a1f1b;
+  --ice: #16202e;
+  --ice-mark: rgba(77, 162, 255, .22);
+  --deck: #0e131b;           /* глубже фона: карточки --paper на ней всплывают */
+  --backdrop: rgba(4, 7, 12, .6);
+  --act: #4da2ff;
+  --on-act: #08121f;
+  --emblem-bg: #e6e9ee;
+  --ribbon-edge: #0b1018;
+  --home-bg: rgba(85, 219, 156, .14);  --home-fg: #86ddb3;  --home-edge: rgba(85, 219, 156, .34);
+  --away-bg: rgba(233, 204, 255, .12); --away-fg: #d4bdf0;  --away-edge: rgba(233, 204, 255, .30);
+  --hot-bg: rgba(251, 73, 3, .18);     --hot-fg: #ff9a70;   --hot-edge: rgba(251, 73, 3, .45);
+  --lead-home: rgba(85, 219, 156, .30); --lead-away: rgba(233, 204, 255, .34);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font: 500 15px/1.4 var(--ui);
+  letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  /* Без приближения двойным касанием: два быстрых нажатия по историям («дальше», «дальше») iOS
+     принимал за двойное касание и приближал, а потом отдалял экран. Масштаб щипком остаётся */
+  touch-action: manipulation;
+}
+button { font: inherit; color: inherit; letter-spacing: inherit; }
+
+/* Ровные цифры только у чисел: иначе дефис в «Рязань-ВДВ» становится шире */
+.num, .score, .stat b, .date b, .gl, .st-row .n, .goal .tm, .goal .sc { font-feature-settings: "tnum"; }
+
+main { max-width: 560px; margin: 0 auto; padding: 0 16px calc(120px + env(safe-area-inset-bottom)); }
+/* Экран въезжает сбоку при смене вкладки — сдвинутое содержимое не должно расширять страницу:
+   на телефоне это растягивает область вёрстки, и меню дёргается. clip, а не hidden: липкие фильтры работают */
+#screen { overflow-x: clip; }
+
+/* ---------- бегущая строка ---------- */
+
+.marquee {
+  position: sticky;
+  top: 0;
+  z-index: 7;
+  height: var(--marquee-h);
+  overflow: hidden;
+  background: #000;
+  color: #fff;
+  font: 700 12px/var(--marquee-h) var(--ui);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.marquee-track { display: inline-block; padding-left: 16px; animation: marquee 40s linear infinite; }
+.marquee-track span { margin-right: 28px; }
+.marquee-track span::before { content: "✦"; margin-right: 28px; color: var(--sun); }
+@keyframes marquee { to { transform: translateX(-50%); } }
+:root[data-theme="dark"] .marquee { background: #0b0f15; color: #c5ccd6; box-shadow: inset 0 -1px 0 var(--edge); }
+/* Замирает, где читают цифры: таблица и открытая карточка матча (DESIGN.md → «Бегущая строка») */
+body.sheet-open .marquee-track, body[data-tab="table"] .marquee-track { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) { .marquee-track { animation: none; } }
+
+/* ---------- полосы-шапки ---------- */
+
+.band {
+  position: relative;
+  overflow: hidden;
+  margin: 0 -16px 20px;
+  padding: 24px 16px 22px;
+  border-bottom: var(--line);
+}
+.band.sky { background: var(--band-sky); }
+.band.lavender { background: var(--band-lavender); }
+.band.mint { background: var(--band-mint); }
+.band.concrete { background: var(--band-concrete); }
+
+h1, .display {
+  font: 800 28px/0.95 var(--display);
+  letter-spacing: -0.01em;
+  margin: 0;
+  overflow-wrap: break-word;
+}
+.lede { margin-top: 10px; font-size: 14px; color: var(--ink); max-width: 36ch; }
+
+.hero { display: flex; gap: 16px; align-items: center; position: relative; z-index: 1; }
+/* Кегль по самому длинному слову (--w, ставит app.js): длинное название уменьшается, а не рвётся посреди слова.
+   176px — поля полосы, эмблема, зазор и кнопка темы; 0.9em — средняя ширина буквы Unbounded 800 */
+.hero h1 { font-size: clamp(18px, calc((min(100vw, 560px) - 176px) / (var(--w, 8) * 0.9)), 42px); line-height: 0.9; }
+.hero .meta { margin-top: 8px; font-weight: 700; font-size: 13px; letter-spacing: .03em; text-transform: uppercase; }
+
+.ribbon { position: absolute; left: -44px; bottom: -30px; width: 136px; height: 94px; z-index: 0; pointer-events: none; }
+.ribbon path { fill: none; stroke-linecap: round; }
+.ribbon .o { stroke: var(--ribbon-edge); }
+.ribbon .f { stroke: var(--blue); }
+
+/* ---------- стикер эмблемы ---------- */
+
+.em {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--mist);   /* мини-эмблема в строке — без чёрного колечка (DESIGN.md) */
+  background: var(--emblem-bg);
+  overflow: hidden;
+}
+.em.md, .em.lg, .em.xl { border: var(--line); }
+.em img { width: 78%; height: 78%; object-fit: contain; display: block; }
+.em.ab { background: var(--violet); color: var(--sticker); font: 700 8px/1 var(--ui); letter-spacing: .02em; }
+.em.md { width: 44px; height: 44px; }
+.em.md.ab { font-size: 11px; }
+.em.lg { width: 64px; height: 64px; }
+.em.lg.ab { font-size: 15px; }
+.em.xl { width: 76px; height: 76px; transform: rotate(-6deg); }
+.em.xl.ab { font-size: 17px; }
+
+/* ---------- стикеры-бейджи ---------- */
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 11px;
+  border: var(--line);
+  border-radius: 9999px;
+  background: var(--paper);
+  font: 700 12px/1 var(--ui);
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.tag svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tag.home { background: var(--home-bg); color: var(--home-fg); border-color: var(--home-edge); }
+.tag.away { background: var(--away-bg); color: var(--away-fg); border-color: var(--away-edge); }
+.tag.today { background: var(--hot-bg); color: var(--hot-fg); border-color: var(--hot-edge); }
+.tag.soft { background: var(--mist); border-color: var(--mist); color: var(--muted); }
+.tags { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.res {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 26px;
+  padding: 0 8px;
+  border: var(--line);
+  border-radius: 9999px;
+  font: 700 12px/1 var(--ui);
+  letter-spacing: .03em;
+  white-space: nowrap;
+}
+.res.w { background: var(--act); color: var(--on-act); border-color: var(--act); }
+.res.l { background: var(--paper); color: var(--ink); }
+.res small { font-size: 10px; margin-left: 3px; }
+
+/* ---------- статистика ---------- */
+
+/* Цифры сезона — на паспорте в «Я»: с «Главной» их вытеснили «Матчи дня в РХЛ» (ADR-017, пересмотр 03.10) */
+.stat { border: var(--line); border-radius: 20px; padding: 12px 12px 10px; background: var(--paper); }
+.stat b { display: block; font: 800 24px/1 var(--display); }
+.stat > span { display: block; margin-top: 6px; font-size: 12px; color: var(--muted); line-height: 1.25; }
+.form { display: inline-flex; gap: 4px; align-items: center; height: 24px; }
+.form i { flex: none; width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--edge-strong); background: transparent; }
+.form i.W { background: var(--ink); border-color: var(--ink); }
+
+/* ---------- секции и заголовки ---------- */
+
+/* Секция — отдельный блок, поэтому её заголовок прилипает только пока она на экране и уходит
+   вместе с ней (ADR-017). Фон непрозрачный: под прилипшим заголовком проезжают карточки */
+.part { position: relative; background: var(--canvas); }
+.part:empty { display: none; }
+.part > .label {
+  position: sticky;
+  top: var(--marquee-h);
+  z-index: 3;
+  margin: 0 -16px 10px;
+  padding: 24px 18px 8px;
+  background: inherit;
+}
+/* Первая секция экрана: отступ от полосы-шапки уже есть у неё самой — иначе между ними 44px */
+#home-body > .part:first-child > .label { padding-top: 4px; }
+/* Лист дня лежит на подложке во всю ширину: белое — про мой клуб и его матчи, подложка — про то,
+   что сегодня пишут. Переход между половинами «Сегодня» виден цветом */
+.part.deck { margin: 0 -16px; padding: 0 16px 16px; background: var(--deck); }
+/* Истории — первая секция «Ленты лиги» (ADR-017, пересмотр 02.10): ряд сразу под своим заголовком,
+   а до фильтров ленты — воздух: иначе чипы читаются как фильтр историй, а они фильтруют посты ниже */
+.packs-part .packs { margin-top: 0; }
+.packs-part { margin-bottom: 12px; }
+
+.label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin: 24px 2px 10px;
+  font: 700 12px/1.2 var(--ui);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.label .aside { text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--muted); }
+.label .link { cursor: pointer; text-decoration: underline; text-underline-offset: 3px; border: 0; background: none; padding: 12px 2px; margin: -12px -2px; font-size: 13px; }
+
+/* ---------- табло ---------- */
+
+.board-card { border: var(--line); border-radius: 28px; background: var(--paper); padding: 16px; }
+.board-card.tap { cursor: pointer; }
+.board-card.tap:active { background: var(--sel); }
+.board-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.board-top .when { font-weight: 700; font-size: 13px; white-space: nowrap; }
+.board { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 6px; margin-top: 18px; }
+.side { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; min-width: 0; }
+.side .name { font: 700 clamp(13px, 4vw, 15px)/1.15 var(--ui); overflow-wrap: break-word; hyphens: auto; max-width: 100%; }
+.side .city { font-size: 12px; color: var(--muted); margin-top: -4px; }
+.score { min-width: 88px; text-align: center; font: 800 clamp(40px, 13.5vw, 52px)/0.85 var(--display); letter-spacing: -0.02em; }
+.score .dec { display: block; margin-top: 10px; font: 700 11px/1 var(--ui); letter-spacing: .06em; text-transform: uppercase; }
+.score.pending { font-size: 26px; }
+.score.pending .dec { text-transform: none; letter-spacing: 0; font-weight: 500; font-size: 12px; color: var(--muted); }
+.periods { display: flex; justify-content: center; gap: 6px; margin-top: 16px; flex-wrap: wrap; }
+.periods span { border: var(--line); border-radius: 9999px; padding: 4px 10px; font: 700 12px/1.2 var(--ui); background: var(--paper); }
+
+/* ---------- списки матчей ---------- */
+
+.list { border: var(--line); border-radius: 20px; overflow: hidden; background: var(--paper); }
+.row {
+  display: grid;
+  grid-template-columns: 48px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.row.two { grid-template-columns: 1fr auto; }
+.row + .row { border-top: 1px solid var(--mist); }
+.row:active { background: var(--sel); }
+/* Дата без рамки: рамка только у ближайшего матча */
+.date {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  width: 48px;
+  height: 44px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+}
+.date b { font: 800 18px/1 var(--display); }
+.date span { margin-top: 4px; white-space: nowrap; font: 700 10px/1 var(--ui); letter-spacing: .04em; text-transform: uppercase; }
+.row.next .date { border-color: var(--edge-strong); background: var(--paper); }
+.row.past .date { color: var(--muted); }
+.row .t { display: grid; gap: 6px; min-width: 0; }
+.row .t div { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.row .t .nm { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .t .nm.me { font-weight: 700; }
+.row.one .t { gap: 4px; }
+.row.one .t .nm { font: 700 16px/1.2 var(--ui); }
+.row .t .sub { gap: 6px; padding-left: 32px; font-size: 12px; color: var(--muted); }
+.row .t .sub .city { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.where {
+  flex: none;
+  height: 18px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 9999px;
+  font: 700 10px/16px var(--ui);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.where.home { background: var(--home-bg); color: var(--home-fg); }
+.where.away { background: var(--away-bg); color: var(--away-fg); }
+.row .t .gl { margin-left: auto; padding-left: 8px; font-weight: 500; color: var(--muted); }
+.row .t .gl.lead { color: var(--ink); font-weight: 700; }
+.row .r { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 30px; }
+.row .r .kick { font-weight: 700; font-size: 13px; }
+.row .r .sc { font-weight: 700; }
+/* Подзаголовок дня во «Вся лига» */
+.day {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 2px;
+  font: 700 12px/1.2 var(--ui);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.row + .day { border-top: 1px solid var(--mist); }
+.day.next span:first-child { padding: 3px 9px; margin-left: -9px; border: 1px solid var(--edge-strong); border-radius: 9999px; color: var(--ink); }
+.day .tag { height: 22px; font-size: 10px; }
+
+/* ---------- фильтры ---------- */
+
+.pills { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; margin-top: 16px; }
+.pills::-webkit-scrollbar { display: none; }
+.pills + .pills { margin-top: 8px; }
+.pills button {
+  flex: none;
+  min-height: 40px;
+  border: var(--line);
+  border-radius: 9999px;
+  padding: 10px 16px;
+  background: var(--paper);
+  font: 700 13px/1.2 var(--ui);
+  letter-spacing: .03em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pills .on { background: var(--act); color: var(--on-act); border-color: var(--act); }
+.pills button { transition: transform .12s cubic-bezier(.2, .8, .2, 1), background-color .2s, color .2s, border-color .2s; }
+
+/* Полоса календаря: заголовок уезжает, фильтры прилипают под бегущей строкой (DESIGN.md) */
+.band.split { margin-bottom: 0; padding: 20px 16px 4px; min-height: 60px; border-bottom: 0; }
+.band.split .theme-toggle { top: 12px; }
+.filterbar {
+  position: sticky;
+  top: var(--marquee-h);
+  z-index: 4;
+  margin: 0 -16px 4px;
+  padding: 8px 16px 8px;
+  background: var(--band-lavender);
+  border-bottom: var(--line);
+}
+
+/* Сегменты: одна пилюля во всю ширину, свободное место делится поровну, длинное имя клуба — с многоточием */
+.seg {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: var(--line);
+  border-radius: 9999px;
+  background: var(--paper);
+}
+.seg button {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  height: 34px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 9999px;
+  background: none;
+  font: 700 13px/1 var(--ui);
+  letter-spacing: .03em;
+  cursor: pointer;
+}
+.seg button:not(:last-child) { flex-shrink: 0; }   /* сжимается только имя клуба в «Другой» */
+.seg button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seg .chev { flex: none; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.seg .on { background: var(--act); color: var(--on-act); }
+/* Бегунок: заливка выбранного — отдельный слой, app.js двигает его к новой кнопке.
+   Он из трёх частей — два полукруга и середина — и двигается только transform: анимацию ведёт
+   видеокарта, она не ждёт, пока основной поток перерисует список. Ширина меняется масштабом
+   середины, полукруги не искажаются. Середина во всю ширину группы и только сжимается:
+   растянутую из узкой полоски телефон на ходу не дорисовывает — посреди бегунка дыра.
+   Пока бегунок не поставлен (.ready нет), заливка — на кнопке */
+.run { position: absolute; left: 0; right: 0; pointer-events: none; visibility: hidden; }
+.ready > .run { visibility: visible; }
+.run > i {
+  position: absolute; top: 0; bottom: 0; left: 0; width: var(--cap);
+  background: var(--run-bg); border: 1px solid var(--run-edge); transform-origin: 0 0;
+}
+.run > .l { border-right: 0; border-radius: 9999px 0 0 9999px; }
+.run > .r { border-left: 0; border-radius: 0 9999px 9999px 0; }
+.run > .m { width: 100%; border-left: 0; border-right: 0; }
+.seg .run { top: 3px; bottom: 3px; --cap: 17px; --run-bg: var(--act); --run-edge: var(--act); }
+.chips .run { top: 0; bottom: 0; --cap: 16px; --run-bg: var(--paper); --run-edge: var(--edge); }
+.seg.ready .on { background: none; }
+.chips.ready .on { background: none; border-color: transparent; }
+.seg button, .chips button { transition: color .2s, background-color .12s; }
+
+/* Вторичный фильтр: без контура и заливки, активный — белая пилюля. Зона нажатия 40px */
+.chips { position: relative; display: flex; gap: 4px; margin-top: 4px; }
+.chips button {
+  position: relative;
+  z-index: 1;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 9999px;
+  background: none;
+  font: 700 13px/1 var(--ui);
+  letter-spacing: .03em;
+  cursor: pointer;
+}
+.chips button::after { content: ""; position: absolute; inset: -4px 0; }
+.chips .on { background: var(--paper); border-color: var(--edge); }
+
+/* ---------- таблица ---------- */
+
+.st { border: var(--line); border-radius: 20px; overflow: hidden; background: var(--paper); }
+.st-row {
+  display: grid;
+  grid-template-columns: 24px 1fr 22px 22px 22px 46px 28px;
+  gap: 5px;
+  align-items: center;
+  min-height: 48px;
+  padding: 4px 10px;
+  text-align: right;
+  cursor: pointer;
+}
+.st-row + .st-row { border-top: 1px solid var(--mist); }
+.st-row.head { min-height: 38px; cursor: default; font: 700 11px/1 var(--ui); letter-spacing: .04em; color: var(--muted); background: var(--paper); }
+.st-row .pos { text-align: left; font: 800 13px/1 var(--display); }
+.st-row .tm { display: flex; align-items: center; gap: 8px; min-width: 0; text-align: left; }
+.st-row .tm span:last-child { font-size: 14px; line-height: 1.15; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.st-row .n { color: var(--muted); font-size: 14px; }
+.st-row .pts { font-weight: 700; color: var(--ink); font-size: 15px; }
+.st-row.me { background: var(--sel); }
+/* Узкий телефон: без побед и поражений, иначе название команды не помещается даже в две строки */
+@media (max-width: 359px) {
+  .st-row { grid-template-columns: 24px 1fr 22px 46px 28px; }
+  .st-row .wl { display: none; }
+}
+.st-row.me .tm span:last-child { font-weight: 700; }
+.cut { position: relative; height: 0; border-top: 1.5px dashed var(--edge-strong); }
+.cut span {
+  position: absolute;
+  right: 12px;
+  top: -12px;
+  height: 22px;
+  padding: 0 9px;
+  border: var(--line);
+  border-radius: 9999px;
+  border-color: var(--away-edge);
+  background: var(--away-bg);
+  color: var(--away-fg);
+  font: 700 10px/20px var(--ui);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+/* Шапка «Таблицы» — только сегменты; конференции — лёгкие чипы под ней (DESIGN.md) */
+.table-seg { margin-top: 16px; }
+/* «Сегодня · Лента лиги» в полосе «Главной» (ADR-017): «Главная» делится на конечный экран и ленту */
+.home-seg { position: relative; z-index: 1; margin-top: 16px; }
+.chips.fill { margin: -4px 0 12px; }
+.chips.fill button { flex: 1 1 0; }
+
+/* Лидеры лиги (ADR-009): карточки-наклейки, одно надутое число на карточку */
+.lead-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 8px; padding-top: 6px; }
+.lead-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  min-height: 156px;
+  padding: 14px 14px 12px;
+  border: var(--line);
+  border-radius: 20px;
+  background: var(--paper);
+  color: var(--ink);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition: transform .12s cubic-bezier(.2, .8, .2, 1), background-color .12s;
+}
+.lead-card:active { transform: scale(.97); background: var(--sel); }
+.lead-card.me { background: var(--sel); }
+.lc-cat { font: 700 11px/1.2 var(--ui); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); padding-right: 32px; }
+/* эмблема лидера наклеена на угол карточки, чуть за край — как стикер */
+.lc-em { position: absolute; top: -10px; right: -6px; }
+@media (max-width: 359px) {
+  .lc-cat { font-size: 10px; letter-spacing: .02em; }
+}
+.lc-val { margin-top: auto; padding-top: 10px; font: 800 34px/0.9 var(--display); letter-spacing: -0.01em; font-feature-settings: normal; }
+.lc-unit { margin-top: 3px; font: 500 12px/1.2 var(--ui); color: var(--muted); }
+.lc-name { margin-top: 10px; width: 100%; font: 500 13px/1.2 var(--ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lc-name b { font-weight: 700; }
+.lc-club { width: 100%; font: 500 12px/1.3 var(--ui); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lead-card.empty-card { cursor: default; border-style: dashed; border-color: var(--edge-strong); }
+.lc-none { margin-top: auto; font: 500 13px/1.3 var(--ui); color: var(--muted); }
+
+/* Стикер игрока вместо фото (ADR-009): картинка из webapp/players/, одинаковая в обеих темах,
+   как эмблемы. Номер на груди — текстом, кегль от ширины стикера */
+.fig { position: relative; display: block; container-type: inline-size; border-radius: 50%; }
+.fig img { display: block; width: 100%; height: 100%; }
+.fig::after { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 1px solid var(--edge); }
+.fig-num { position: absolute; left: 0; right: 0; top: 71%; text-align: center; color: #000; font: 800 20cqw/1 var(--display); letter-spacing: -0.02em; }
+/* Стикер игрока: фигура, эмблема клуба наклеена на правый верхний край — внизу номер */
+.ps { position: relative; flex: none; display: inline-block; width: 36px; height: 36px; }
+.ps .fig { display: block; width: 100%; height: 100%; }
+.ps .em { position: absolute; right: -5px; top: -3px; width: 18px; height: 18px; border: 1px solid var(--edge); }
+.ps.lg { width: 46px; height: 46px; transform: rotate(-6deg); }
+.ps.lg .em { width: 22px; height: 22px; right: -7px; top: -4px; }
+
+/* Свои в лидерах и топ-10 в листе: место, игрок, одно число справа */
+.mine-row { grid-template-columns: 36px 1fr; }
+.lead-row { grid-template-columns: 22px 36px 1fr auto; cursor: default; }
+.lead-row:active { background: none; }
+.ml-rank, .lr-rank { font: 800 14px/1 var(--display); }
+.ml-who, .lr-who { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ml-who b, .lr-who b { font: 700 15px/1.2 var(--ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lr-who small { font: 500 12px/1.25 var(--ui); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ml-who small { font: 500 12px/1.35 var(--ui); color: var(--muted); }
+.lr-val { font: 800 18px/1 var(--display); }
+.lead-row.me { background: var(--sel); }
+.lead-title { display: flex; align-items: baseline; gap: 10px; margin: 4px 2px 14px; font: 800 26px/0.95 var(--display); }
+.lead-about { margin: -4px 2px 16px; font: 500 14px/1.45 var(--ui); color: var(--muted); }
+.lead-title span { font: 700 12px/1 var(--ui); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+#sheet .list .cut span { right: 12px; }
+
+/* ---------- выбор команды ---------- */
+
+.picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(156px, 1fr)); gap: 8px; }
+.pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border: var(--line);
+  border-radius: 20px;
+  padding: 10px 10px 10px 8px;
+  background: var(--paper);
+  text-align: left;
+  cursor: pointer;
+}
+.pick > div { min-width: 0; }
+.pick b { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-weight: 700; line-height: 1.2; }
+.pick small { display: block; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pick .em.md { width: 40px; height: 40px; }
+.pick.on { background: var(--sel); border-color: var(--act); box-shadow: inset 0 0 0 1px var(--act); }
+.pick { transition: transform .12s cubic-bezier(.2, .8, .2, 1), background-color .2s, border-color .2s, box-shadow .2s; }
+.pick .em { transition: transform .32s cubic-bezier(.2, 1.6, .4, 1); }
+.pick.on .em { transform: rotate(-6deg); }
+.pick.pop { animation: pick-pop .32s cubic-bezier(.2, 1.6, .4, 1); }
+@keyframes pick-pop { from { transform: scale(.94); } }
+
+.cta-bar {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  background: var(--canvas);
+  border-top: var(--line);
+  z-index: 6;
+  transition: transform .3s cubic-bezier(.2, .8, .2, 1);
+}
+/* «Готово» выезжает после первого выбора, серой не висит (DESIGN.md → «Главная кнопка») */
+.cta-bar.wait { transform: translateY(110%); }
+.cta-bar.above-nav { bottom: calc(80px + env(safe-area-inset-bottom)); border-top: 0; background: transparent; padding: 0 16px; }
+.btn {
+  display: block;
+  width: 100%;
+  max-width: 528px;
+  margin: 0 auto;
+  border: var(--line);
+  border-radius: 9999px;
+  padding: 15px 18px;
+  background: var(--act);
+  color: var(--on-act);
+  border-color: var(--act);
+  font: 700 15px/1.2 var(--ui);
+  letter-spacing: .03em;
+  cursor: pointer;
+}
+.btn:disabled { background: var(--mist); border-color: var(--mist); color: var(--muted); cursor: default; }
+
+.empty { text-align: center; padding: 28px 16px; color: var(--muted); border: var(--line); border-radius: 20px; }
+.foot { color: var(--muted); font-size: 12px; line-height: 1.5; text-align: center; margin-top: 24px; padding: 0 12px; }
+/* «Сделано болельщиками» (ADR-021, DESIGN.md): видно, но не кричит */
+.fan-note { display: block; margin: 8px auto 0; padding: 4px 12px; border: 0; background: none; color: var(--muted); font: 500 12px/1.5 var(--ui); text-align: center; cursor: pointer; }
+.fan-note u { text-decoration: underline dotted; text-underline-offset: 3px; white-space: nowrap; }
+.fan-note-wrap { margin-top: 16px; }
+.about p { margin: 12px 0 0; font-size: 15px; line-height: 1.45; }
+.about .about-tag { background: var(--away-bg); color: var(--away-fg); border-color: var(--away-edge); }
+.pill-link { display: block; width: 100%; margin: 20px 0 8px; padding: 13px 18px; border: var(--line); border-radius: 9999px; background: var(--paper); color: var(--ink); font: 700 15px/1.2 var(--ui); letter-spacing: .03em; cursor: pointer; }
+.pill-link:active { background: var(--sel); }
+
+/* ---------- Проводник — талисман клуба (ADR-011) ---------- */
+
+/* Наклейка талисмана: белая вырубка и чёрный край уже на картинке, одинаковая в обеих темах */
+.guide { position: relative; flex: none; display: inline-block; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.guide img { display: block; width: 88px; height: 88px; transform: rotate(-6deg); }
+/* Знакомство, вступление и финал тура — карточка по центру экрана поверх притемнённого фона.
+   Крупный талисман стоит на верхнем крае карточки и выходит за него */
+.coach {
+  position: fixed; inset: 0; z-index: 11;
+  display: grid; place-items: center;
+  padding: 16px 16px calc(96px + env(safe-area-inset-bottom));
+  /* свайп и колесо по затемнению не листают страницу под ним: прокручивает только тур */
+  touch-action: none; overscroll-behavior: contain;
+}
+#tour:focus { outline: none; }   /* между шагами фокус на самом слое — рамка не нужна */
+.coach-stage { display: contents; }
+/* Только для экранных дикторов: реплика тура */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.coach-back { position: absolute; inset: 0; background: rgba(9, 13, 20, .58); }
+.coach-card {
+  position: relative; width: 100%; max-width: 360px;
+  margin-top: 118px; padding: 104px 18px 16px;
+  border: var(--line); border-radius: 28px; background: var(--paper); color: var(--ink);
+  text-align: center;
+}
+.coach-card.bare { margin-top: 0; padding-top: 22px; }
+.coach-guide { position: absolute; left: 50%; top: -110px; transform: translateX(-50%); }
+.coach-guide .guide img { width: 196px; height: 196px; }
+.coach p { margin: 0 0 16px; font: 500 17px/1.4 var(--ui); text-wrap: pretty; }
+.coach-btns { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }   /* длинное название главы не раздвигает карточку */
+.coach-btns .btn { margin: 0; }
+/* Нижний ряд шага тура: «Пропустить» слева, прогресс справа */
+.coach-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.coach-skip { flex: none; min-height: 44px; padding: 0 10px; border: 0; background: none; color: var(--muted); font: 700 13px/1 var(--ui); letter-spacing: .03em; cursor: pointer; }
+.coach-row .coach-skip { margin-left: -10px; }   /* текст — по краю реплики */
+/* Прогресс тура (ADR-013): короткое название главы и отрезки 16×4. Пройденные залиты, текущий — на
+   долю шагов, будущие — контур --muted: на --paper видны в обеих темах */
+.tp { display: flex; align-items: center; gap: 3px; min-width: 0; }
+.tp b { min-width: 0; margin-right: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 700 12px/1.2 var(--ui); color: var(--muted); }
+.tp i { position: relative; flex: none; width: 16px; height: 4px; border-radius: 9999px; box-shadow: inset 0 0 0 1px var(--muted); overflow: hidden; }
+.tp i.done { background: var(--ink); box-shadow: none; }
+.tp i span { position: absolute; inset: 0; background: var(--ink); transform-origin: 0 50%; }
+.tp.intro { justify-content: center; margin: -4px 0 18px; }
+/* Шаг тура с целью: цель вырезана из затемнения окном, карточка компактная и встаёт рядом с целью.
+   Затемнение рисует окно (тень вокруг него), .coach-back прозрачный и ловит нажатия. Заливка окна
+   того же тона гасит его, пока карточка переезжает к новой цели */
+.coach.aim { display: block; padding: 0; }
+.coach.aim .coach-back { background: none; }
+.coach-hole { position: absolute; pointer-events: none; box-shadow: 0 0 0 200vmax rgba(9, 13, 20, .58); }
+.coach-fill, .coach-ring { position: absolute; inset: 0; border-radius: inherit; }
+.coach-fill { background: rgba(9, 13, 20, .58); opacity: 0; }
+.coach-ring { box-shadow: 0 0 0 3px var(--sun); animation: coach-pulse 1.2s ease-in-out infinite; }
+.coach.aim .coach-card { position: absolute; left: 16px; right: 16px; width: auto; margin: 0 auto; padding: 14px 16px 6px; }
+.coach-say { display: flex; align-items: center; gap: 12px; min-height: 72px; margin-bottom: 12px; text-align: left; }
+.coach-card.bare .coach-say { min-height: 0; }
+.coach-card.right .coach-say { flex-direction: row-reverse; }
+.coach-say .guide img { width: 72px; height: 72px; }
+.coach-card.right .coach-say .guide img { transform: scaleX(-1) rotate(-6deg); }
+.coach-say p { margin: 0; flex: 1; min-width: 0; font-size: 16px; line-height: 1.35; }
+/* Хвостик смотрит на цель: карточка под целью — сверху, над целью — снизу */
+.coach-tail {
+  position: absolute; top: -9px; width: 16px; height: 16px;
+  border-left: var(--line); border-top: var(--line); background: var(--paper);
+  transform: rotate(45deg);
+}
+.coach-card.up .coach-tail { top: auto; bottom: -9px; border: 0; border-right: var(--line); border-bottom: var(--line); }
+/* Шаг «листай» (ADR-016): затемнение пропускает прокрутку страницы, нажатия по-прежнему ловит */
+.coach.scroll { touch-action: pan-y; overscroll-behavior: auto; }
+/* Жест в окне: метки над зонами касания историй или точка, которая ведёт след вверх. Нажатия — насквозь */
+.gest { position: absolute; pointer-events: none; }
+.gest.tight, .gest.off { display: none; }
+.gest b { display: block; padding: 5px 12px; border: 1px solid var(--ink); border-radius: 9999px; background: var(--paper); color: var(--ink); font: 700 13px/1.2 var(--ui); white-space: nowrap; }
+.gest-dot { position: relative; display: block; width: 22px; height: 22px; border: 2px solid var(--ink); border-radius: 50%; background: var(--paper); }
+.gest-dot.ghost { visibility: hidden; }
+.gest-tap .gest-l, .gest-tap .gest-r { position: absolute; top: 50%; display: grid; justify-items: center; gap: 10px; transform: translate(-50%, -50%); }
+.gest-tap .gest-l { left: 15%; }   /* середина зоны «назад» — левые 30% */
+.gest-tap .gest-r { left: 65%; }   /* середина зоны «дальше» — правые 70% */
+.gest-tap .gest-dot { animation: gest-press 1.2s ease-out infinite; }
+.gest-tap .gest-dot::after { content: ""; position: absolute; inset: -2px; border-radius: 50%; box-shadow: 0 0 0 2px var(--sun); animation: gest-ripple 1.2s ease-out infinite; }
+@keyframes gest-press { 0%, 30%, 100% { transform: none; } 12% { transform: scale(.82); } }
+@keyframes gest-ripple { 0%, 12% { transform: scale(1); opacity: 1; } 100% { transform: scale(2.4); opacity: 0; } }
+.gest-swipe .gest-dot, .gest-swipe .gest-trail { position: absolute; left: 50%; top: 72%; }
+.gest-swipe .gest-dot { margin: -11px 0 0 -11px; animation: gest-swipe 1.6s cubic-bezier(.4, 0, .2, 1) infinite; }
+.gest-swipe .gest-trail { width: 6px; height: var(--travel, 120px); margin: calc(-1 * var(--travel, 120px)) 0 0 -3px; border-radius: 9999px; background: var(--sun); transform-origin: 50% 100%; animation: gest-trail 1.6s cubic-bezier(.4, 0, .2, 1) infinite; }
+@keyframes gest-swipe {
+  0% { transform: scale(.6); opacity: 0; }
+  15% { transform: none; opacity: 1; }
+  65% { transform: translateY(calc(-1 * var(--travel, 120px))); opacity: 1; }
+  85%, 100% { transform: translateY(calc(-1 * var(--travel, 120px))); opacity: 0; }
+}
+@keyframes gest-trail {
+  0%, 15% { transform: scaleY(0); opacity: 1; }
+  65% { transform: none; opacity: 1; }
+  85%, 100% { transform: none; opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gest-tap .gest-dot, .gest-tap .gest-dot::after, .gest-swipe .gest-dot, .gest-swipe .gest-trail { animation: none; }
+  .gest-swipe .gest-dot { transform: translateY(calc(-1 * var(--travel, 120px))); }
+}
+/* Вкладка, о которой говорит тур, — над притемнением и с пульсирующей обводкой. Есть цель — пульсирует она.
+   Меню в туре не нажимается: нажатие проходит на затемнение и считается промахом */
+.tabs.coach-on { z-index: 12; pointer-events: none; }
+.tabs .coach-hl { box-shadow: 0 0 0 3px var(--sun); animation: coach-pulse 1.2s ease-in-out infinite; }
+/* Подсказка при выходе из тура: облачко над меню у вкладки «Я», без кнопок, нажатия проходят насквозь */
+.tabs .hint-hl { box-shadow: 0 0 0 3px var(--sun); }
+.tour-hint {
+  position: fixed; right: 16px; z-index: 13; max-width: min(300px, calc(100% - 32px));
+  padding: 10px 14px; border: var(--line); border-radius: 20px; background: var(--paper); color: var(--ink);
+  font: 500 14px/1.35 var(--ui); pointer-events: none;
+}
+.tour-hint .coach-tail { top: auto; bottom: -9px; border: 0; border-right: var(--line); border-bottom: var(--line); }
+.tabs.coach-aim .coach-hl { animation: none; }
+@keyframes coach-pulse { 50% { box-shadow: 0 0 0 7px var(--sun); } }
+.guide-empty { display: grid; justify-items: center; gap: 10px; }
+
+/* ---------- нижняя навигация ---------- */
+
+.tabs {
+  position: fixed;
+  left: 12px; right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  max-width: 536px;
+  margin: 0 auto;
+  height: 60px;
+  padding: 6px;
+  display: flex;
+  gap: 4px;
+  border: var(--line);
+  border-radius: 9999px;
+  background: var(--paper);
+  z-index: 5;
+}
+.tabs .run { top: 6px; bottom: 6px; --cap: 23px; --run-bg: var(--act); --run-edge: var(--act); }
+.tabs button {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 9999px;
+  background: none;
+  font: 700 13px/1 var(--ui);
+  letter-spacing: .03em;
+  cursor: pointer;
+  transition: color .2s;
+}
+/* Ширина вкладок меняется сразу, без перехода: плавность дают бегунок, иконки и подпись,
+   которые app.js ведёт одними transform и opacity (FLIP) */
+.tabs button span { display: none; white-space: nowrap; }
+.tabs svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+/* Пять вкладок: активная шире ровно под подпись (DESIGN.md → «Нижняя навигация») */
+.tabs button.active { flex: 2.2; color: var(--on-act); }
+.tabs:not(.ready) button.active { background: var(--act); }
+.tabs button.active span { display: inline; }
+.tabs svg { transition: transform .12s; }
+.tabs button:not(.active):active svg { transform: scale(.88); }
+/* На экране уже 360px «Календарь» не влезает — «Матчи» */
+@media (max-width: 359px) {
+  .tabs span[data-short] { font-size: 0; }
+  .tabs span[data-short]::after { content: attr(data-short); font-size: 13px; }
+}
+/* Точка «надо решить» на иконке «Раската» — в самой иконке, едет вместе с ней */
+.tabs svg .due { fill: var(--ember); stroke: var(--paper); stroke-width: 2; }
+.tabs button.active svg .due { stroke: var(--act); }
+
+/* ---------- карточка матча ---------- */
+
+.sheet-backdrop { position: fixed; inset: 0; background: var(--backdrop); z-index: 9; animation: fade .18s ease-out; }
+.sheet {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  max-width: 560px;
+  margin: 0 auto;
+  max-height: 90vh;
+  overflow-y: auto;
+  background: var(--paper);
+  border: var(--line);
+  border-bottom: 0;
+  border-radius: 28px 28px 0 0;
+  padding: 10px 16px calc(24px + env(safe-area-inset-bottom));
+  z-index: 10;
+  overscroll-behavior: contain;   /* прокрутка листа не утекает в страницу под ним */
+  overflow-x: hidden;             /* содержимое въезжает сбоку при переходе к прошлой встрече */
+  animation: rise .22s cubic-bezier(.2, .8, .2, 1);
+}
+@keyframes rise { from { transform: translateY(24px); opacity: 0; } }
+@keyframes fade { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .sheet, .sheet-backdrop { animation: none; } }
+
+.grab { width: 40px; height: 5px; border-radius: 9999px; background: var(--edge-strong); margin: 2px auto 14px; }
+.sheet-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+.sheet-head .when { flex: 1; min-width: 0; font-weight: 700; font-size: 13px; }
+.btn-round {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: var(--line);
+  border-radius: 50%;
+  background: var(--paper);
+  cursor: pointer;
+}
+.btn-round svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+
+/* Длинные списки в листе — без overflow: hidden. iOS при прокрутке листа с прилипшими вкладками
+   теряет куски скруглённого слоя с обрезкой (пустая «дырка»). Углы скругляем у крайних строк */
+.goals, .roster, .sheet .list { overflow: visible; }
+.goals > :first-child, .roster > :first-child, .sheet .list > :first-child { border-radius: 19px 19px 0 0; }
+.goals > :last-child, .roster > :last-child, .sheet .list > :last-child { border-radius: 0 0 19px 19px; }
+.goals > :only-child, .roster > :only-child, .sheet .list > :only-child { border-radius: 19px; }
+.goals { border: var(--line); border-radius: 20px; }
+.period { padding: 10px 12px 4px; }
+.period .tag { height: 22px; font-size: 10px; background: var(--away-bg); color: var(--away-fg); border-color: var(--away-edge); }
+.goal { display: grid; grid-template-columns: 42px 36px 1fr auto; gap: 10px; align-items: start; padding: 10px 12px; }
+.goal .tm { padding-top: 8px; }
+.goal .sc { padding-top: 8px; }
+/* командный штраф: игрока нет — эмблема 24px по центру места под стикер */
+.ps.team { display: grid; place-items: center; }
+.goal .tm { font-weight: 700; font-size: 13px; line-height: 1.5; }
+.goal .who { min-width: 0; font-weight: 700; }
+.goal .who .as { font-weight: 500; font-size: 12px; color: var(--muted); margin-top: 2px; }
+.goal .who .tag { height: 20px; padding: 0 7px; font-size: 10px; margin-left: 6px; vertical-align: 1px; background: var(--home-bg); color: var(--home-fg); border-color: var(--home-edge); }
+.goal .sc { font-weight: 700; text-align: right; }
+.period + .goal { border-top: 0; }
+.goal + .goal, .goal + .period { border-top: 1px solid var(--mist); }
+
+.goal.hl { background: var(--sel); }
+.goal.pen .who { font-weight: 500; font-size: 13px; }
+.goal.pen .tm, .goal.pen .sc { font-weight: 500; color: var(--muted); }
+.goal .who .tag.soft { background: var(--mist); color: var(--muted); border-color: var(--mist); }
+
+/* ---------- разбор матча (ADR-008) ---------- */
+
+.story { display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; padding: 12px 14px; border: var(--line); border-radius: 20px; background: var(--band-sky); }
+.story svg { flex: none; width: 22px; height: 22px; margin-top: 1px; fill: var(--sun); stroke: var(--on-sticker); stroke-width: 1.2; stroke-linejoin: round; }
+.story p { margin: 0; font-size: 15px; line-height: 1.4; }
+
+.flow { border: var(--line); border-radius: 20px; padding: 12px 12px 10px; }
+.flow svg { display: block; width: 100%; height: auto; overflow: visible; }
+.flow .fl-home { fill: var(--lead-home); }
+.flow .fl-away { fill: var(--lead-away); }
+.flow .fl-line { fill: none; stroke: var(--ink); stroke-width: 2; stroke-linejoin: round; }
+.flow .fl-axis { stroke: var(--edge-strong); stroke-width: 1; }
+.flow .fl-band { fill: var(--mist); opacity: .5; }
+.flow .fl-grid { stroke: var(--edge-strong); stroke-width: 1; opacity: .35; }
+.flow .fl-lane { stroke: var(--mist); stroke-width: 1; }
+.flow .fl-pen { fill: var(--muted); }
+.flow .fl-ax { font: 700 9px var(--ui); letter-spacing: .04em; fill: var(--muted); }
+.flow .fl-per { font: 700 10px var(--ui); letter-spacing: .04em; text-transform: uppercase; fill: var(--ink); }
+.flow .fl-dot { cursor: pointer; outline: none; }
+.flow .fl-dot .hit { fill: transparent; }
+.flow .fl-dot .v { fill: var(--paper); stroke: var(--ink); stroke-width: 1.5; }
+.flow .fl-dot.pp .v { fill: var(--ink); }
+.flow .fl-dot.on .v { stroke-width: 2.5; }
+.flow .fl-dot:focus-visible .v { stroke: var(--blue); stroke-width: 2.5; }
+.flow-cap { display: grid; grid-template-columns: 44px 36px 1fr auto; gap: 10px; align-items: center; min-height: 46px; margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--mist); }
+.flow-cap .tm { font-weight: 700; font-size: 13px; }
+.flow-cap .who { min-width: 0; font-weight: 700; }
+.flow-cap .who small { display: block; font-weight: 500; font-size: 12px; color: var(--muted); }
+.flow-cap .tag { height: 20px; padding: 0 7px; font-size: 10px; margin-left: 6px; vertical-align: 1px; }
+.flow-cap .tag.soft { background: var(--mist); color: var(--muted); border-color: var(--mist); }
+.flow-cap .sc { font: 800 18px/1 var(--display); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+.legend .k-home { background: var(--lead-home); }
+.legend .k-away { background: var(--lead-away); }
+.legend .k-dot { border-radius: 50%; border: 1.5px solid var(--ink); background: var(--paper); }
+.legend .k-dot.pp { background: var(--ink); }
+.legend .k-pen { width: 14px; height: 6px; border-radius: 3px; background: var(--muted); }
+
+/* Вкладки разбора прилипают к верху карточки, пока листаешь голы и составы */
+.recap-seg { position: sticky; top: -10px; z-index: 2; margin-top: 24px; transform: translateZ(0); }
+.recap-seg button { height: 38px; }
+.recap-body > .chips { margin: 14px 0 10px; }
+.recap-body > .goals, .recap-body > .cmp-head { margin-top: 14px; }
+
+.cmp-head { display: grid; grid-template-columns: 24px auto 1fr auto 24px; gap: 8px; align-items: center; margin: 0 2px 10px; font: 700 12px/1 var(--ui); letter-spacing: .04em; color: var(--muted); }
+.cmp { border: var(--line); border-radius: 20px; padding: 4px 16px; }
+.cmp-row { padding: 12px 0; }
+.cmp-row + .cmp-row { border-top: 1px solid var(--mist); }
+.cmp-top { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: baseline; }
+.cmp-top b { font: 800 18px/1 var(--display); }
+.cmp-top.small b { font: 700 15px/1 var(--ui); }
+.cmp-top b:last-child { text-align: right; }
+.cmp-top span { font: 700 11px/1.2 var(--ui); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); text-align: center; }
+.cmp-bar { display: flex; gap: 2px; height: 10px; margin-top: 8px; }
+.cmp-bar i { display: block; min-width: 10px; border: var(--line); border-radius: 9999px; background: var(--paper); }
+.cmp-bar i.w { background: var(--act); border-color: var(--act); }
+
+.gk { border: var(--line); border-radius: 20px; }
+.gk-row { display: grid; grid-template-columns: 36px 1fr auto; gap: 10px; align-items: center; padding: 10px 14px; }
+.gk-row + .gk-row { border-top: 1px solid var(--mist); }
+.gk-row .nm { min-width: 0; font-weight: 700; }
+.gk-row .nm small { display: block; font-weight: 500; font-size: 12px; color: var(--muted); }
+.gk-row .pc { font: 800 18px/1 var(--display); }
+
+.roster { border: var(--line); border-radius: 20px; }
+.roster .grp { padding: 10px 14px 4px; font: 700 11px/1.2 var(--ui); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.roster .pl { display: grid; grid-template-columns: 36px 1fr auto; gap: 10px; align-items: center; padding: 7px 14px; }
+.roster .pl.dnp .ps { opacity: .5; }
+.roster .pl + .pl { border-top: 1px solid var(--mist); }
+.roster .pl.scored { background: var(--sel); }
+.roster .nm { min-width: 0; font-weight: 700; }
+.roster .nm .tag { height: 20px; padding: 0 7px; font-size: 10px; margin-left: 6px; vertical-align: 1px; }
+.roster .pts { font-weight: 700; font-size: 13px; }
+.roster .pts.z { font-weight: 500; color: var(--muted); }
+.note { margin: 8px 2px 0; font-size: 12px; color: var(--muted); }
+
+.facts-card { border: var(--line); border-radius: 20px; padding: 14px 16px; }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 10px 16px; margin: 0; font-size: 14px; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; text-align: right; font-weight: 700; }
+
+.label + .theme-pills { margin-top: 0; }
+
+/* Тёмная тема: приглушённые версии ярких декоративных цветов */
+:root[data-theme="dark"] .em.ab { background: #3a3470; color: #dcd6ff; }
+:root[data-theme="dark"] .ribbon .f { stroke: #3f8fe6; }
+/* Сплошной синий — только активная вкладка и главная кнопка. Победы и выбранные фильтры — тоном */
+:root[data-theme="dark"] .res.w,
+:root[data-theme="dark"] .pills .on,
+:root[data-theme="dark"] .seg:not(.ready) .on,
+:root[data-theme="dark"] .cmp-bar i.w { background: rgba(77, 162, 255, .16); color: #9ccbff; border-color: rgba(77, 162, 255, .45); }
+:root[data-theme="dark"] .seg .on { color: #9ccbff; }
+/* бегунок из частей — только сплошные цвета: полупрозрачные дали бы полосы на стыках.
+   Это те же 16% и 45% синего, смешанные с --paper */
+:root[data-theme="dark"] .seg .run { --run-bg: #22364e; --run-edge: #315b8b; }
+:root[data-theme="dark"] { --emblem-bg: #dde1e8; }
+
+/* ---------- переключатель темы ---------- */
+
+.band.has-toggle > h1,
+.band.has-toggle > .hero { margin-right: 52px; }
+.theme-toggle {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: var(--line);
+  border-color: var(--edge-strong);
+  border-radius: 9999px;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  transform: rotate(-6deg);
+  transition: transform .2s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.theme-toggle:active { transform: rotate(-6deg) scale(.9); }
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.row:focus-visible, .st-row:focus-visible { outline-offset: -3px; }
+.theme-toggle svg { grid-area: 1 / 1; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.theme-toggle .i-moon { fill: var(--lavender); stroke: var(--on-sticker); }
+.theme-toggle .i-sun { fill: var(--sun); }
+.theme-toggle .i-sun path { fill: none; }
+:root[data-theme="dark"] .theme-toggle .i-moon,
+:root:not([data-theme="dark"]) .theme-toggle .i-sun { display: none; }
+
+/* плавная смена темы только по нажатию, чтобы не мигало при запуске */
+:root.theme-anim,
+:root.theme-anim *,
+:root.theme-anim *::before,
+:root.theme-anim *::after {
+  transition: background-color .3s ease, color .3s ease, border-color .3s ease, fill .3s ease, stroke .3s ease !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root.theme-anim, :root.theme-anim * { transition: none !important; }
+}
+
+/* ---------- экран «Я»: паспорт болельщика (ADR-004) ---------- */
+
+:root {
+  --pass-bg: var(--violet);
+  --pass-fg: #ffffff;
+  --pass-edge: var(--edge);
+}
+:root[data-theme="dark"] {
+  --pass-bg: #272650;
+  --pass-fg: #dcd6ff;
+  --pass-edge: rgba(92, 74, 222, .55);
+}
+
+/* Имя в шапке: кегль по самому длинному слову, 84px — поля полосы и кнопка темы */
+h1.fit { font-size: clamp(22px, calc((min(100vw, 560px) - 84px) / (var(--w, 8) * 0.9)), 28px); }
+
+.hero-em { flex: none; padding: 0; border: 0; background: none; border-radius: 50%; cursor: pointer; }
+.hero-em:active .em { transform: rotate(-6deg) scale(.94); }
+
+.passport {
+  position: relative;
+  border: 1px solid var(--pass-edge);
+  border-radius: 28px;
+  padding: 16px 16px 16px;
+  background: var(--pass-bg);
+  color: var(--pass-fg);
+}
+.pp-top { display: flex; justify-content: space-between; align-items: flex-start; }
+.pp-tag {
+  display: inline-flex; align-items: center; height: 26px; padding: 0 11px;
+  border: var(--line); border-radius: 9999px; background: var(--paper); color: var(--ink);
+  font: 700 11px/1 var(--ui); letter-spacing: .05em; text-transform: uppercase;
+}
+.pp-guide { position: absolute; top: -30px; right: -6px; }
+.pp-guide .guide img { width: 80px; height: 80px; transform: rotate(8deg); }
+.pp-star { width: 40px; height: 40px; margin: -6px -4px 0 0; transform: rotate(14deg); fill: var(--sun); stroke: #000; stroke-width: 5; stroke-linejoin: round; }
+.pp-main { display: flex; align-items: center; gap: 16px; margin-top: 10px; }
+.pp-name { min-width: 0; }
+.pp-name small { display: block; font: 700 12px/1.2 var(--ui); letter-spacing: .05em; text-transform: uppercase; }
+/* 164px — поля экрана и карточки, эмблема и зазор */
+.pp-name b { display: block; margin-top: 6px; font: 800 clamp(18px, calc((min(100vw, 560px) - 164px) / (var(--w, 8) * 0.9)), 34px)/0.92 var(--display); letter-spacing: -0.01em; }
+.pp-meta { margin-top: 14px; font: 500 13px/1.3 var(--ui); }
+.pp-stats {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  margin-top: 14px; border: var(--line); border-radius: 20px; background: var(--paper); color: var(--ink);
+}
+.pp-stats .stat { border: 0; border-radius: 0; background: none; padding: 12px 12px 10px; }
+.pp-stats .stat + .stat { border-left: 1px solid var(--mist); }
+.pp-stats .stat b { font-size: 22px; }
+
+.me-actions { display: grid; gap: 8px; margin-top: 16px; }
+.me-actions .btn { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.me-actions svg, .menu-row svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.btn.ghost { background: var(--paper); color: var(--ink); border-color: var(--edge); }
+
+.menu { border: var(--line); border-radius: 20px; overflow: hidden; background: var(--paper); }
+.menu-row {
+  display: grid; grid-template-columns: 20px 1fr 16px; gap: 12px; align-items: center;
+  width: 100%; min-height: 60px; padding: 10px 16px; border: 0; background: none; text-align: left; cursor: pointer;
+}
+.menu-row + .menu-row { border-top: 1px solid var(--mist); }
+.menu-row:active { background: var(--sel); }
+.menu-row b { display: block; font-weight: 700; }
+.menu-row small { display: block; margin-top: 2px; font-size: 12px; line-height: 1.3; color: var(--muted); }
+.menu-row .chev { width: 16px; height: 16px; color: var(--muted); }
+.menu-row.off { cursor: default; grid-template-columns: 20px 1fr; }
+.menu-row.off b, .menu-row.off svg { color: var(--muted); }
+
+.sheet .picker { margin-bottom: 8px; }
+
+/* Лист «Подсказки» (ADR-013): всё сначала или одна глава, пройденные — с галочкой */
+.hints-all { margin: 4px 0 16px; }
+.hints { margin-bottom: 8px; }
+.hint-row { grid-template-columns: 20px 1fr 16px 16px; }
+.menu-row .ok { width: 16px; height: 16px; stroke: var(--muted); stroke-width: 2; }
+
+/* ---------- очные встречи (ADR-006) ---------- */
+
+.h2h { border: var(--line); border-radius: 20px; padding: 14px 16px; background: var(--paper); }
+.h2h-row { display: grid; grid-template-columns: 24px 1fr auto 1fr 24px; align-items: center; gap: 10px; }
+.h2h-row b { font: 800 26px/1 var(--display); }
+.h2h-row b:last-of-type { text-align: right; }
+.h2h-row > span:not(.h2h-em) { font: 700 12px/1.2 var(--ui); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); text-align: center; }
+.h2h-row.goals-row b { font-size: 18px; }
+.h2h-bar { height: 10px; margin: 10px 0 12px; border: var(--line); border-radius: 9999px; overflow: hidden; background: var(--paper); }
+.h2h-bar i { display: block; height: 100%; background: var(--act); }
+.h2h-verdict { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--mist); font-size: 15px; line-height: 1.4; }
+.row.static { cursor: default; }
+.row.static:active { background: none; }
+.row .r .when { color: var(--muted); font-weight: 500; white-space: nowrap; }
+
+/* ---------- движение (DESIGN.md → «Движение») ---------- */
+
+/* Отклик на касание: пилюли, кнопки и карточки вдавливаются, строки подсвечиваются */
+.btn, .btn-round, .board-card.tap, .retry { transition: transform .12s cubic-bezier(.2, .8, .2, 1), background-color .2s, color .2s, border-color .2s; }
+.btn:not(:disabled):active, .pills button:active, .pick:active, .btn-round:active, .retry:active { transform: scale(.97); }
+.board-card.tap:active { transform: scale(.985); }
+.row, .st-row, .menu-row { transition: background-color .12s; }
+.st-row:not(.head):active, .seg button:not(.on):active, .chips button:not(.on):active { background: var(--sel); }
+/* В прокручиваемом нажатие проявляется через 60 мс: если палец начал прокрутку, строка не мигает */
+:is(.row, .st-row, .menu-row, .board-card.tap, .pick, .pills button):active { transition-delay: 60ms; }
+
+/* Наведение — только там, где есть мышь, иначе на телефоне подсветка залипает */
+@media (hover: hover) and (pointer: fine) {
+  .row:not(.static):not(.lead-row):hover, .lead-card:hover, .st-row:not(.head):hover, .menu-row:hover, .board-card.tap:hover,
+  .pick:not(.on):hover, .pills button:not(.on):hover, .btn-round:hover, .btn.ghost:hover, .retry:hover { background: var(--sel); }
+  .seg button:not(.on):hover, .chips button:not(.on):hover, .tabs button:not(.active):hover { background: var(--mist); }
+  .btn:not(.ghost):not(:disabled):hover { opacity: .88; }
+}
+
+/* Скелетон: место под то, что догружается в карточку матча, — лист не прыгает */
+.sk { border-radius: 20px; background: var(--mist); animation: sk-pulse 1s ease-in-out infinite alternate; }
+.sk + .sk { margin-top: 8px; }
+.sk-label { width: 38%; height: 12px; margin: 26px 2px 12px; border-radius: 9999px; }
+@keyframes sk-pulse { from { opacity: .45; } to { opacity: 1; } }
+.row.busy { animation: sk-pulse .5s ease-in-out infinite alternate; pointer-events: none; }
+.retry {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 40px; margin-top: 12px; padding: 0 18px;
+  border: var(--line); border-radius: 9999px; background: var(--paper); color: var(--ink);
+  font: 700 13px/1 var(--ui); letter-spacing: .03em; cursor: pointer;
+}
+
+/* Ход матча при первом показе рисуется слева направо: шторка цвета листа сжимается к правому
+   краю (transform — на видеокарте), точки голов выскакивают, когда до них дошла линия */
+.fl-plot { position: relative; }
+.fl-cover { position: absolute; top: 0; bottom: 0; right: -2px; background: var(--paper); transform: scaleX(0); transform-origin: 100% 0; pointer-events: none; }
+.flow.draw .fl-cover { animation: fl-cover .6s cubic-bezier(.3, .7, .2, 1) both; }
+@keyframes fl-cover { from { transform: scaleX(1); } }
+.flow.draw .fl-dot .v { transform-box: fill-box; transform-origin: center; animation: fl-pop .32s cubic-bezier(.2, 1.6, .4, 1) var(--d, 0ms) both; }
+@keyframes fl-pop { from { transform: scale(0); } }
+
+/* Календарь: месяцы ниже видимого не раскладываются, пока до них не долистали. Месяцы выше
+   раскладываются всегда (.open): их высота, угаданная неточно, сдвигала бы экран при прокрутке вверх */
+.month:not(.open) { content-visibility: auto; }
+
+::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tabs button, .pick, .pick .em, .cta-bar, .pills button, .seg button, .chips button { transition: none; }
+  .pick.pop, .sk, .row.busy, .flow.draw .fl-cover, .flow.draw .fl-dot .v, .tabs .coach-hl, .coach-ring { animation: none; }
+}
+
+/* ---------- лист дня на «Главной» (ADR-015, DESIGN.md → «Лист дня») ---------- */
+
+.fc {
+  display: block; position: relative; margin-bottom: 12px; padding: 14px 16px;
+  border: var(--line); border-radius: 20px; background: var(--paper);
+  transition: transform .12s cubic-bezier(.2, .8, .2, 1), background-color .2s;
+}
+.fc[role="button"], .fc-post { cursor: pointer; }
+.fc[role="button"]:active, .fc-post:active { transform: scale(.985); background: var(--sel); transition-delay: 60ms; }
+/* Ранг 3 (DESIGN.md → «Три ранга заголовков»): прописными набран только заголовок секции */
+.fc-top { display: flex; align-items: center; gap: 6px; font: 500 12px/1.2 var(--ui); color: var(--muted); }
+.fc-sub { margin-top: 8px; font-size: 13px; color: var(--muted); }
+.fc-verdict { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--mist); font-size: 15px; line-height: 1.4; }
+
+/* строка матча: мини-эмблемы, свой клуб жирным, счёт Unbounded справа */
+.fc-match, .fc-game { display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: 10px; font: 500 14px/1.3 var(--ui); }
+.fc-match > span:not(.em), .fc-game > span:not(.em):not(.kick) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fc-match .me, .fc-game .me { font-weight: 700; }
+.fc-dash { flex: none; color: var(--muted); }
+.fc-match b, .fc-game b { margin-left: auto; padding-left: 8px; font: 800 16px/1 var(--display); white-space: nowrap; }
+.fc-game .kick { margin-left: auto; padding-left: 8px; font-weight: 700; color: var(--muted); }
+.fc-game { cursor: pointer; min-height: 40px; margin: 0 -8px; padding: 0 8px; border-radius: 12px; }
+.fc-game:active { background: var(--sel); }
+.fc-games { margin-top: 4px; }
+.fc-story { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0 0; font-size: 15px; line-height: 1.4; }
+.fc-star { flex: none; width: 18px; height: 18px; margin-top: 2px; fill: var(--sun); stroke: var(--on-sticker); stroke-width: 4; stroke-linejoin: round; }
+
+.fc-h2h-row { display: grid; grid-template-columns: 44px 1fr auto 1fr 44px; align-items: center; gap: 8px; margin-top: 12px; }
+.fc-h2h-row b { font: 800 26px/1 var(--display); text-align: right; }
+.fc-h2h-row b:last-of-type { text-align: left; }
+.fc-h2h-row > span:not(.em) { font: 700 11px/1 var(--ui); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+
+.fc-place { display: flex; align-items: center; gap: 14px; margin-top: 10px; }
+.fc-place > b { font: 800 34px/.9 var(--display); }
+.fc-place strong { display: block; font-weight: 700; font-size: 15px; line-height: 1.3; }
+.fc-place small { display: block; margin-top: 2px; font-size: 13px; color: var(--muted); }
+
+/* пост канала: превью, а не перепечатка — чей пост видно всегда, нажатие ведёт в сам пост */
+.fc-head { display: grid; grid-template-columns: 24px 1fr 40px; align-items: center; gap: 10px; }
+.fc-who { min-width: 0; }
+/* название канала — одной строкой с многоточием: блоком, иначе длинное уходит под «⋯» и за край карточки */
+.fc-who b { display: block; font-weight: 700; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* «канал клуба · соперник серии · 3 ч»: сжимается метка, время остаётся целым */
+.fc-who small { display: flex; min-width: 0; margin-top: 1px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.fc-kind { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.fc-ago { flex: none; }
+.fc-more { display: grid; place-items: center; width: 40px; height: 40px; margin: -8px -10px -8px 0; border: 0; border-radius: 9999px; background: none; color: var(--muted); cursor: pointer; }
+.fc-more svg { width: 20px; height: 20px; fill: currentColor; }
+.fc-more:active { background: var(--mist); }
+.fc-img { position: relative; max-width: 480px; margin-top: 12px; aspect-ratio: 16 / 9; border: var(--line); border-radius: 16px; overflow: hidden; background: var(--mist); }
+.fc-img img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.fc-img .tag { position: absolute; right: 8px; bottom: 8px; height: 22px; padding: 0 9px; font-size: 11px; }
+.fc-text { margin: 10px 0 0; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.fc-text b { font-weight: 700; }
+/* пилюля «Читать в канале ›» — настоящая кнопка: с неё пост открывают с клавиатуры и в VoiceOver */
+.fc-go { display: inline-flex; align-items: center; min-height: 40px; margin-top: 12px; padding: 0 16px; border: 1px solid var(--edge); border-radius: 9999px; background: var(--paper); color: var(--ink); font: 700 13px/1 var(--ui); letter-spacing: .03em; cursor: pointer; transition: transform .12s cubic-bezier(.2, .8, .2, 1); }
+.fc-go:active { transform: scale(.97); }
+/* Компактная карточка поста в ленте лиги: текст и пилюля слева, картинка-квадрат справа. На экране уже
+   360px пилюля рядом с картинкой не помещается — она под ними во всю ширину */
+.fc-body { margin-top: 10px; }
+.fc-body.has-img { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto 1fr; column-gap: 12px; }
+.fc-post.compact .fc-text { margin: 0; }
+.fc-post.compact .fc-go { margin-top: 10px; white-space: nowrap; }
+.fc-body.has-img .fc-text { grid-area: 1 / 1; align-self: start; }   /* растянутый абзац показал бы четвёртую строку */
+.fc-body.has-img .fc-go { grid-area: 2 / 1; justify-self: start; align-self: start; }
+.fc-img.fc-thumb { grid-area: 1 / 2 / 3 / 3; width: 88px; aspect-ratio: 1; margin: 0; }
+.fc-thumb .tag { right: 6px; bottom: 6px; padding: 0 7px; }
+@media (max-width: 359px) {
+  .fc-img.fc-thumb { grid-area: 1 / 2; width: 72px; }
+  .fc-body.has-img .fc-go { grid-column: 1 / 3; }
+}
+.fc-link { display: inline-flex; align-items: center; min-height: 40px; margin-top: 4px; padding: 0; border: 0; background: none; color: var(--ink); font: 700 13px/1.2 var(--ui); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+
+/* «Дальше» внутри карточки листа: строки календаря без второй рамки, во всю ширину карточки */
+.fc-list { padding-bottom: 6px; }
+.fc-list .list { margin: 8px -16px 0; border: 0; border-top: 1px solid var(--mist); border-radius: 0; background: none; }
+.fc-lead { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; min-height: 40px; margin: 0 -8px; padding: 10px 8px 0; border-radius: 12px; cursor: pointer; }
+.fc-lead + .fc-lead { border-top: 1px solid var(--mist); border-radius: 0; }
+.fc-lead b { font-weight: 700; font-size: 15px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fc-lead span { flex: none; font-size: 13px; color: var(--muted); }
+.fc-lead:active { background: var(--sel); }
+
+/* «Лист собран» — честная точка остановки: проводник радуется, одна фраза, две тихие пилюли */
+.fc-end { display: grid; justify-items: center; gap: 8px; padding: 12px 8px 0; text-align: center; }
+.fc-end .guide img { width: 72px; height: 72px; }
+.fc-end p { margin: 0; max-width: 320px; font-size: 15px; line-height: 1.4; }
+.fc-end .pills { justify-content: center; margin-top: 4px; }
+
+/* «Ты в курсе за сутки» — конец «Сегодня»: здесь не жалко закрыть приложение, а кто хочет листать
+   дальше, уходит в ленту сам — кнопка под отметкой переключает сегмент (ADR-017) */
+.fc-caught { padding-bottom: 4px; }
+.fc-caught .pills button { font-size: 14px; }
+.fc-caught p b { font-weight: 700; }
+.stream-pin { display: block; height: 0; }
+/* Фильтры ленты прилипают под бегущей строкой на фоне страницы, прилипшие — с линией снизу (ADR-015, 01.10) */
+.stream-pills { position: sticky; top: var(--marquee-h); z-index: 4; margin: 0 -16px 4px; padding: 8px 16px; background: var(--canvas); border-bottom: 1px solid transparent; }
+.stream-pills.stuck { border-bottom-color: var(--ink); }
+#stream-more { margin-bottom: 12px; }
+
+/* «Посты каналов» в «Я»: правила и скрытые каналы */
+.fc-rules { margin: 0 0 8px; padding: 0 0 0 20px; font-size: 15px; line-height: 1.45; }
+.fc-rules li + li { margin-top: 8px; }
+.menu-row.static-row { grid-template-columns: 1fr auto; cursor: default; }
+.menu-row.static-row:active { background: none; }
+.menu-row.static-row .fc-link { margin: 0; }
+
+@media (hover: hover) and (pointer: fine) {
+  .fc[role="button"]:hover, .fc-post:hover, .fc-game:hover { background: var(--sel); }
+  .fc-more:hover { background: var(--mist); }
+}
+@media (max-width: 359px) {
+  .fc-match, .fc-game { gap: 4px; font-size: 13px; }
+  .fc-match b, .fc-game b { font-size: 15px; }
+}
+
+/* ---------- ряд «Сегодня» (ADR-015, шаг 6): кружки клубов со свежими постами ---------- */
+/* ряд «Сегодня» — под табло следующего матча (ADR-015, 01.10) */
+.packs { display: flex; gap: 12px; overflow-x: auto; scrollbar-width: none; margin: 16px -16px 0; padding: 2px 16px 4px; min-height: 92px; }
+.packs::-webkit-scrollbar { display: none; }
+.pack { flex: none; display: grid; justify-items: center; gap: 6px; width: 64px; padding: 0; border: 0; background: none; color: var(--ink); cursor: pointer; }
+.pack-ring { display: grid; place-items: center; width: 64px; height: 64px; border-radius: 50%; border: 1px solid var(--mist); background: var(--paper); transition: transform .12s cubic-bezier(.2, .8, .2, 1); }
+.pack.new .pack-ring { border: 3px solid var(--ember); }
+.pack .em { width: 52px; height: 52px; border: var(--line); }
+.pack .em.ab { font-size: 11px; }
+.pack-name { max-width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 700 11px/1.2 var(--ui); }
+/* ряд листают вбок: нажатие проявляется через 60 мс, чтобы кружки не мигали под пальцем при прокрутке */
+.pack:active .pack-ring { transform: scale(.94); transition-delay: 60ms; }
+.sk-pack i { display: block; width: 64px; height: 64px; border-radius: 50%; }
+
+.pack-bar { display: flex; gap: 3px; margin: 0 0 12px; }
+.pack-bar i { flex: 1; height: 4px; border-radius: 9999px; border: 1px solid var(--muted); }
+.pack-bar i.done, .pack-bar i.on { background: var(--ink); border-color: var(--ink); }
+/* Рамка историй одной высоты: отрезки прогресса и крестик не прыгают от поста к посту. Кнопка в канал
+   прижата к низу рамки и не уходит под край на 320×568 — длинный текст прокручивается под ней */
+.sheet.pack-open { height: min(90vh, 640px); padding-bottom: 0; }
+.sheet.pack-open > .sheet-page { display: flex; flex-direction: column; min-height: 100%; }
+.sheet.pack-open .pack-page { flex: 1 0 auto; }
+.pack-cta { position: sticky; bottom: 0; z-index: 1; padding: 8px 0 calc(12px + env(safe-area-inset-bottom)); background: var(--paper); }
+.pack-page { position: relative; min-height: 200px; }
+.pack-img { max-width: none; aspect-ratio: 4 / 3; margin-top: 0; }
+.pack-text { margin: 12px 0 16px; font-size: 16px; line-height: 1.45; overflow-wrap: anywhere; }
+.pack-text b { font-weight: 700; }
+.pack-zone { position: absolute; top: 0; bottom: 0; width: 40%; border: 0; background: none; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.pack-zone.prev { left: 0; width: 30%; }
+.pack-zone.next { right: 0; width: 70%; }
+.pack-foot { margin: 12px 0 4px; text-align: center; font-size: 12px; color: var(--muted); }
+.pack-how { display: block; text-wrap: balance; }   /* не оставлять «клуб» одно на строке */
+
+/* prefers-reduced-motion: нажатие на карточку, пилюлю и кружок — без перехода, сразу конечное состояние */
+@media (prefers-reduced-motion: reduce) {
+  .fc, .fc-go, .pack-ring { transition: none; }
+}
+
+/* ---------- матч-центр дня (ADR-019) и «Кто победит?» (ADR-020), DESIGN.md → «Матч-центр дня» ---------- */
+
+/* Статус-чип — мини-стикер, как «Дома / Выезд» в строке. «Идёт» — та же роль, что у стикера «Сегодня» */
+.lv {
+  display: inline-flex; align-items: center; flex: none; height: 20px; padding: 0 7px;
+  border: 1px solid var(--edge); border-radius: 9999px; background: var(--paper); color: var(--ink);
+  font: 700 10px/1 var(--ui); letter-spacing: .04em; text-transform: uppercase; white-space: nowrap;
+}
+.lv.live, .tag.live { background: var(--hot-bg); color: var(--hot-fg); border-color: var(--hot-edge); }
+.lv.brk, .tag.brk { background: var(--away-bg); color: var(--away-fg); border-color: var(--away-edge); }
+.lv.off, .tag.off { background: var(--mist); color: var(--muted); border-color: var(--mist); }
+
+/* Табло своего матча: время по Москве крупно, под ним «МСК» и отсчёт; во время матча — счёт по ходу */
+.bmid { display: grid; justify-items: center; }
+.score .dec + .dec { margin-top: 4px; }
+.score.pending .dec:first-of-type { font-weight: 700; color: var(--ink); letter-spacing: .02em; }
+.board-hit { border-radius: 20px; }
+.board-hit:focus-visible { outline-offset: 6px; }
+.mline { margin-top: 14px; text-align: center; font-size: 13px; line-height: 1.35; color: var(--muted); }
+.mline:empty, .links-box:empty, .vote-box:empty, .mc-status:empty, .mc-events:empty, .ev-src:empty { display: none; }
+/* нажатие по кнопке внутри табло не вдавливает всю карточку */
+.board-card.tap:has(.go:active, .vote-b:active, .fc-link:active) { transform: none; background: var(--paper); }
+
+/* «Текстовая трансляция», «Смотреть», «Протокол» — пилюли с иконкой; в строке матча дня — 32px */
+.go-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.board-card .go-row { justify-content: center; }
+.go {
+  position: relative; display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 14px;
+  border: 1px solid var(--edge); border-radius: 9999px; background: var(--paper); color: var(--ink);
+  font: 700 13px/1 var(--ui); letter-spacing: .03em; cursor: pointer; white-space: nowrap;
+  transition: transform .12s cubic-bezier(.2, .8, .2, 1), background-color .2s;
+}
+.go svg { flex: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.go:active { transform: scale(.97); }
+.go.replay { display: flex; width: max-content; min-height: 30px; margin-top: 8px; padding: 0 12px; font-size: 12px; }
+.go.replay::after { content: ""; position: absolute; inset: -5px 0; }   /* нажатие — 40px, как у .go */
+.go-row.short { gap: 6px; margin-top: 8px; padding-left: 76px; }
+.go-row.short .go { min-height: 32px; padding: 0 12px; font-size: 12px; }
+.go-row.short .go::after { content: ""; position: absolute; inset: -4px 0; }
+
+/* «Матчи дня в РХЛ»: строка — не кнопка, внутри свои кнопки; свой матч первым и залит --sel */
+.md-list .md-row { padding: 10px 12px; cursor: pointer; transition: background-color .12s; }
+.md-list .md-row + .md-row { border-top: 1px solid var(--mist); }
+.md-row.mine { background: var(--sel); }
+.md-row:not(:has(.go:active)):active { background: var(--sel); transition-delay: 60ms; }
+.md-row.mine:not(:has(.go:active)):active { background: var(--mist); }
+.md-main {
+  display: grid; grid-template-columns: 66px minmax(0, 1fr); gap: 10px; align-items: center;
+  width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.md-main:focus-visible { outline-offset: 6px; border-radius: 12px; }
+.md-when { display: grid; justify-items: start; gap: 4px; min-width: 0; }
+.md-when b { font: 700 15px/1.1 var(--ui); }
+.md-when small { font-size: 11px; line-height: 1.2; color: var(--muted); }
+/* «Окончен» — самый длинный чип: плотнее, чтобы не наезжал на эмблемы и на 320px */
+.md-when .lv { padding: 0 5px; letter-spacing: .02em; }
+.md-teams { display: grid; gap: 6px; min-width: 0; }
+.md-tm { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.md-tm .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md-tm .nm.me { font-weight: 700; }
+.md-tm .gl { margin-left: auto; padding-left: 8px; font-weight: 500; color: var(--muted); }
+.md-tm .gl.lead { color: var(--ink); font-weight: 700; }
+.md-more {
+  display: flex; align-items: center; justify-content: center; min-height: 40px; margin: 10px auto 0; padding: 0 18px;
+  border: 1px solid var(--edge); border-radius: 9999px; background: var(--paper); color: var(--ink);
+  font: 700 13px/1 var(--ui); letter-spacing: .03em; cursor: pointer; transition: transform .12s cubic-bezier(.2, .8, .2, 1);
+}
+.md-more:active { transform: scale(.97); }
+.md-next {
+  display: grid; grid-template-columns: 1fr 16px; align-items: center; gap: 12px; width: 100%; padding: 14px 16px;
+  border: var(--line); border-radius: 20px; background: var(--paper); color: inherit; font: inherit; text-align: left; cursor: pointer;
+  transition: transform .12s cubic-bezier(.2, .8, .2, 1), background-color .2s;
+}
+.md-next:active { transform: scale(.985); background: var(--sel); }
+.md-next small { display: block; font-size: 12px; color: var(--muted); }
+.md-next b { display: block; margin-top: 2px; font-weight: 700; font-size: 15px; line-height: 1.3; }
+.md-next svg { width: 16px; height: 16px; fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Календарь: у сегодняшнего матча — счёт по ходу и статус-чип столбиком справа */
+.lvs { display: grid; justify-items: end; gap: 3px; }
+.lvs b { font-weight: 700; font-size: 15px; }
+.lvs small { font-size: 11px; line-height: 1.2; color: var(--muted); white-space: nowrap; }
+.row .r .kick.tbd { max-width: 70px; font: 500 11px/1.2 var(--ui); color: var(--muted); text-align: right; }
+
+/* Карточка матча: строка статуса, лента событий, источник счёта */
+.mc-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 2px 0; font-size: 14px; line-height: 1.35; }
+.sheet .links-box .go-row { margin-top: 12px; }
+/* в карточке три полные подписи: перенос ряда — ровными пилюлями во всю ширину, а не одной сиротой слева */
+.sheet .links-box .go { flex: 1 1 auto; justify-content: center; }
+/* сыгранный матч без протокола: авторы голов с сайта лиги и где протокол */
+.site-goals .goal { align-items: center; }
+.site-goals .goal .tm, .site-goals .goal .sc { padding-top: 0; }
+.site-note { padding: 14px 16px 6px; border: var(--line); border-radius: 20px; font-size: 14px; line-height: 1.4; color: var(--muted); }
+.site-note p { margin: 0; }
+.site-note .fc-link { margin-top: 2px; }
+.site-note.small { margin-top: 8px; padding: 0 2px; border: 0; font-size: 12px; }
+.ev-list .ev-em { display: grid; place-items: center; width: 36px; height: 36px; }
+.goal.ev .tm { min-width: 0; }
+.ev-line { display: flex; gap: 10px; padding: 10px 12px; font-size: 13px; line-height: 1.35; color: var(--muted); }
+.ev-line > .tm { flex: none; min-width: 42px; font-weight: 700; color: var(--ink); }
+/* время по часам (служба заметила, пост вышел) — серым: это не табло */
+.ev-list .tm.wall { font-weight: 500; color: var(--muted); }
+/* пост канала по ходу матча: превью и канал, нажатие — пост в Telegram */
+.ev-post { width: 100%; border: 0; background: none; font: 500 13px/1.35 var(--ui); text-align: left; cursor: pointer; transition: background-color .12s; }
+.ev-post .ev-body { min-width: 0; }
+.ev-post .ev-txt {
+  color: var(--ink); font-size: 14px; line-height: 1.4; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
+}
+.ev-post .ev-body small { display: block; margin-top: 2px; font-size: 12px; line-height: 1.3; color: var(--muted); }
+.ev-post:active { background: var(--sel); }
+.goal + .ev-line, .ev-line + .goal, .ev-line + .ev-line, .ev-line + .period { border-top: 1px solid var(--mist); }
+.ev-empty { padding: 14px 16px; border: var(--line); border-radius: 20px; font-size: 14px; line-height: 1.4; color: var(--muted); }
+.ev-src { margin: 8px 2px 0; font-size: 12px; color: var(--muted); }
+
+/* «Кто победит?» — внутри табло под линией, в листе — своей карточкой */
+.vote { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--mist); }
+.sheet .vote { margin-top: 12px; padding: 14px 16px; border: var(--line); border-radius: 20px; background: var(--paper); }
+.vote-top { display: flex; justify-content: space-between; gap: 8px; font: 500 12px/1.2 var(--ui); color: var(--muted); }
+.vote-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.vote-b {
+  position: relative; display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 56px; padding: 6px 12px 6px 6px;
+  border: var(--line); border-radius: 9999px; background: var(--paper); color: var(--ink);
+  font: 700 13px/1.15 var(--ui); text-align: left; cursor: pointer;
+  transition: transform .12s cubic-bezier(.2, .8, .2, 1), background-color .2s, border-color .2s;
+}
+.vote-b .em.md { width: 40px; height: 40px; }
+.vote-b .vn { min-width: 0; overflow-wrap: break-word; hyphens: auto; }
+/* галочка — наклейкой на угол эмблемы, а не в строке: длинному названию остаётся место */
+.vote-b .ok { position: absolute; left: 34px; top: 4px; width: 18px; height: 18px; padding: 3px; border-radius: 50%; background: var(--ink); fill: none; stroke: var(--paper); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.vote-b.on { background: var(--sel); border-color: var(--ink); }
+.vote-b:not(:disabled):active { transform: scale(.97); }
+.vote-b:disabled { cursor: default; }
+.vote-b[aria-busy="true"] { animation: sk-pulse .5s ease-in-out infinite alternate; }
+.vote-bar-row { display: grid; grid-template-columns: 24px auto minmax(0, 1fr) auto 24px; align-items: center; gap: 8px; margin-top: 12px; }
+.vote-bar-row b { font: 700 13px/1 var(--ui); }
+.vote-bar { height: 10px; border: var(--line); border-radius: 9999px; overflow: hidden; background: var(--paper); }
+.vote-bar i { display: block; height: 100%; background: var(--act); }
+.vote-say { margin-top: 8px; font-size: 13px; line-height: 1.35; color: var(--muted); }
+.vote-say b { color: var(--ink); font-weight: 700; }
+.vote-note { margin-top: 8px; font-size: 13px; line-height: 1.35; }
+.vote-note .fc-link { min-height: 32px; margin: 0; }
+.vote-res { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+
+/* «Я» → «Прогнозы» */
+.pred-big { display: flex; align-items: center; gap: 12px; margin: 4px 2px 16px; }
+.pred-big b { font: 800 26px/1 var(--display); }
+.pred-big > span:not(.tag) { font-size: 13px; line-height: 1.25; color: var(--muted); }
+.pred-sub { margin: 4px 2px 16px; color: var(--muted); }
+.pred-confirm { padding: 14px 16px; border: var(--line); border-radius: 20px; }
+.pred-confirm p { margin: 0 0 12px; }
+.pred-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+@media (hover: hover) and (pointer: fine) {
+  .md-list .md-row:hover, .md-next:hover, .go:hover, .md-more:hover, .vote-b:not(:disabled):not(.on):hover, .ev-post:hover { background: var(--sel); }
+  .md-row.mine:hover { background: var(--mist); }
+}
+@media (max-width: 359px) {
+  /* середина табло не отнимает у названий место: отсчёт переносится по словам, «Белгород» — целиком */
+  .bmid .score.pending { max-width: 84px; }
+  .bmid .score .dec { font-size: 11px; line-height: 1.2; }
+  .md-main { grid-template-columns: 66px minmax(0, 1fr); gap: 8px; }
+}
+@media (max-width: 374px) {
+  /* «Протокол» и «Смотреть» под командами на 360px в одну строку уже не влезают — ряд от края строки */
+  .go-row.short { padding-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .go, .md-more, .md-next, .vote-b { transition: none; }
+  .vote-b[aria-busy="true"] { animation: none; }
+}
+/* лист дня начинается с воздуха: раньше его давали цифры сезона, теперь они на паспорте (ADR-017, 03.10) */
+#home-body > .part.deck { margin-top: 24px; }
+
+/* Страницы игрока и клуба (ADR-030, DESIGN.md): шапка — стикер или эмблема и имя, дальше лента голов */
+.side-top { display: flex; align-items: center; gap: 16px; margin: 4px 2px 18px; }
+.side-name { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.side-name h2 { margin: 0; font: 800 26px/0.98 var(--display); overflow-wrap: anywhere; }
+.side-name .first { font: 500 15px/1.2 var(--ui); }
+.side-name .meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; font: 500 13px/1.3 var(--ui); color: var(--muted); }
+.side-name .form { display: flex; gap: 4px; margin-top: 4px; }
+.ps.xl { width: 72px; height: 72px; transform: rotate(-6deg); }
+.club-link { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0; border: 0;
+  background: none; color: inherit; font: inherit; cursor: pointer; }
+.club-link .em { width: 22px; height: 22px; }
+.who-link { display: inline; padding: 6px 0; margin: -6px 0; border: 0; background: none; color: inherit;
+  font: inherit; text-align: left; cursor: pointer; }
+.who-link span { margin-left: 3px; color: var(--muted); font-weight: 500; }
+.pl.tap, .lead-row.tap { cursor: pointer; }
+.lead-row.tap:active, .pl.tap:active { background: var(--sel); }
+.hl-row { grid-template-columns: 64px 24px 1fr; min-height: 56px; align-items: center; }
+.hl-when { display: flex; flex-direction: column; gap: 2px; }
+.hl-when b { font: 700 13px/1.2 var(--ui); }
+.hl-when small { font: 500 12px/1.2 var(--ui); color: var(--muted); white-space: nowrap; }
+.hl-what { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.hl-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.hl-top .num { font-weight: 700; }
+.hl-top .tag { height: 20px; padding: 0 7px; font-size: 10px; }
+.hl-who { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hl-what .go.replay { flex: none; margin-top: 0; }
+.chips.scroll { overflow-x: auto; scrollbar-width: none; margin-bottom: 10px; }
+.chips.scroll::-webkit-scrollbar { display: none; }
+.chips.scroll button { flex: none; white-space: nowrap; }
+
+/* Свой клип гола (ADR-030, шаг 6): видео 16:9 под строкой гола, ниже — источник и вся трансляция */
+.clip-box { padding: 0 12px 12px; }
+.goals .clip-box { padding: 0 16px 14px; }
+.clip-box video { display: block; width: 100%; aspect-ratio: 16 / 9; border-radius: 14px; border: var(--line); background: #000; }
+.clip-src { margin-top: 6px; font: 500 12px/1.4 var(--ui); color: var(--muted); }
+.clip-full { padding: 8px 0; margin: -8px 0; border: 0; background: none; color: inherit; font: inherit;
+  text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+/* «Все голы матча» (ADR-030, раздел 6): клипы подряд в одном плеере над списком голов */
+.reel-row { margin: 0 0 10px; }
+.clip-box.reel { padding: 0 0 14px; }
+.clip-src b { color: var(--ink); font-weight: 700; }
+
+/* «Мой игрок» (ADR-010, решение 3): пилюля со звёздочкой под «клуб · амплуа»; отмечен — звезда --sun в контуре */
+.side-name .go.mp { align-self: flex-start; min-height: 32px; margin-top: 6px; padding: 0 12px; font-size: 12px; }
+.side-name .go.mp::after { content: ""; position: absolute; inset: -4px 0; }   /* нажатие — 40px */
+.go.mp .mp-star { width: 16px; height: 16px; fill: none; stroke: var(--ink); stroke-width: 1.6; stroke-linejoin: round; }
+.go.mp.on .mp-star { fill: var(--sun); }
+.mp-note { font: 500 12px/1.35 var(--ui); color: var(--muted); }
